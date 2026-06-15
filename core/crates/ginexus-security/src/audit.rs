@@ -15,7 +15,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 type HmacSha256 = Hmac<Sha256>;
 const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const ANCHOR_NAME: &str = "audit.head";
-const HASHED_FIELDS: [&str; 4] = ["ts", "event", "data", "prev_hash"];
 
 fn mac_hex(key: &[u8], s: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(key).expect("hmac key");

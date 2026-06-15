@@ -1,0 +1,16 @@
+[package]
+name = "ginexus-agent"
+description = "GINEXUS agent tool-loop + tool registry (Rust core)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+ginexus-security.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
