@@ -74,7 +74,7 @@ final class AppModel: ObservableObject {
             if !autoDemoSent, tok != nil {
                 autoDemoSent = true
                 dbg("auto-demo: sending")
-                send("Reply in one short sentence: confirm you are a local AI assistant running on this Mac.")
+                send("What is 89 times 7? And in what year did Apollo 11 land on the Moon? One short line.")
             } else {
                 dbg("auto-demo SKIPPED (token nil=\(tok == nil), alreadySent=\(autoDemoSent))")
             }

@@ -1,0 +1,24 @@
+# GINEXUS core engine — Rust workspace.
+# The hardened orchestrator: security primitives, agent tool-loop, model router, UDS+token
+# server, MCP host. Ports the proven Python spine (its test suite + cross-language golden
+# vectors are the behavioral contract). Inference stays in Ollama/MLX; the UI stays SwiftUI.
+[workspace]
+resolver = "2"
+members = ["crates/ginexus-security"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+hmac = "0.12"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+hex = "0.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
