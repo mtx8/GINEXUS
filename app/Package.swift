@@ -4,6 +4,10 @@ import PackageDescription
 let package = Package(
     name: "GinexusApp",
     platforms: [.macOS(.v14)],
+    products: [
+        // Exposed so the Xcode app project (GINEXUS.xcodeproj) can depend on it.
+        .library(name: "GinexusCore", targets: ["GinexusCore"]),
+    ],
     targets: [
         // Shared, independently-testable core (UDS HTTP client, sidecar control).
         .target(name: "GinexusCore"),

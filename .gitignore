@@ -14,6 +14,13 @@ DerivedData/
 .swiftpm/
 Package.resolved
 
+# XcodeGen: generated project + generated Info.plist are build outputs.
+# project.yml is the source of truth — regenerate with `cd app && xcodegen generate`.
+app/GINEXUS.xcodeproj/
+app/Generated/
+# local xcodebuild output (CLI verification builds)
+app/.xcode-build/
+
 # Python / uv
 .venv/
 __pycache__/
@@ -42,3 +49,6 @@ data/
 
 # iCloud — HARD RULE: never track anything under Mobile Documents
 Library/
+
+# Xcode: staged Rust core for the in-Xcode embed (built by the GINEXUS scheme pre-action)
+app/artifacts/

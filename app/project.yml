@@ -1,0 +1,119 @@
+# XcodeGen spec for GINEXUS.app. Regenerate the .xcodeproj with: `xcodegen generate` (in app/).
+# The SwiftPM package (Package.swift) stays the source of truth for GinexusCore + tests; this project
+# produces the runnable macOS app (Info.plist + entitlements + Hardened Runtime) and embeds the Rust
+# core (Contents/MacOS/ginexus-server).
+#
+# How the Rust core is embedded — sandbox-proof, no manual `codesign --deep`:
+#   1. A SCHEME build pre-action runs `cargo build --release -p ginexus-server` and stages the binary
+#      to app/artifacts/. Scheme pre-actions run OUTSIDE Xcode's per-Run-Script sandbox
+#      (/usr/bin/sandbox-exec), so cargo can read the sibling ../core tree regardless of
+#      ENABLE_USER_SCRIPT_SANDBOXING. This is what fixes "Could not locate working directory:
+#      Operation not permitted (os error 1)" — the failure seen when the GUI sandboxes a Run Script
+#      phase and cargo can't stat a sibling dir. (Verified: `xcodebuild -scheme` runs pre-actions too.)
+#   2. A native Copy Files phase embeds app/artifacts/ginexus-server into Contents/MacOS with
+#      "Code Sign On Copy", so Xcode signs the nested binary itself — no `--deep` workaround. The app's
+#      CODE_SIGN_ENTITLEMENTS attach only to the Swift app (correct: TCC calls originate in the app,
+#      never the sidecar — see CLAUDE.md hard rules).
+#   3. A guard pre-build script fails the build LOUDLY if the staged binary is missing (Xcode swallows
+#      scheme pre-action failures), turning a silent cargo failure into a clear, actionable error.
+# The canonical shippable/notarized build remains app/scripts/build_app.sh (Terminal, unsandboxed).
+name: GINEXUS
+options:
+  bundleIdPrefix: com.macktrax
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    # Belt-and-suspenders only: the design no longer DEPENDS on this (cargo runs in an unsandboxed
+    # scheme pre-action; the embed is a native Copy Files phase; the guard only reads a path under
+    # $SRCROOT). Kept NO so any future Run Script phase isn't silently denied.
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+packages:
+  GinexusKit:
+    path: .
+
+targets:
+  GINEXUS:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/GinexusApp
+      # Rust core, staged by the scheme pre-action below; embedded natively + signed on copy.
+      # optional: true so generation/build don't fail before the first stage (the guard catches it).
+      - path: artifacts/ginexus-server
+        type: file
+        optional: true
+        buildPhase:
+          copyFiles:
+            destination: executables
+        attributes: [CodeSignOnCopy]
+    dependencies:
+      - package: GinexusKit
+        product: GinexusCore
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: GINEXUS
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.productivity
+        NSHighResolutionCapable: true
+        NSCalendarsFullAccessUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
+        NSCalendarsUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
+    settings:
+      base:
+        PRODUCT_NAME: GINEXUS
+        PRODUCT_BUNDLE_IDENTIFIER: com.macktrax.ginexus
+        CODE_SIGN_ENTITLEMENTS: GINEXUS.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"           # ad-hoc for local dev; set a Developer ID for release
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    preBuildScripts:
+      - name: "Verify embedded Rust core was staged"
+        basedOnDependencyAnalysis: false
+        inputFiles:
+          - $(SRCROOT)/artifacts/ginexus-server
+        script: |
+          set -euo pipefail
+          SRC="$SRCROOT/artifacts/ginexus-server"
+          # Xcode silently ignores a failed scheme pre-action, so confirm the core was actually built
+          # + staged. Only stats a path under $SRCROOT (no cargo, no sibling reads) → sandbox-safe even
+          # if ENABLE_USER_SCRIPT_SANDBOXING is forced YES, so this guard itself can never regress.
+          if [ ! -s "$SRC" ]; then
+            echo "error: artifacts/ginexus-server is missing or empty — the 'Build + stage Rust core'" >&2
+            echo "       scheme pre-action failed or was bypassed. Build via the GINEXUS scheme (⌘R or" >&2
+            echo "       'xcodebuild -scheme GINEXUS'), not 'xcodebuild -target', or run" >&2
+            echo "       app/scripts/build_app.sh once from Terminal to stage the core." >&2
+            exit 1
+          fi
+
+schemes:
+  GINEXUS:
+    build:
+      targets:
+        GINEXUS: all
+      preActions:
+        - name: "Build + stage Rust core (ginexus-server)"
+          settingsTarget: GINEXUS
+          script: |
+            set -euo pipefail
+            export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+            command -v cargo >/dev/null || { echo 'error: cargo not on PATH ($HOME/.cargo/bin, /opt/homebrew/bin). Install Rust via https://rustup.rs.' >&2; exit 1; }
+            STAGE="$SRCROOT/artifacts"
+            mkdir -p "$STAGE"
+            # Drop any stale staged binary FIRST: if cargo fails below, `set -e` aborts before the cp,
+            # leaving NO staged binary, so the target's guard phase fails loudly instead of shipping an
+            # old core. Local dev builds host arch; build_app.sh produces the universal/notarized release.
+            rm -f "$STAGE/ginexus-server"
+            cargo build --release -p ginexus-server --manifest-path "$SRCROOT/../core/Cargo.toml"
+            cp -f "$SRCROOT/../core/target/release/ginexus-server" "$STAGE/ginexus-server"
+    run:
+      config: Debug
+    archive:
+      config: Release
