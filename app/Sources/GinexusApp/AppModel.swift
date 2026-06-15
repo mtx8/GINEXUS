@@ -69,7 +69,7 @@ final class AppModel: ObservableObject {
             spineStatus = "CONNECTED · live spine over UDS"
             renderSnapshot()
             // Auto-demo once: prove the app gets a real model answer through the spine.
-            let tok = keychainToken()
+            let tok = currentToken()
             dbg("connected; keychainToken len=\(tok?.count ?? -1)")
             if !autoDemoSent, tok != nil {
                 autoDemoSent = true
@@ -90,7 +90,7 @@ final class AppModel: ObservableObject {
         chatInput = ""
         renderSnapshot()
         let sock = spine.socketPath
-        let tok = keychainToken()
+        let tok = currentToken()
         let msgs = chat.map { ["role": $0.role, "content": $0.text] }
         let body = try? JSONSerialization.data(withJSONObject: ["model": "fast", "messages": msgs])
         Task {
@@ -126,7 +126,14 @@ final class AppModel: ObservableObject {
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Read the per-launch bearer token from the Keychain via the signed keychainstore tool.
+    /// The bearer token: the app-minted secret (embedded-core spawn mode) if present, else the
+    /// Keychain (attach-only / external-core mode).
+    func currentToken() -> String? {
+        spine.token ?? keychainToken()
+    }
+
+    /// Read the per-launch bearer token from the Keychain via the signed keychainstore tool
+    /// (attach-only / external-core fallback; the embedded-core path uses the minted token).
     func keychainToken() -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let bin = ProcessInfo.processInfo.environment["GINEXUS_KEYCHAINSTORE"]

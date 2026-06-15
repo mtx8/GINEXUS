@@ -1,24 +1,31 @@
-// SpineController.swift — boots the RUST GINEXUS core engine (ADR 0003) and exposes its UDS
-// socket. The Swift UDSClient protocol is unchanged; only the socket + launcher moved from the
-// Python reference spine to the Rust core. (Python is retired from the runtime path.)
+// SpineController.swift — launches the EMBEDDED Rust core engine (ginexus-server) from inside
+// the app bundle (Contents/MacOS). The app mints the per-launch secrets and injects them via env
+// (the server fails closed without them), so the app is self-contained: no external launcher, no
+// keychain dependency, and no ~/Desktop access (the binary is in the bundle, so Desktop-TCC is moot).
 import Foundation
+import Security
 
 @MainActor
 final class SpineController {
     private var process: Process?
-    let spineDir: String   // GINEXUS/core
     let socketPath: String
+
+    /// Per-launch secrets the app minted + injected (also used to authenticate / mint approvals).
+    private(set) var token: String?
+    private(set) var approvalKey: String?
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        spineDir = ProcessInfo.processInfo.environment["GINEXUS_SPINE_DIR"]
-            ?? "\(home)/Desktop/GINEXUS/core"
         socketPath = "\(home)/Library/Application Support/GINEXUS/run/ginexus.sock"
     }
 
-    var available: Bool { FileManager.default.fileExists(atPath: "\(spineDir)/scripts/run_core.sh") }
+    /// The embedded Rust core binary inside the app bundle.
+    private var embeddedBinary: URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ginexus-server")
+    }
 
-    /// Rust core stdout/stderr, captured for diagnosis from the app context.
+    var available: Bool { FileManager.default.isExecutableFile(atPath: embeddedBinary.path) }
+
     var logURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("GINEXUS", isDirectory: true)
@@ -26,19 +33,29 @@ final class SpineController {
         return base.appendingPathComponent("core.log")
     }
 
+    private func randomHex(_ n: Int) -> String {
+        var bytes = [UInt8](repeating: 0, count: n)
+        _ = SecRandomCopyBytes(kSecRandomDefault, n, &bytes)
+        return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
     func boot() {
         guard available else { return }
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let logHandle = try? FileHandle(forWritingTo: logURL)
 
+        let tok = randomHex(32)
+        let approval = randomHex(32)
+        token = tok
+        approvalKey = approval
+
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = ["scripts/run_core.sh"]
-        p.currentDirectoryURL = URL(fileURLWithPath: spineDir)
-        // GUI apps inherit a minimal PATH; run_core.sh needs cargo/openssl (homebrew / ~/.cargo).
+        p.executableURL = embeddedBinary
+        p.arguments = ["--uds", socketPath]
         var env = ProcessInfo.processInfo.environment
-        let home = env["HOME"] ?? FileManager.default.homeDirectoryForCurrentUser.path
-        env["PATH"] = "/opt/homebrew/bin:\(home)/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["GINEXUS_TOKEN"] = tok
+        env["GINEXUS_AUDIT_KEY"] = randomHex(32)
+        env["GINEXUS_APPROVAL_KEY"] = approval
         p.environment = env
         if let logHandle {
             p.standardOutput = logHandle
