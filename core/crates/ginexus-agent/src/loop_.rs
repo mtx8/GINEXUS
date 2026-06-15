@@ -141,7 +141,12 @@ impl<'a> AgentLoop<'a> {
                         };
                     }
                 }
-                let res = tool.run(&tc.arguments);
+                // Run the tool on the blocking pool — file/network tools must not block the loop.
+                let runner = tool.runner();
+                let args = tc.arguments.clone();
+                let res = tokio::task::spawn_blocking(move || runner(args))
+                    .await
+                    .unwrap_or_else(|_| crate::tools::ToolResult::err("tool execution failed"));
                 trace.push((tc.name.clone(), res.ok));
                 msgs.push(tool_msg(&tc.id, &res.output));
             }
@@ -216,7 +221,7 @@ mod tests {
     async fn readonly_tool_runs_without_approval() {
         let dir = tmp_dir();
         let reg = notes_registry(dir.clone());
-        reg.get("write_note").unwrap().run(&json!({"name": "n", "content": "hello world"}));
+        reg.get("write_note").unwrap().run(json!({"name": "n", "content": "hello world"}));
         let model = Mock::new(vec![
             call_turn(tc("read_note", json!({"name": "n"}))),
             final_turn("The note says: hello world"),
@@ -259,7 +264,7 @@ mod tests {
         let res = loop_.run(vec![], &[grant], Some(&av), NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert_eq!(res.answer, "saved");
-        let read = reg.get("read_note").unwrap().run(&json!({"name": "x"}));
+        let read = reg.get("read_note").unwrap().run(json!({"name": "x"}));
         assert_eq!(read.output, "data");
     }
 

@@ -21,7 +21,9 @@ impl ToolResult {
     }
 }
 
-type ToolFn = Arc<dyn Fn(&Value) -> ToolResult + Send + Sync>;
+// Owned-arg closure so the runner can be cloned + moved into spawn_blocking (network/file
+// tools run on the blocking pool, never blocking the async agent loop).
+pub type ToolFn = Arc<dyn Fn(Value) -> ToolResult + Send + Sync>;
 
 pub struct Tool {
     pub name: String,
@@ -43,8 +45,12 @@ impl Tool {
             "name": self.name, "description": self.description, "parameters": self.parameters,
         }})
     }
-    pub fn run(&self, args: &Value) -> ToolResult {
+    pub fn run(&self, args: Value) -> ToolResult {
         (self.run)(args)
+    }
+    /// Clone the runner closure for off-loop (spawn_blocking) execution.
+    pub fn runner(&self) -> ToolFn {
+        self.run.clone()
     }
 }
 
@@ -101,7 +107,7 @@ pub fn notes_registry(notes_dir: PathBuf) -> ToolRegistry {
                "properties": {"name": {"type": "string"}, "content": {"type": "string"}},
                "required": ["name", "content"]}),
         true,
-        Arc::new(move |args: &Value| {
+        Arc::new(move |args: Value| {
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let path = match safe_note_path(&base_w, name) {
@@ -121,7 +127,7 @@ pub fn notes_registry(notes_dir: PathBuf) -> ToolRegistry {
         "Read back a previously saved local note by name.",
         json!({"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
         false,
-        Arc::new(move |args: &Value| {
+        Arc::new(move |args: Value| {
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
             let path = match safe_note_path(&base_r, name) {
                 Ok(p) => p,

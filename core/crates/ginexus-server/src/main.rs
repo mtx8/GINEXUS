@@ -107,11 +107,13 @@ async fn main() {
     let _ = audit.record("server_start", json!({"engine": "rust", "boot_id": boot_id}));
 
     let approvals = ApprovalVerifier::new(approval_key, boot_id.clone()).expect("approval key");
+    let mut registry = ginexus_agent::tools::notes_registry(sd.join("notes"));
+    registry.register(ginexus_gateway::web::web_fetch_tool()); // SP4: read-only web research
     let state = Arc::new(AppState {
         token,
         boot_id,
         gateway: Gateway::default_local(),
-        registry: ginexus_agent::tools::notes_registry(sd.join("notes")),
+        registry,
         hitl: HitlPolicy::new(),
         audit,
         approvals,

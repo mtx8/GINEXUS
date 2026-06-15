@@ -22,6 +22,6 @@ if [ -x "$KCS" ]; then
     || echo "[run_core] keychain store skipped; token still injected via env" >&2
 fi
 
-[ -x target/release/ginexus-server ] && BIN=target/release/ginexus-server || BIN=target/debug/ginexus-server
-[ -x "$BIN" ] || cargo build -q
-exec "$BIN" --uds "$SOCK"
+# Always (re)build incrementally so we never exec a stale binary (near-instant if unchanged).
+cargo build -q -p ginexus-server
+exec target/debug/ginexus-server --uds "$SOCK"

@@ -10,6 +10,8 @@ use ginexus_agent::{AssistantTurn, ModelCall, ToolCall};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+pub mod web;
+
 #[derive(Clone, Debug)]
 pub struct Endpoint {
     pub model: String,
