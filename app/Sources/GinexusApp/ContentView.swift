@@ -11,7 +11,7 @@ struct ContentView: View {
                 header
                 Divider().overlay(Brand.muted.opacity(0.3))
                 row("BUNDLE", model.bundleId)
-                row("SIDECAR", model.sidecarStatus, value2: model.sidecarHeartbeat)
+                row("SPINE (UDS)", model.spineStatus, value2: model.spineDetail)
                 row("APP INTENT", model.intentStatus)
                 row("EVENTKIT / TCC", model.calendarStatus)
                 Spacer()
@@ -25,7 +25,7 @@ struct ContentView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)
-                Text("SP1.5 · packaging / TCC tracer-bullet")
+                Text("SP2 · native UDS client → live hardened spine")
                     .font(.system(size: 10, weight: .regular, design: .monospaced))
                     .foregroundStyle(Brand.muted)
             }

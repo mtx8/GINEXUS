@@ -1,0 +1,92 @@
+// UDSClient.swift — minimal HTTP/1.1-over-Unix-Domain-Socket client (SP2).
+//
+// The GINEXUS app talks to the hardened MTX-NEXUS sidecar over its 0600 UDS + bearer token
+// (ADR 0002). URLSession can't dial a UDS, so this is a small POSIX-socket HTTP client:
+// connect AF_UNIX → write request → read until close → parse status + body. Synchronous;
+// callers run it off the main thread.
+import Foundation
+
+public struct UDSResponse: Sendable {
+    public let status: Int
+    public let body: String
+}
+
+public enum UDSError: Error, Sendable {
+    case socket(String)
+    case connect(String)
+    case io(String)
+    case parse
+}
+
+public enum UDSClient {
+    public static func request(
+        socketPath: String,
+        method: String = "GET",
+        path: String = "/",
+        token: String? = nil,
+        jsonBody: Data? = nil
+    ) -> Result<UDSResponse, UDSError> {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        if fd < 0 { return .failure(.socket(String(cString: strerror(errno)))) }
+        defer { close(fd) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let cap = MemoryLayout.size(ofValue: addr.sun_path)
+        if socketPath.utf8.count >= cap { return .failure(.connect("socket path too long")) }
+        _ = withUnsafeMutablePointer(to: &addr.sun_path) { tuplePtr in
+            tuplePtr.withMemoryRebound(to: CChar.self, capacity: cap) { dst in
+                socketPath.withCString { src in strncpy(dst, src, cap - 1) }
+            }
+        }
+        let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let cr = withUnsafePointer(to: &addr) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) }
+        }
+        if cr != 0 { return .failure(.connect(String(cString: strerror(errno)))) }
+
+        var head = "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
+        if let token { head += "Authorization: Bearer \(token)\r\n" }
+        if let jsonBody {
+            head += "Content-Type: application/json\r\nContent-Length: \(jsonBody.count)\r\n"
+        }
+        head += "\r\n"
+        var out = Data(head.utf8)
+        if let jsonBody { out.append(jsonBody) }
+
+        let wrote = out.withUnsafeBytes { raw -> Int in
+            var sent = 0
+            while sent < raw.count {
+                let n = write(fd, raw.baseAddress!.advanced(by: sent), raw.count - sent)
+                if n <= 0 { return -1 }
+                sent += n
+            }
+            return sent
+        }
+        if wrote < 0 { return .failure(.io("write failed")) }
+
+        var resp = Data()
+        var buf = [UInt8](repeating: 0, count: 8192)
+        while true {
+            let n = read(fd, &buf, buf.count)
+            if n < 0 { return .failure(.io("read failed")) }
+            if n == 0 { break }
+            resp.append(buf, count: n)
+        }
+        return parse(resp)
+    }
+
+    private static func parse(_ data: Data) -> Result<UDSResponse, UDSError> {
+        guard let sep = data.range(of: Data("\r\n\r\n".utf8)) else { return .failure(.parse) }
+        let headerData = data.subdata(in: data.startIndex..<sep.lowerBound)
+        let bodyData = data.subdata(in: sep.upperBound..<data.endIndex)
+        guard let headerStr = String(data: headerData, encoding: .utf8),
+              let statusLine = headerStr.split(separator: "\r\n").first else { return .failure(.parse) }
+        let parts = statusLine.split(separator: " ")
+        guard parts.count >= 2, let code = Int(parts[1]) else { return .failure(.parse) }
+        // Strip a chunked-transfer trailer if present (sidecar uses Connection: close, so this
+        // is usually plain), best-effort decode to UTF-8.
+        let body = String(data: bodyData, encoding: .utf8) ?? ""
+        return .success(UDSResponse(status: code, body: body))
+    }
+}

@@ -35,3 +35,17 @@ the app-support state dir.
 - No Mac App Store for the flagship (acceptable; an optional sandboxed "lite" build can come later).
 - Notarization requires operator credentials → a release step, not a CI default on this machine.
 - `build_app.sh` parameterizes `GINEXUS_SIGN_ID` so the same script does ad-hoc dev and Developer-ID release.
+
+## SP2 finding — Desktop TCC blocks spawning the spine from `~/Desktop`
+When launched via LaunchServices (`open`), the app is subject to **Desktop/Documents/Downloads
+TCC**: it cannot read `~/Desktop` without an explicit grant, so spawning the spine from
+`~/Desktop/MTX-NEXUS` fails silently. Run from the terminal it inherits the shell's grant and
+works (verified: the app's UDS client got `GET /healthz 200 OK` from the real sidecar). Decision:
+**the production spine must NOT live under a TCC-protected folder.** Options, in order:
+1. **Embed a signed copy of the spine in the bundle** (`Contents/Resources/spine`) — launched
+   from inside the bundle, no TCC folder involved (pairs with the embedded-Python signing plan above).
+2. Install the spine to `~/Library/Application Support/GINEXUS/spine` (not TCC-protected) on first run.
+3. Attach to an operator/LaunchAgent-managed spine (the app already probes `/healthz` and attaches
+   to a running spine instead of spawning — `AppModel.start`).
+`~/Library/Application Support/.../brainstem.sock` (the UDS) is NOT TCC-protected, so the
+UDS-client path works regardless of how the spine was started.
