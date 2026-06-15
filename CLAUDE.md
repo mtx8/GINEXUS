@@ -15,9 +15,14 @@ IoT, and ingestion of sanitized personal-data exports.
   ai-iot-projects (telemetry), Hermes (always-on body + iPhone/Watch — later).
 
 ## Canonical design
-- **Master design:** `docs/superpowers/specs/2026-06-15-ginexus-master-design.md` — architecture,
-  confirmed decisions, full model stack, 10-sub-project decomposition, security gates, risks.
-- Each sub-project gets its own `spec → plan → implementation` cycle. Build order: **SP0 → SP1 → SP2**.
+- **Master design (v2):** `docs/superpowers/specs/2026-06-15-ginexus-master-design.md` — architecture,
+  confirmed decisions, model *policy*, decomposition, security gates, risks. v2 = re-baselined to disk
+  reality after a 4-lens adversarial review.
+- **Model roster (dated, volatile):** `docs/model-roster-2026-06-15.md` — concrete model picks + licenses.
+- Each sub-project gets its own `spec → plan → implementation` cycle.
+- **v1 (daily driver) = SP0 → SP1 → SP1.5 → SP2 → SP3-slim → SP4-slim** (chat + memory + web + terminal).
+  SP2-alone is only the integration smoke-test. v1 acceptance: *"researched X, wrote it to a file,
+  remembered it the next day."*
 
 ## Confirmed decisions (2026-06-15)
 1. Inspiration "Openclaw" = **OpenClaw (Steinberger)** patterns (harden past its defaults).
