@@ -12,6 +12,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 use thiserror::Error;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -74,7 +75,9 @@ pub struct ApprovalVerifier {
     key: Vec<u8>,
     boot_id: String,
     max_ttl_ms: i64,
-    seen: BTreeSet<String>,
+    // Interior mutability: the verifier is shared (Arc) across request tasks; the nonce set is
+    // the only mutable state. Burning a nonce on success enforces single-use.
+    seen: Mutex<BTreeSet<String>>,
 }
 
 impl ApprovalVerifier {
@@ -82,17 +85,18 @@ impl ApprovalVerifier {
         if key.len() < 32 {
             return Err(ApprovalError::BadKey);
         }
-        Ok(Self { key, boot_id: boot_id.into(), max_ttl_ms: DEFAULT_MAX_TTL_MS, seen: BTreeSet::new() })
+        Ok(Self { key, boot_id: boot_id.into(), max_ttl_ms: DEFAULT_MAX_TTL_MS, seen: Mutex::new(BTreeSet::new()) })
     }
 
     pub fn boot_id(&self) -> &str {
         &self.boot_id
     }
 
-    /// Verify and (on success) burn the nonce. Constant-time HMAC comparison.
+    /// Verify and (on success) burn the nonce. Constant-time HMAC comparison. `&self` (the
+    /// nonce set is interior-mutable) so a single verifier can be shared across tasks.
     #[allow(clippy::too_many_arguments)]
     pub fn verify(
-        &mut self, token: &str, action: &str, args: &Value, target: &str, nonce: &str,
+        &self, token: &str, action: &str, args: &Value, target: &str, nonce: &str,
         expiry_ms: i64, boot_id: &str, now_ms: i64,
     ) -> Result<(), ApprovalError> {
         if boot_id != self.boot_id {
@@ -104,7 +108,9 @@ impl ApprovalVerifier {
         if expiry_ms - now_ms > self.max_ttl_ms {
             return Err(ApprovalError::Expired);
         }
-        if self.seen.contains(nonce) {
+        // Hold the nonce lock across the whole check so verify+burn is atomic (no replay race).
+        let mut seen = self.seen.lock().unwrap();
+        if seen.contains(nonce) {
             return Err(ApprovalError::Replayed);
         }
         let payload = canonical_payload(action, args, target, nonce, expiry_ms, boot_id)?;
@@ -112,7 +118,7 @@ impl ApprovalVerifier {
         mac.update(payload.as_bytes());
         let token_bytes = hex::decode(token).map_err(|_| ApprovalError::Mismatch)?;
         mac.verify_slice(&token_bytes).map_err(|_| ApprovalError::Mismatch)?;
-        self.seen.insert(nonce.to_string());
+        seen.insert(nonce.to_string());
         Ok(())
     }
 }
@@ -174,7 +180,7 @@ mod tests {
     #[test]
     fn replay_rejected() {
         let tok = mint(&key(), "a", &json!({}), "t", "n1", EXP, BOOT).unwrap();
-        let mut v = verifier();
+        let v = verifier();
         v.verify(&tok, "a", &json!({}), "t", "n1", EXP, BOOT, NOW).unwrap();
         assert_eq!(v.verify(&tok, "a", &json!({}), "t", "n1", EXP, BOOT, NOW), Err(ApprovalError::Replayed));
     }
@@ -206,7 +212,7 @@ mod tests {
     #[test]
     fn wrong_key_rejected() {
         let tok = mint(&key(), "a", &json!({}), "t", "n1", EXP, BOOT).unwrap();
-        let mut v = ApprovalVerifier::new(vec![9u8; 32], BOOT).unwrap();
+        let v = ApprovalVerifier::new(vec![9u8; 32], BOOT).unwrap();
         assert_eq!(v.verify(&tok, "a", &json!({}), "t", "n1", EXP, BOOT, NOW), Err(ApprovalError::Mismatch));
     }
 

@@ -75,7 +75,7 @@ impl<'a> AgentLoop<'a> {
         &self,
         messages: Vec<Value>,
         grants: &[ApprovalGrant],
-        mut approvals: Option<&mut ApprovalVerifier>,
+        approvals: Option<&ApprovalVerifier>,
         now_ms: i64,
     ) -> AgentResult {
         let mut msgs = messages;
@@ -118,7 +118,7 @@ impl<'a> AgentLoop<'a> {
                     && self.hitl.requires_confirmation(&Action::new(tc.name.clone(), target.clone()))
                 {
                     let mut ok = false;
-                    if let Some(v) = approvals.as_deref_mut() {
+                    if let Some(v) = approvals {
                         for g in grants {
                             if g.action == tc.name && g.args == tc.arguments && g.target == target {
                                 ok = v
@@ -235,9 +235,9 @@ mod tests {
         let reg = notes_registry(dir);
         let model = Mock::new(vec![call_turn(tc("write_note", json!({"name": "x", "content": "d"})))]);
         let hitl = HitlPolicy::new();
-        let mut av = ApprovalVerifier::new(key(), BOOT).unwrap();
+        let av = ApprovalVerifier::new(key(), BOOT).unwrap();
         let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5 };
-        let res = loop_.run(vec![], &[], Some(&mut av), NOW).await;
+        let res = loop_.run(vec![], &[], Some(&av), NOW).await;
         assert_eq!(res.status, AgentStatus::PendingApproval);
         assert_eq!(res.pending.unwrap()["tool"], "write_note");
     }
@@ -254,9 +254,9 @@ mod tests {
         };
         let model = Mock::new(vec![call_turn(tc("write_note", args)), final_turn("saved")]);
         let hitl = HitlPolicy::new();
-        let mut av = ApprovalVerifier::new(key(), BOOT).unwrap();
+        let av = ApprovalVerifier::new(key(), BOOT).unwrap();
         let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5 };
-        let res = loop_.run(vec![], &[grant], Some(&mut av), NOW).await;
+        let res = loop_.run(vec![], &[grant], Some(&av), NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert_eq!(res.answer, "saved");
         let read = reg.get("read_note").unwrap().run(&json!({"name": "x"}));

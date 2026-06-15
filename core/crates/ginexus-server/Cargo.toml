@@ -1,0 +1,19 @@
+[package]
+name = "ginexus-server"
+description = "GINEXUS core UDS + token JSON/SSE API server (Rust)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ginexus-server"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json.workspace = true
+hex.workspace = true
+tokio.workspace = true
+ginexus-security.workspace = true
+ginexus-agent.workspace = true
+ginexus-gateway.workspace = true

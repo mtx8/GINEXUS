@@ -7,6 +7,8 @@ resolver = "2"
 members = [
     "crates/ginexus-security",
     "crates/ginexus-agent",
+    "crates/ginexus-gateway",
+    "crates/ginexus-server",
 ]
 
 [workspace.package]
@@ -23,8 +25,10 @@ thiserror = "2"
 hex = "0.4"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "sync", "time"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json"] }
 ginexus-security = { path = "crates/ginexus-security" }
+ginexus-agent = { path = "crates/ginexus-agent" }
+ginexus-gateway = { path = "crates/ginexus-gateway" }
 
 [profile.release]
 lto = true

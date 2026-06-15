@@ -1,0 +1,14 @@
+[package]
+name = "ginexus-gateway"
+description = "GINEXUS model router + HTTP client to OpenAI-compatible model servers (Rust core)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+ginexus-agent.workspace = true
