@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+*.swp
+
+# Xcode / Swift
+build/
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+.swiftpm/
+Package.resolved
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.uv/
+.python-version
+
+# Models & large artifacts (never commit weights)
+models/
+*.safetensors
+*.gguf
+*.mlx
+*.bin
+
+# Secrets & local config
+.env
+.env.*
+*.key
+*.pem
+secrets/
+
+# Logs & local data
+*.log
+data/
+.cache/
+
+# iCloud — HARD RULE: never track anything under Mobile Documents
+Library/
