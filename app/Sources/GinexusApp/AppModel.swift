@@ -1,95 +1,151 @@
-// AppModel.swift (SP2) — boots the REAL hardened spine and polls its /healthz over the UDS
-// via the native Swift UDSClient (GinexusCore). The SP1.5 heartbeat stub is gone; this is the
-// app actually talking to the MTX-NEXUS backend. EventKit + App Intent proofs remain.
+// AppModel.swift (SP2) — boots/attaches the real hardened spine, polls /healthz over the
+// native UDS client, and runs a chat turn end-to-end (app → UDS → gateway → local LLM).
 import Foundation
 import SwiftUI
 import AppKit
 import EventKit
 import GinexusCore
 
+struct ChatMsg: Identifiable, Sendable {
+    let id = UUID()
+    let role: String   // "user" | "assistant"
+    let text: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var bundleId = Bundle.main.bundleIdentifier ?? "(unbundled)"
     @Published var spineStatus = "booting…"
-    @Published var spineDetail = "—"
-    @Published var calendarStatus = "not requested"
-    @Published var intentStatus = "AskGinexus — registered in bundle"
+    @Published var connected = false
+    @Published var chat: [ChatMsg] = []
+    @Published var chatInput = ""
+    @Published var sending = false
 
     private let spine = SpineController()
     private var pollTimer: Timer?
-    private var renderedOnce = false
+    private var autoDemoSent = false
 
+    private func dbg(_ s: String) {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GINEXUS", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let url = base.appendingPathComponent("app-debug.log")
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data((s + "\n").utf8)); try? h.close() }
+        else { try? (s + "\n").data(using: .utf8)?.write(to: url) }
+    }
+
+    // MARK: lifecycle
     func start() {
-        // Always poll /healthz; spawn a spine ONLY if none is already serving (don't clobber
-        // a running sidecar's socket). This also lets the app attach to an operator-launched
-        // or LaunchAgent-managed spine — the right model once the spine lives outside ~/Desktop.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { await self?.pollHealth() }
         }
+        // ATTACH_ONLY never spawns (avoids double-spawn socket churn when a spine is already
+        // managed externally / by a LaunchAgent — the production model once the spine lives
+        // outside ~/Desktop). Otherwise: spawn only if nothing is already serving.
+        let attachOnly = ProcessInfo.processInfo.environment["GINEXUS_ATTACH_ONLY"] != nil
         Task {
             let sock = spine.socketPath
             let pre = await Task.detached { UDSClient.request(socketPath: sock, path: "/healthz") }.value
             if case .success(let r) = pre, r.status == 200 {
                 spineStatus = "attaching to running spine…"
+            } else if attachOnly {
+                spineStatus = "attach-only: waiting for an external spine…"
             } else if spine.available {
-                spine.boot()
-                spineStatus = "spawned sidecar; waiting for /healthz…"
+                spine.boot(); spineStatus = "spawned sidecar; waiting…"
             } else {
-                spineStatus = "no spine available"
-                spineDetail = "boot the spine, or grant Desktop access / embed it in the bundle"
+                spineStatus = "no spine (boot it / grant Desktop access / embed in bundle)"
             }
         }
-        scheduleRender()
     }
+
+    func stop() { pollTimer?.invalidate(); spine.shutdown() }
 
     private func pollHealth() async {
         let sock = spine.socketPath
-        // UDSClient.request is blocking → run off the main actor.
-        let result = await Task.detached { UDSClient.request(socketPath: sock, path: "/healthz") }.value
-        switch result {
-        case .success(let r) where r.status == 200:
+        let res = await Task.detached { UDSClient.request(socketPath: sock, path: "/healthz") }.value
+        guard case .success(let r) = res, r.status == 200 else { return }
+        if !connected {
+            connected = true
             spineStatus = "CONNECTED · live spine over UDS"
-            if let data = r.body.data(using: .utf8),
-               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let v = obj["version"] as? String ?? "?"
-                let s = obj["status"] as? String ?? "?"
-                spineDetail = "status=\(s) version=\(v) (HTTP 200 /healthz)"
+            renderSnapshot()
+            // Auto-demo once: prove the app gets a real model answer through the spine.
+            let tok = keychainToken()
+            dbg("connected; keychainToken len=\(tok?.count ?? -1)")
+            if !autoDemoSent, tok != nil {
+                autoDemoSent = true
+                dbg("auto-demo: sending")
+                send("Reply in one short sentence: confirm you are a local AI assistant running on this Mac.")
             } else {
-                spineDetail = r.body
-            }
-            renderSnapshot()  // capture the CONNECTED state
-        case .success(let r):
-            spineDetail = "HTTP \(r.status)"
-        case .failure:
-            spineDetail = "waiting for sidecar to serve…"  // socket exists at bind before serving
-        }
-    }
-
-    func probeCalendar() {
-        calendarStatus = "requesting…"
-        EKEventStore().requestFullAccessToEvents { [weak self] granted, error in
-            Task { @MainActor in
-                if let error { self?.calendarStatus = "error: \(error.localizedDescription)" }
-                else { self?.calendarStatus = granted
-                    ? "GRANTED (attributed to \(self?.bundleId ?? ""))"
-                    : "denied (still attributed to app — TCC works)" }
+                dbg("auto-demo SKIPPED (token nil=\(tok == nil), alreadySent=\(autoDemoSent))")
             }
         }
     }
 
-    func stop() {
-        pollTimer?.invalidate()
-        spine.shutdown()
+    // MARK: chat
+    func send(_ prompt: String) {
+        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !sending else { return }
+        sending = true
+        chat.append(ChatMsg(role: "user", text: text))
+        chatInput = ""
+        renderSnapshot()
+        let sock = spine.socketPath
+        let tok = keychainToken()
+        let msgs = chat.map { ["role": $0.role, "content": $0.text] }
+        let body = try? JSONSerialization.data(withJSONObject: ["model": "fast", "messages": msgs])
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/chat", token: tok, jsonBody: body)
+            }.value
+            sending = false
+            switch res {
+            case .success(let r):
+                let ans = Self.parseSSE(r.body)
+                dbg("chat HTTP \(r.status); bodyLen=\(r.body.count); ansLen=\(ans.count)")
+                chat.append(ChatMsg(role: "assistant", text: ans.isEmpty ? "(no content · HTTP \(r.status))" : ans))
+            case .failure(let e):
+                dbg("chat failure: \(e)")
+                chat.append(ChatMsg(role: "assistant", text: "error: \(e)"))
+            }
+            renderSnapshot()
+        }
     }
 
-    // MARK: - self-render (no Screen-Recording TCC needed)
-    private func scheduleRender() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in self?.renderSnapshot() }
+    /// Concatenate SSE `data:` payloads (preserving token spacing) and drop <think> reasoning.
+    static func parseSSE(_ body: String) -> String {
+        var out = ""
+        for rawLine in body.components(separatedBy: "\n") {
+            let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
+            if line.hasPrefix("data: ") {
+                let payload = String(line.dropFirst(6))
+                if payload == "[DONE]" || payload.isEmpty { continue }
+                out += payload
+            }
+        }
+        if let r = out.range(of: "</think>") { out = String(out[r.upperBound...]) }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Read the per-launch bearer token from the Keychain via the signed keychainstore tool.
+    func keychainToken() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let bin = ProcessInfo.processInfo.environment["GINEXUS_KEYCHAINSTORE"]
+            ?? "\(home)/Desktop/MTX-NEXUS/swift/GinexusKeychain/.build/release/keychainstore"
+        guard FileManager.default.isExecutableFile(atPath: bin) else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: bin)
+        p.arguments = ["read", "nexus.brainstem.token"]
+        let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        p.waitUntilExit()
+        let d = out.fileHandleForReading.readDataToEndOfFile()
+        let t = String(data: d, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (t?.isEmpty == false) ? t : nil
+    }
+
+    // MARK: self-render (no Screen-Recording TCC needed)
     func renderSnapshot() {
-        let view = ContentView().environmentObject(self).frame(width: 600, height: 460)
-        let renderer = ImageRenderer(content: view)
+        let renderer = ImageRenderer(content: SnapshotView(model: self))
         renderer.scale = 2
         guard let img = renderer.nsImage, let tiff = img.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),

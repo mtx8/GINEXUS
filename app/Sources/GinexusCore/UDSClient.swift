@@ -26,24 +26,34 @@ public enum UDSClient {
         token: String? = nil,
         jsonBody: Data? = nil
     ) -> Result<UDSResponse, UDSError> {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        if fd < 0 { return .failure(.socket(String(cString: strerror(errno)))) }
-        defer { close(fd) }
-
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let cap = MemoryLayout.size(ofValue: addr.sun_path)
+        let cap = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
         if socketPath.utf8.count >= cap { return .failure(.connect("socket path too long")) }
-        _ = withUnsafeMutablePointer(to: &addr.sun_path) { tuplePtr in
-            tuplePtr.withMemoryRebound(to: CChar.self, capacity: cap) { dst in
-                socketPath.withCString { src in strncpy(dst, src, cap - 1) }
+
+        // Connect with retry: a freshly-bound UDS can momentarily ECONNREFUSED between
+        // bind and the server's accept loop being ready (observed right at spine startup).
+        var fd: Int32 = -1
+        var lastErr = "connect failed"
+        for _ in 0..<8 {
+            let s = socket(AF_UNIX, SOCK_STREAM, 0)
+            if s < 0 { return .failure(.socket(String(cString: strerror(errno)))) }
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            _ = withUnsafeMutablePointer(to: &addr.sun_path) { tuplePtr in
+                tuplePtr.withMemoryRebound(to: CChar.self, capacity: cap) { dst in
+                    socketPath.withCString { src in strncpy(dst, src, cap - 1) }
+                }
             }
+            let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+            let cr = withUnsafePointer(to: &addr) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(s, $0, len) }
+            }
+            if cr == 0 { fd = s; break }
+            lastErr = String(cString: strerror(errno))
+            close(s)
+            usleep(200_000)  // 200ms backoff
         }
-        let len = socklen_t(MemoryLayout<sockaddr_un>.size)
-        let cr = withUnsafePointer(to: &addr) { p in
-            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, len) }
-        }
-        if cr != 0 { return .failure(.connect(String(cString: strerror(errno)))) }
+        if fd < 0 { return .failure(.connect(lastErr)) }
+        defer { close(fd) }
 
         var head = "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
         if let token { head += "Authorization: Bearer \(token)\r\n" }
