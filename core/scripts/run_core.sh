@@ -16,10 +16,12 @@ export GINEXUS_TOKEN="$TOKEN"
 export GINEXUS_AUDIT_KEY="$(openssl rand -hex 32)"
 export GINEXUS_APPROVAL_KEY="$(openssl rand -hex 32)"
 
-# Persist the token for the app to read back (best-effort; env is authoritative).
+# Persist the token + approval key for the app (the signed app mints approval tokens after a
+# biometric assertion, so it needs the approval key). Audit key stays env-only. Best-effort.
 if [ -x "$KCS" ]; then
-  printf '%s' "$TOKEN" | "$KCS" store ginexus.core.token 2>/dev/null \
-    || echo "[run_core] keychain store skipped; token still injected via env" >&2
+  printf '%s' "$TOKEN" | "$KCS" store ginexus.core.token 2>/dev/null || true
+  printf '%s' "$GINEXUS_APPROVAL_KEY" | "$KCS" store ginexus.core.approval 2>/dev/null \
+    || echo "[run_core] keychain store skipped; secrets still injected via env" >&2
 fi
 
 # Always (re)build incrementally so we never exec a stale binary (near-instant if unchanged).

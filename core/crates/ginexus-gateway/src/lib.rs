@@ -72,7 +72,8 @@ impl Gateway {
         &self, model: &str, messages: &[Value], tools: &[Value],
     ) -> Result<AssistantTurn, String> {
         let ep = self.resolve(model);
-        let mut body = json!({"model": ep.model, "messages": messages, "stream": false});
+        // temperature 0 → deterministic tool-args (so an approve→re-invoke reproduces the call).
+        let mut body = json!({"model": ep.model, "messages": messages, "stream": false, "temperature": 0});
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
