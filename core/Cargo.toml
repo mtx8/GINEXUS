@@ -9,6 +9,7 @@ members = [
     "crates/ginexus-agent",
     "crates/ginexus-gateway",
     "crates/ginexus-mcp",
+    "crates/ginexus-memory",
     "crates/ginexus-server",
 ]
 
@@ -31,6 +32,7 @@ ginexus-security = { path = "crates/ginexus-security" }
 ginexus-agent = { path = "crates/ginexus-agent" }
 ginexus-gateway = { path = "crates/ginexus-gateway" }
 ginexus-mcp = { path = "crates/ginexus-mcp" }
+ginexus-memory = { path = "crates/ginexus-memory" }
 
 [profile.release]
 lto = true

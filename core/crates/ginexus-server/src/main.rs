@@ -16,6 +16,7 @@ use ginexus_security::approval::ApprovalVerifier;
 use ginexus_security::audit::AuditLog;
 use ginexus_security::hitl::HitlPolicy;
 use ginexus_security::killswitch::{KillSwitch, Tier};
+use ginexus_memory::MemoryStore;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -31,6 +32,16 @@ struct AppState {
     audit: AuditLog,
     approvals: ApprovalVerifier,
     killswitch: Mutex<KillSwitch>,
+    memory: Arc<MemoryStore>,
+}
+
+/// Prepend the core-memory system preamble (if any) so the model always has persistent context.
+fn with_memory(memory: &MemoryStore, mut messages: Vec<Value>) -> Vec<Value> {
+    let pre = memory.system_preamble();
+    if !pre.is_empty() {
+        messages.insert(0, json!({"role": "system", "content": pre}));
+    }
+    messages
 }
 
 fn now_ms() -> i64 {
@@ -107,8 +118,12 @@ async fn main() {
     let _ = audit.record("server_start", json!({"engine": "rust", "boot_id": boot_id}));
 
     let approvals = ApprovalVerifier::new(approval_key, boot_id.clone()).expect("approval key");
+    let memory = Arc::new(MemoryStore::open(sd.join("memory")));
     let mut registry = ginexus_agent::tools::notes_registry(sd.join("notes"));
     registry.register(ginexus_gateway::web::web_fetch_tool()); // SP4: read-only web research
+    for t in ginexus_memory::memory_tools(memory.clone()) { // SP3: remember/recall/set/get memory
+        registry.register(t);
+    }
     registry.register(ginexus_agent::tools::terminal_tool(   // SP4: HITL-gated safe terminal
         sd.join("workspace"),
         ["ls", "cat", "echo", "date", "pwd", "head", "tail", "wc", "uname"]
@@ -139,6 +154,7 @@ async fn main() {
         audit,
         approvals,
         killswitch: Mutex::new(KillSwitch::new(Some(sd.join("run/killswitch.state")))),
+        memory,
     });
 
     // 0600 UDS, no TCP. Create/bind/chmod before listen — never world-accessible.
@@ -273,7 +289,8 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 return Ok(());
             }
             let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("fast");
-            let messages = body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+            let messages = with_memory(&state.memory,
+                body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
             match state.gateway.chat(model, &messages).await {
                 Ok(content) => {
                     let _ = state.audit.record("chat", json!({"model": model, "out_len": content.len()}));
@@ -290,7 +307,8 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 return Ok(());
             }
             let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("fast").to_string();
-            let messages = body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+            let messages = with_memory(&state.memory,
+                body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
             let grants = parse_grants(&body);
             let bound = BoundModel { gateway: &state.gateway, model };
             let agent = AgentLoop { model: &bound, registry: &state.registry, hitl: &state.hitl, max_iters: 6 };

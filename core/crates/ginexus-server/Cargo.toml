@@ -18,3 +18,4 @@ ginexus-security.workspace = true
 ginexus-agent.workspace = true
 ginexus-gateway.workspace = true
 ginexus-mcp.workspace = true
+ginexus-memory.workspace = true

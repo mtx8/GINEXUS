@@ -1,0 +1,11 @@
+[package]
+name = "ginexus-memory"
+description = "GINEXUS two-tier memory: core blocks (in-context) + archival facts (origin-tagged)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json.workspace = true
+ginexus-agent.workspace = true

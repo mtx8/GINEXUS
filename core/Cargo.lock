@@ -331,6 +331,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ginexus-memory"
+version = "0.1.0"
+dependencies = [
+ "ginexus-agent",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ginexus-security"
 version = "0.1.0"
 dependencies = [
@@ -349,6 +358,7 @@ dependencies = [
  "ginexus-agent",
  "ginexus-gateway",
  "ginexus-mcp",
+ "ginexus-memory",
  "ginexus-security",
  "hex",
  "serde",
