@@ -114,6 +114,22 @@ async fn main() {
         ["ls", "cat", "echo", "date", "pwd", "head", "tail", "wc", "uname"]
             .iter().map(|s| s.to_string()).collect(),
     ));
+    // MCP host: import an external MCP server's tools (default-deny / HITL-gated) when configured.
+    if let Ok(cmd) = std::env::var("GINEXUS_MCP_CMD") {
+        let parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+        if let Some((prog, rest)) = parts.split_first() {
+            match ginexus_mcp::McpClient::spawn(prog, rest) {
+                Ok(client) => {
+                    let client = Arc::new(Mutex::new(client));
+                    match ginexus_mcp::import_mcp_tools(client, &mut registry, "mcp.") {
+                        Ok(n) => eprintln!("imported {n} MCP tools from '{cmd}'"),
+                        Err(e) => eprintln!("MCP import failed: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("MCP spawn failed for '{cmd}': {e}"),
+            }
+        }
+    }
     let state = Arc::new(AppState {
         token,
         boot_id,

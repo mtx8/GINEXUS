@@ -1,0 +1,11 @@
+[package]
+name = "ginexus-mcp"
+description = "GINEXUS MCP host — consume external MCP servers (JSON-RPC over stdio) as agent tools"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+thiserror.workspace = true
+ginexus-agent.workspace = true

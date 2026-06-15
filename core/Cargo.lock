@@ -322,6 +322,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ginexus-mcp"
+version = "0.1.0"
+dependencies = [
+ "ginexus-agent",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "ginexus-security"
 version = "0.1.0"
 dependencies = [
@@ -339,6 +348,7 @@ version = "0.1.0"
 dependencies = [
  "ginexus-agent",
  "ginexus-gateway",
+ "ginexus-mcp",
  "ginexus-security",
  "hex",
  "serde",

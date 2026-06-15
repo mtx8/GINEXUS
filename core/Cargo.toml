@@ -8,6 +8,7 @@ members = [
     "crates/ginexus-security",
     "crates/ginexus-agent",
     "crates/ginexus-gateway",
+    "crates/ginexus-mcp",
     "crates/ginexus-server",
 ]
 
@@ -29,6 +30,7 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 ginexus-security = { path = "crates/ginexus-security" }
 ginexus-agent = { path = "crates/ginexus-agent" }
 ginexus-gateway = { path = "crates/ginexus-gateway" }
+ginexus-mcp = { path = "crates/ginexus-mcp" }
 
 [profile.release]
 lto = true
