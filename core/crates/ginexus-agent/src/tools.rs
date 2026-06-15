@@ -141,3 +141,83 @@ pub fn notes_registry(notes_dir: PathBuf) -> ToolRegistry {
     ));
     reg
 }
+
+/// Safe terminal tool (SP4): runs an ALLOW-LISTED bare program with TYPED args in a confined
+/// workdir, via std::process::Command — NO shell, so no injection/globbing/piping. Irreversible
+/// → every invocation is HITL-gated (the approved {program,args} is exactly what executes).
+pub fn terminal_tool(workdir: PathBuf, allowlist: Vec<String>) -> Tool {
+    use std::collections::HashSet;
+    let allow: HashSet<String> = allowlist.into_iter().collect();
+    let wd = Arc::new(workdir);
+    Tool::new(
+        "run_command",
+        "Run an allow-listed program with typed args in a confined workspace (NO shell; every \
+         invocation requires approval). Provide {program: bare name, args: [string]}.",
+        json!({"type": "object",
+               "properties": {"program": {"type": "string"},
+                              "args": {"type": "array", "items": {"type": "string"}}},
+               "required": ["program"]}),
+        true, // irreversible → HITL on every run (terminal autonomy max = approve-every-invocation)
+        Arc::new(move |a: Value| {
+            let program = a.get("program").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if program.is_empty() || program.contains('/') {
+                return ToolResult::err("program must be a bare allow-listed name (no path)");
+            }
+            if !allow.contains(&program) {
+                return ToolResult::err(format!("'{program}' is not on the terminal allow-list"));
+            }
+            let args: Vec<String> = a
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let _ = std::fs::create_dir_all(&*wd);
+            match std::process::Command::new(&program).args(&args).current_dir(&*wd).output() {
+                Ok(o) => {
+                    let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
+                    if !o.stderr.is_empty() {
+                        s.push_str(&format!("\n[stderr] {}", String::from_utf8_lossy(&o.stderr)));
+                    }
+                    if s.len() > 4000 {
+                        s.truncate(4000);
+                        s.push_str("…[truncated]");
+                    }
+                    ToolResult::ok(format!("[exit {}] {}", o.status.code().unwrap_or(-1), s.trim()))
+                }
+                Err(e) => ToolResult::err(format!("exec failed: {e}")),
+            }
+        }),
+    )
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    fn tool() -> Tool {
+        terminal_tool(std::env::temp_dir(), vec!["echo".into(), "date".into()])
+    }
+
+    #[test]
+    fn rejects_non_allowlisted() {
+        assert!(!tool().run(json!({"program": "rm", "args": ["-rf", "/"]})).ok);
+    }
+
+    #[test]
+    fn rejects_path_program() {
+        assert!(!tool().run(json!({"program": "/bin/sh", "args": ["-c", "echo hi"]})).ok);
+    }
+
+    #[test]
+    fn is_irreversible() {
+        assert!(tool().irreversible); // must be HITL-gated
+    }
+
+    #[test]
+    fn runs_allowlisted_no_shell() {
+        // echo with literal args — no shell, so "$(whoami)" is a literal, not executed.
+        let res = tool().run(json!({"program": "echo", "args": ["hello", "$(whoami)"]}));
+        assert!(res.ok);
+        assert!(res.output.contains("hello $(whoami)"), "got: {}", res.output);
+    }
+}

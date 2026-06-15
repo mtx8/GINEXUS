@@ -109,6 +109,11 @@ async fn main() {
     let approvals = ApprovalVerifier::new(approval_key, boot_id.clone()).expect("approval key");
     let mut registry = ginexus_agent::tools::notes_registry(sd.join("notes"));
     registry.register(ginexus_gateway::web::web_fetch_tool()); // SP4: read-only web research
+    registry.register(ginexus_agent::tools::terminal_tool(   // SP4: HITL-gated safe terminal
+        sd.join("workspace"),
+        ["ls", "cat", "echo", "date", "pwd", "head", "tail", "wc", "uname"]
+            .iter().map(|s| s.to_string()).collect(),
+    ));
     let state = Arc::new(AppState {
         token,
         boot_id,
