@@ -134,7 +134,7 @@ final class AppModel: ObservableObject {
         guard FileManager.default.isExecutableFile(atPath: bin) else { return nil }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
-        p.arguments = ["read", "nexus.brainstem.token"]
+        p.arguments = ["read", "ginexus.core.token"]
         let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
         do { try p.run() } catch { return nil }
         p.waitUntilExit()
