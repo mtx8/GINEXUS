@@ -1,0 +1,20 @@
+{
+  "name": "speech",
+  "description": "Speak text aloud through the Mac's built-in voice.",
+  "version": "0.1.0",
+  "tools": [
+    {
+      "name": "say",
+      "description": "Speak the given text aloud on this Mac using the system voice.",
+      "type": "command",
+      "autonomy": "auto",
+      "timeout_secs": 30,
+      "params": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "what to speak" } },
+        "required": ["text"]
+      },
+      "run": ["/usr/bin/say", "{text}"]
+    }
+  ]
+}

@@ -162,6 +162,47 @@ async fn main() {
             }
         }
     }
+    // SP-Skills: hot-loadable modular skills (the core runs with zero skills installed). Loads
+    // command tools + MCP-server skills from the skills dir; drop a folder in, restart, gain tools.
+    let skills_dir = std::env::var("GINEXUS_SKILLS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| sd.join("skills"));
+    let _ = std::fs::create_dir_all(&skills_dir);
+    let skills_work = sd.join("skills-workspace");
+    let _ = std::fs::create_dir_all(&skills_work);
+    // Executables allowed to run UNATTENDED: the core-vouched defaults + operator additions (never
+    // a skill manifest). Everything else is HITL regardless of what the manifest declares.
+    let mut auto_allow = ginexus_skills::default_auto_allow();
+    if let Ok(extra) = std::env::var("GINEXUS_SKILLS_AUTO_ALLOW") {
+        auto_allow.extend(extra.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+    }
+    let loaded = ginexus_skills::load_skills(&skills_dir, &skills_work, &auto_allow);
+    for t in loaded.command_tools {
+        // Don't let a skill shadow a trusted built-in tool name.
+        if registry.get(&t.name).is_some() {
+            eprintln!("skill tool '{}' shadows a built-in — skipped", t.name);
+        } else {
+            registry.register(t);
+        }
+    }
+    for sk in &loaded.mcp_skills {
+        if let Some((prog, rest)) = sk.run.split_first() {
+            match ginexus_mcp::McpClient::spawn(prog, rest) {
+                Ok(client) => {
+                    let client = Arc::new(Mutex::new(client));
+                    match ginexus_mcp::import_mcp_tools(client, &mut registry, &format!("{}.", sk.name)) {
+                        Ok(n) => eprintln!("skill '{}': imported {n} MCP tools", sk.name),
+                        Err(e) => eprintln!("skill '{}' MCP import failed: {e}", sk.name),
+                    }
+                }
+                Err(e) => eprintln!("skill '{}' MCP spawn failed: {e}", sk.name),
+            }
+        }
+    }
+    if !loaded.summary.is_empty() {
+        eprintln!("loaded skills [{}]: {}", skills_dir.display(), loaded.summary.join(", "));
+    }
+
     // SP5: OS-bridge tools (Calendar/Shortcuts/system) — registered ONLY when the signed app
     // injects its tool-host socket + token. Execution runs in the app (TCC attribution); the core
     // advertises schemas and forwards calls. A headless core (no app) omits them.

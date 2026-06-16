@@ -1,0 +1,16 @@
+{
+  "name": "clipboard",
+  "description": "Read the macOS clipboard.",
+  "version": "0.1.0",
+  "tools": [
+    {
+      "name": "clipboard_read",
+      "description": "Return the current text contents of the macOS clipboard.",
+      "type": "command",
+      "autonomy": "auto",
+      "timeout_secs": 10,
+      "params": { "type": "object", "properties": {} },
+      "run": ["/usr/bin/pbpaste"]
+    }
+  ]
+}
