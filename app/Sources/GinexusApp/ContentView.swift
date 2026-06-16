@@ -60,6 +60,45 @@ struct ContentView: View {
         }
         .frame(minWidth: 560, minHeight: 460)
         .preferredColorScheme(.dark)
+        .sheet(item: $model.pending) { p in approvalSheet(p) }
+    }
+
+    /// HITL: GINEXUS pauses an irreversible/OS action here until you approve with Touch ID.
+    private func approvalSheet(_ p: PendingAction) -> some View {
+        ZStack {
+            Brand.ink900.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 16) {
+                Text("APPROVAL REQUIRED")
+                    .font(.system(size: 13, weight: .bold, design: .monospaced)).kerning(2)
+                    .foregroundStyle(Brand.ember500)
+                Text("GINEXUS wants to run an action that changes something. Approve with Touch ID to proceed.")
+                    .font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(p.preview)
+                    .font(.system(size: 13, design: .monospaced)).foregroundStyle(Brand.bone50)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                    .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 8))
+                HStack(spacing: 10) {
+                    Spacer()
+                    Button(action: { model.deny() }) {
+                        Text("DENY").font(.system(size: 12, weight: .bold, design: .monospaced)).kerning(1.5)
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .foregroundStyle(Brand.muted).background(Brand.ink800)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }.buttonStyle(.plain)
+                    Button(action: { model.approve() }) {
+                        Text("APPROVE · TOUCH ID").font(.system(size: 12, weight: .bold, design: .monospaced)).kerning(1.5)
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .foregroundStyle(Brand.ink900).background(Brand.ember500)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }.buttonStyle(.plain)
+                }
+            }
+            .padding(24)
+        }
+        .frame(width: 480)
+        .preferredColorScheme(.dark)
     }
 
     private var header: some View {

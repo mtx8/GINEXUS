@@ -4,6 +4,7 @@ import Foundation
 import SwiftUI
 import AppKit
 import EventKit
+import LocalAuthentication
 import GinexusCore
 
 struct ChatMsg: Identifiable, Sendable {
@@ -18,6 +19,16 @@ struct ModelOption: Identifiable, Sendable, Hashable {
     let label: String
 }
 
+/// An irreversible/OS action the agent paused on, awaiting biometric approval before it runs.
+struct PendingAction: Identifiable {
+    let id = UUID()
+    let tool: String
+    let args: [String: Any]
+    let target: String
+    let preview: String
+    let messages: [[String: String]]   // the conversation to re-run once approved
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var bundleId = Bundle.main.bundleIdentifier ?? "(unbundled)"
@@ -29,6 +40,10 @@ final class AppModel: ObservableObject {
     /// Model picker: "auto" + the roster from GET /v1/models. Default "auto" → the 30B for chat/agent.
     @Published var models: [ModelOption] = [ModelOption(id: "auto", label: "Auto (smart by default)")]
     @Published var selectedModel = "auto"
+    /// HITL: when set, an irreversible/OS action is waiting on the biometric approval sheet.
+    @Published var pending: PendingAction?
+    /// The core's current boot id (binds approval tokens to this server launch). Fetched on connect.
+    private var bootId = ""
 
     private let spine = SpineController()
     private var pollTimer: Timer?
@@ -77,6 +92,7 @@ final class AppModel: ObservableObject {
             connected = true
             spineStatus = "CONNECTED · live spine over UDS"
             await fetchModels()
+            await fetchBootId()
             renderSnapshot()
             // Auto-demo once: prove the app gets a real model answer through the spine.
             let tok = currentToken()
@@ -150,6 +166,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The core's boot id (needed to mint approval tokens bound to this server launch).
+    func fetchBootId() async {
+        let sock = spine.socketPath, tok = currentToken()
+        let res = await Task.detached {
+            UDSClient.request(socketPath: sock, method: "GET", path: "/v1/admin/killswitch", token: tok, jsonBody: nil)
+        }.value
+        if case .success(let r) = res, let d = r.body.data(using: .utf8),
+           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+           let bid = o["boot_id"] as? String {
+            bootId = bid
+            dbg("bootId=\(bid)")
+        }
+    }
+
     // MARK: chat
     func send(_ prompt: String) {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -158,43 +188,106 @@ final class AppModel: ObservableObject {
         chat.append(ChatMsg(role: "user", text: text))
         chatInput = ""
         renderSnapshot()
-        let sock = spine.socketPath
-        let tok = currentToken()
         let msgs = chat.map { ["role": $0.role, "content": $0.text] }
         let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs])
-        Task {
-            // Route through the agent loop so tools work (system_status, calendar, recall, web_fetch…).
-            let res = await Task.detached {
-                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/agent", token: tok, jsonBody: body)
-            }.value
-            sending = false
-            switch res {
-            case .success(let r):
-                let reply = Self.parseAgent(r.body, status: r.status)
-                dbg("agent HTTP \(r.status); reply=\(reply.prefix(100))")
-                chat.append(ChatMsg(role: "assistant", text: reply))
-            case .failure(let e):
-                dbg("agent failure: \(e)")
-                chat.append(ChatMsg(role: "assistant", text: "error: \(e)"))
+        Task { await postAgent(body: body, contextMessages: msgs) }
+    }
+
+    /// One /v1/agent round-trip. Read-only tools → final answer; an irreversible tool with no
+    /// matching grant → pending_approval, which raises the biometric sheet. After approval the
+    /// SAME messages re-run carrying the grant (temperature 0 reproduces the identical tool call).
+    /// `body` is pre-serialized (Sendable) so no `[String: Any]` crosses the Task boundary.
+    private func postAgent(body: Data?, contextMessages: [[String: String]]) async {
+        let sock = spine.socketPath, tok = currentToken()
+        let res = await Task.detached {
+            UDSClient.request(socketPath: sock, method: "POST", path: "/v1/agent", token: tok, jsonBody: body)
+        }.value
+        sending = false
+        switch res {
+        case .success(let r):
+            guard let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
+                chat.append(ChatMsg(role: "assistant", text: "(no content · HTTP \(r.status))"))
+                renderSnapshot(); return
             }
-            renderSnapshot()
+            let st = (o["status"] as? String) ?? "?"
+            if st == "pending_approval", let p = o["pending"] as? [String: Any] {
+                let tool = (p["tool"] as? String) ?? "?"
+                let args = (p["arguments"] as? [String: Any]) ?? [:]
+                pending = PendingAction(
+                    tool: tool, args: args,
+                    target: (p["target"] as? String) ?? Approval.target(forTool: tool, args: args),
+                    preview: (p["preview"] as? String) ?? tool,
+                    messages: contextMessages)
+                dbg("pending approval: \(pending?.preview ?? "")")
+            } else {
+                let answer = (o["answer"] as? String) ?? ""
+                dbg("agent HTTP \(r.status); status=\(st)")
+                chat.append(ChatMsg(role: "assistant", text: answer.isEmpty ? "(\(st))" : answer))
+            }
+        case .failure(let e):
+            dbg("agent failure: \(e)")
+            chat.append(ChatMsg(role: "assistant", text: "error: \(e)"))
+        }
+        renderSnapshot()
+    }
+
+    // MARK: HITL — biometric approval
+    /// Approve the pending action: Touch ID / password → mint the single-use HMAC token (byte-parity
+    /// with the core) → re-run carrying the grant. Read-only actions never reach here.
+    func approve() {
+        guard let p = pending else { return }
+        let ctx = LAContext()
+        ctx.localizedFallbackTitle = "Use password"
+        var authError: NSError?
+        let reason = "Approve: \(p.preview)"
+        if ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) {
+            ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { [weak self] ok, _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if ok { self.mintAndRun() }
+                    else {
+                        self.chat.append(ChatMsg(role: "assistant", text: "Approval cancelled."))
+                        self.pending = nil; self.renderSnapshot()
+                    }
+                }
+            }
+        } else {
+            // No biometrics/password policy available on this Mac — fail safe: do NOT auto-approve.
+            chat.append(ChatMsg(role: "assistant", text: "Cannot authenticate on this Mac — action not run."))
+            pending = nil; renderSnapshot()
         }
     }
 
-    /// Parse a /v1/agent JSON reply. Read-only tools resolve to a final answer; irreversible tools
-    /// return pending_approval (biometric approval sheet is the SP2 tail).
-    static func parseAgent(_ body: String, status: Int) -> String {
-        guard let d = body.data(using: .utf8),
-              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
-            return "(no content · HTTP \(status))"
+    private func mintAndRun() {
+        guard let p = pending, let key = spine.approvalKey, !bootId.isEmpty else {
+            chat.append(ChatMsg(role: "assistant", text: "Cannot mint approval (missing key or boot id)."))
+            pending = nil; renderSnapshot(); return
         }
-        let st = (o["status"] as? String) ?? "?"
-        let answer = (o["answer"] as? String) ?? ""
-        if st == "pending_approval" {
-            let action = (o["pending"] as? [String: Any])?["action"] as? String ?? "that action"
-            return "GINEXUS needs your approval to \(action). Biometric approval is coming (SP2 tail); read-only actions work now."
+        let nonce = Approval.freshNonce()
+        let expiry = Int64(Date().timeIntervalSince1970 * 1000) + Approval.defaultTTLms
+        guard let token = Approval.mint(approvalKeyHex: key, action: p.tool, args: p.args,
+                                        target: p.target, nonce: nonce, expiryMs: expiry, bootId: bootId) else {
+            chat.append(ChatMsg(role: "assistant", text: "Approval mint failed."))
+            pending = nil; renderSnapshot(); return
         }
-        return answer.isEmpty ? "(\(st))" : answer
+        let grant: [String: Any] = [
+            "action": p.tool, "args": p.args, "target": p.target,
+            "token": token, "nonce": nonce, "expiry_ms": expiry, "boot_id": bootId,
+        ]
+        let msgs = p.messages
+        // Serialize here (in @MainActor scope) so only Sendable Data crosses the Task boundary.
+        let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "grants": [grant]])
+        pending = nil
+        sending = true
+        renderSnapshot()
+        Task { await postAgent(body: body, contextMessages: msgs) }
+    }
+
+    func deny() {
+        if let p = pending { chat.append(ChatMsg(role: "assistant", text: "Denied: \(p.tool).")) }
+        pending = nil
+        renderSnapshot()
     }
 
     /// Concatenate SSE `data:` payloads (preserving token spacing) and drop <think> reasoning.
