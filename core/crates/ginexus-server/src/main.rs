@@ -4,6 +4,7 @@
 //!   GET  /v1/models                    → {default, models:[{id,model,label}]} (selector roster)
 //!   POST /v1/chat        {model?, difficulty?, latency_sensitive?, messages}  → SSE
 //!   POST /v1/agent       {model?, difficulty?, messages, grants?}             → JSON (HITL loop)
+//!   POST /v1/ingest      {data|path, include_assistant?}  → import export → quarantined memory
 //!   GET  /v1/admin/killswitch          → {engaged, tier, boot_id}
 //!   POST /v1/admin/killswitch/engage   {tier, reason}
 //!   POST /v1/admin/killswitch/reset    {token, nonce, expiry_ms, boot_id, reason}  (approval-gated)
@@ -125,6 +126,7 @@ async fn main() {
     for t in ginexus_memory::memory_tools(memory.clone()) { // SP3: remember/recall/set/get memory
         registry.register(t);
     }
+    registry.register(ginexus_memory::ingest::ingest_tool(memory.clone())); // SP3: import exports (HITL)
     registry.register(ginexus_agent::tools::terminal_tool(   // SP4: HITL-gated safe terminal
         sd.join("workspace"),
         ["ls", "cat", "echo", "date", "pwd", "head", "tail", "wc", "uname"]
@@ -355,6 +357,37 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             let _ = state.audit.record("agent", json!({"status": status}));
             json_ok(&mut stream, json!({"status": status, "answer": res.answer, "pending": res.pending,
                                         "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()})).await;
+        }
+        ("POST", "/v1/ingest") => {
+            // Import a sanitized personal-data export into quarantined memory. The signed app
+            // reads the file under its own TCC and posts the bytes as `data`; `path` is for
+            // non-TCC/CLI use. Always loaded Origin::Untrusted (data, never instructions).
+            let include = body.get("include_assistant").and_then(|b| b.as_bool()).unwrap_or(false);
+            let json = if let Some(d) = body.get("data").and_then(|d| d.as_str()) {
+                d.to_string()
+            } else if let Some(p) = body.get("path").and_then(|p| p.as_str()) {
+                match std::fs::read_to_string(p) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        err(&mut stream, 400, "Bad Request", &format!("read {p}: {e}")).await;
+                        return Ok(());
+                    }
+                }
+            } else {
+                err(&mut stream, 400, "Bad Request", "provide 'data' (export JSON) or 'path'").await;
+                return Ok(());
+            };
+            match ginexus_memory::ingest::ingest_str(&state.memory, &json, include) {
+                Ok(rep) => {
+                    let _ = state.audit.record(
+                        "ingest",
+                        json!({"source": rep.source, "facts": rep.facts_loaded, "skipped": rep.skipped}),
+                    );
+                    json_ok(&mut stream, json!({"source": rep.source, "conversations": rep.conversations,
+                                                "facts_loaded": rep.facts_loaded, "skipped": rep.skipped})).await;
+                }
+                Err(e) => err(&mut stream, 400, "Bad Request", &e).await,
+            }
         }
         ("GET", "/v1/admin/killswitch") => {
             let (engaged, tier) = {

@@ -112,6 +112,44 @@ final class AppModel: ObservableObject {
         dbg("models: \(opts.map { $0.id })")
     }
 
+    /// Import a sanitized personal-data export (ChatGPT/Claude/generic JSON). The app reads the
+    /// user-picked file (NSOpenPanel grants access — no extra TCC prompt) and POSTs the bytes to
+    /// the core's /v1/ingest, which loads them as quarantined (untrusted) memory.
+    func importExport() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a SANITIZED chat export (e.g. ChatGPT/Claude conversations.json)"
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+        let sock = spine.socketPath
+        let tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: [
+            "data": String(data: data, encoding: .utf8) ?? "",
+            "include_assistant": false,
+        ])
+        chat.append(ChatMsg(role: "user", text: "Import \(url.lastPathComponent) into memory"))
+        renderSnapshot()
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/ingest", token: tok, jsonBody: body)
+            }.value
+            switch res {
+            case .success(let r):
+                var msg = "Imported (HTTP \(r.status))."
+                if let d = r.body.data(using: .utf8),
+                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                   let n = o["facts_loaded"] as? Int {
+                    let src = (o["source"] as? String) ?? "export"
+                    msg = "Imported \(n) facts from your \(src) export — stored as quarantined memory. Ask me to recall anything from it."
+                }
+                chat.append(ChatMsg(role: "assistant", text: msg))
+            case .failure(let e):
+                chat.append(ChatMsg(role: "assistant", text: "import failed: \(e)"))
+            }
+            renderSnapshot()
+        }
+    }
+
     // MARK: chat
     func send(_ prompt: String) {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)

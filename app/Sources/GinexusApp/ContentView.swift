@@ -81,6 +81,13 @@ struct ContentView: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(model.connected ? Brand.ok : Brand.muted)
             Spacer()
+            Button(action: { model.importExport() }) {
+                Text("⤓ IMPORT").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
+                    .foregroundStyle(Brand.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Import a sanitized ChatGPT/Claude export into memory")
+            .disabled(!model.connected)
             modelPicker
         }
     }

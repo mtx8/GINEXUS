@@ -9,6 +9,8 @@
 //! Files live under a memory dir (git-diffable). A real vector store (sqlite-vec/LanceDB) is a
 //! later upgrade behind the same API; keyword scoring is the slim v1.
 
+pub mod ingest;
+
 use ginexus_agent::{Tool, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
