@@ -16,7 +16,7 @@
 use ginexus_agent::{Tool, ToolResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -316,6 +316,7 @@ fn run_command(prog: &str, args: &[String], timeout: Duration, workdir: &Path) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 

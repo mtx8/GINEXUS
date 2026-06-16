@@ -5,6 +5,9 @@
 //!   POST /v1/chat        {model?, difficulty?, latency_sensitive?, messages}  → SSE
 //!   POST /v1/agent       {model?, difficulty?, messages, grants?}             → JSON (HITL loop)
 //!   POST /v1/ingest      {data|path, include_assistant?}  → import export → quarantined memory
+//!   POST /v1/schedule    {prompt, every_secs?}  → create an unattended scheduled task (heartbeat)
+//!   GET  /v1/schedule    → list schedules + last results
+//!   POST /v1/schedule/remove {id}  → remove a schedule
 //!   GET  /v1/admin/killswitch          → {engaged, tier, boot_id}
 //!   POST /v1/admin/killswitch/engage   {tier, reason}
 //!   POST /v1/admin/killswitch/reset    {token, nonce, expiry_ms, boot_id, reason}  (approval-gated)
@@ -23,6 +26,8 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
+mod scheduler;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct AppState {
@@ -35,6 +40,7 @@ struct AppState {
     approvals: ApprovalVerifier,
     killswitch: Mutex<KillSwitch>,
     memory: Arc<MemoryStore>,
+    schedules: scheduler::ScheduleStore,
 }
 
 /// Prepend the core-memory system preamble (if any) so the model always has persistent context.
@@ -253,7 +259,14 @@ async fn main() {
         approvals,
         killswitch: Mutex::new(KillSwitch::new(Some(sd.join("run/killswitch.state")))),
         memory,
+        schedules: scheduler::ScheduleStore::open(sd.join("run/schedules.json")),
     });
+
+    // Heartbeat: run due scheduled tasks unattended (read-only tools, kill-switch-respecting).
+    {
+        let st = state.clone();
+        tokio::spawn(async move { heartbeat(st).await });
+    }
 
     // 0600 UDS, no TCP. Create/bind/chmod before listen — never world-accessible.
     if uds.exists() {
@@ -379,6 +392,34 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/healthz") => {
             json_ok(&mut stream, json!({"status": "ready", "engine": "rust", "version": VERSION})).await;
+        }
+        ("POST", "/v1/schedule") => {
+            // Create an unattended scheduled task. First run fires on the next heartbeat tick.
+            let prompt = body.get("prompt").and_then(|p| p.as_str()).unwrap_or("").to_string();
+            let every = body.get("every_secs").and_then(|e| e.as_i64()).unwrap_or(3600);
+            match state.schedules.add(prompt, every, now_ms(), rand_hex(6)) {
+                Ok(s) => {
+                    let _ = state.audit.record("schedule_add", json!({"id": s.id, "every_secs": s.every_secs}));
+                    json_ok(&mut stream, json!({"id": s.id, "prompt": s.prompt,
+                                                "every_secs": s.every_secs, "next_run_ms": s.next_run_ms})).await;
+                }
+                Err(e) => err(&mut stream, 400, "Bad Request", &e).await,
+            }
+        }
+        ("GET", "/v1/schedule") => {
+            let items: Vec<Value> = state
+                .schedules
+                .list()
+                .into_iter()
+                .map(|s| json!({"id": s.id, "prompt": s.prompt, "every_secs": s.every_secs,
+                                "runs": s.runs, "last_run_ms": s.last_run_ms, "next_run_ms": s.next_run_ms,
+                                "last_result": s.last_result}))
+                .collect();
+            json_ok(&mut stream, json!({"schedules": items})).await;
+        }
+        ("POST", "/v1/schedule/remove") => {
+            let id = body.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            json_ok(&mut stream, json!({"removed": state.schedules.remove(id)})).await;
         }
         ("GET", "/v1/models") => {
             // Roster for the app's model picker. "auto" is the implicit policy-routed default.
@@ -509,6 +550,34 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
         _ => err(&mut stream, 404, "Not Found", "no such route").await,
     }
     Ok(())
+}
+
+/// Background heartbeat: every tick, run any due scheduled tasks unattended. Scheduled tasks get
+/// the READ-ONLY toolset (no irreversible/HITL actions without a human) + can delegate to workers,
+/// respect the kill switch, and persist their last result.
+async fn heartbeat(state: Arc<AppState>) {
+    let tick = std::time::Duration::from_secs(10);
+    loop {
+        tokio::time::sleep(tick).await;
+        let blocked = state.killswitch.lock().unwrap().guard().is_err();
+        if blocked {
+            continue;
+        }
+        for (id, prompt) in state.schedules.take_due(now_ms()) {
+            let readonly = state.registry.readonly();
+            let model = state.gateway.select(None, "reason", "normal", false);
+            let bound = BoundModel { gateway: &state.gateway, model };
+            let agent =
+                AgentLoop { model: &bound, registry: &readonly, hitl: &state.hitl, max_iters: 6, depth: 0 };
+            let msgs = with_memory(&state.memory, vec![json!({"role": "user", "content": prompt})]);
+            let res = agent.run(msgs, &[], None, now_ms()).await;
+            let _ = state.audit.record(
+                "schedule_run",
+                json!({"id": id, "status": format!("{:?}", res.status), "out_len": res.answer.len()}),
+            );
+            state.schedules.record_result(&id, now_ms(), &res.answer);
+        }
+    }
 }
 
 fn parse_grants(body: &Value) -> Vec<ApprovalGrant> {
