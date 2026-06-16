@@ -14,9 +14,14 @@ final class SpineController {
     private(set) var token: String?
     private(set) var approvalKey: String?
 
+    /// SP5: the app-hosted OS-tool server (Calendar/Shortcuts/system) the core calls back into.
+    private let appHostSocketPath: String
+    private var appHost: AppToolHost?
+
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         socketPath = "\(home)/Library/Application Support/GINEXUS/run/ginexus.sock"
+        appHostSocketPath = "\(home)/Library/Application Support/GINEXUS/run/ginexus-app.sock"
     }
 
     /// The embedded Rust core binary inside the app bundle.
@@ -49,6 +54,13 @@ final class SpineController {
         token = tok
         approvalKey = approval
 
+        // SP5: start the app-hosted OS-tool server (TCC-attributed to this signed app) BEFORE the
+        // core spawns, and hand the core its socket + a per-launch token so OS tools are registered.
+        let appHostToken = randomHex(32)
+        let host = AppToolHost(socketPath: appHostSocketPath, token: appHostToken)
+        host.start()
+        appHost = host
+
         let p = Process()
         p.executableURL = embeddedBinary
         p.arguments = ["--uds", socketPath]
@@ -56,6 +68,8 @@ final class SpineController {
         env["GINEXUS_TOKEN"] = tok
         env["GINEXUS_AUDIT_KEY"] = randomHex(32)
         env["GINEXUS_APPROVAL_KEY"] = approval
+        env["GINEXUS_APP_HOST_SOCK"] = appHostSocketPath
+        env["GINEXUS_APP_HOST_TOKEN"] = appHostToken
         p.environment = env
         if let logHandle {
             p.standardOutput = logHandle
@@ -67,5 +81,5 @@ final class SpineController {
         process = p
     }
 
-    func shutdown() { process?.terminate() }
+    func shutdown() { process?.terminate(); appHost?.stop() }
 }

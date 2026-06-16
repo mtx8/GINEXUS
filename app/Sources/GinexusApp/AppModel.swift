@@ -84,7 +84,7 @@ final class AppModel: ObservableObject {
             if !autoDemoSent, tok != nil {
                 autoDemoSent = true
                 dbg("auto-demo: sending")
-                send("What is 89 times 7? And in what year did Apollo 11 land on the Moon? One short line.")
+                send("Use the system_status tool to report this Mac's macOS version and uptime in one short line.")
             } else {
                 dbg("auto-demo SKIPPED (token nil=\(tok == nil), alreadySent=\(autoDemoSent))")
             }
@@ -163,21 +163,38 @@ final class AppModel: ObservableObject {
         let msgs = chat.map { ["role": $0.role, "content": $0.text] }
         let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs])
         Task {
+            // Route through the agent loop so tools work (system_status, calendar, recall, web_fetch…).
             let res = await Task.detached {
-                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/chat", token: tok, jsonBody: body)
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/agent", token: tok, jsonBody: body)
             }.value
             sending = false
             switch res {
             case .success(let r):
-                let ans = Self.parseSSE(r.body)
-                dbg("chat HTTP \(r.status); bodyLen=\(r.body.count); ansLen=\(ans.count)")
-                chat.append(ChatMsg(role: "assistant", text: ans.isEmpty ? "(no content · HTTP \(r.status))" : ans))
+                let reply = Self.parseAgent(r.body, status: r.status)
+                dbg("agent HTTP \(r.status); reply=\(reply.prefix(100))")
+                chat.append(ChatMsg(role: "assistant", text: reply))
             case .failure(let e):
-                dbg("chat failure: \(e)")
+                dbg("agent failure: \(e)")
                 chat.append(ChatMsg(role: "assistant", text: "error: \(e)"))
             }
             renderSnapshot()
         }
+    }
+
+    /// Parse a /v1/agent JSON reply. Read-only tools resolve to a final answer; irreversible tools
+    /// return pending_approval (biometric approval sheet is the SP2 tail).
+    static func parseAgent(_ body: String, status: Int) -> String {
+        guard let d = body.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
+            return "(no content · HTTP \(status))"
+        }
+        let st = (o["status"] as? String) ?? "?"
+        let answer = (o["answer"] as? String) ?? ""
+        if st == "pending_approval" {
+            let action = (o["pending"] as? [String: Any])?["action"] as? String ?? "that action"
+            return "GINEXUS needs your approval to \(action). Biometric approval is coming (SP2 tail); read-only actions work now."
+        }
+        return answer.isEmpty ? "(\(st))" : answer
     }
 
     /// Concatenate SSE `data:` payloads (preserving token spacing) and drop <think> reasoning.

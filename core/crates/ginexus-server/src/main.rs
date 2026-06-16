@@ -148,6 +148,20 @@ async fn main() {
             }
         }
     }
+    // SP5: OS-bridge tools (Calendar/Shortcuts/system) — registered ONLY when the signed app
+    // injects its tool-host socket + token. Execution runs in the app (TCC attribution); the core
+    // advertises schemas and forwards calls. A headless core (no app) omits them.
+    if let (Ok(sock), Ok(tok)) =
+        (std::env::var("GINEXUS_APP_HOST_SOCK"), std::env::var("GINEXUS_APP_HOST_TOKEN"))
+    {
+        if !sock.is_empty() && !tok.is_empty() {
+            for t in ginexus_agent::app_tools::app_tools(sock, tok) {
+                registry.register(t);
+            }
+            eprintln!("registered OS-bridge tools (app host)");
+        }
+    }
+
     // Model roster: data-driven from GINEXUS_MODELS_CONFIG (JSON), else the built-in local stack
     // (fast=Qwen3-1.7B, smart=Qwen3-30B-A3B). Selection (auto/manual) happens per request.
     let gateway = match std::env::var("GINEXUS_MODELS_CONFIG") {
