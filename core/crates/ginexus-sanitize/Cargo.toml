@@ -1,0 +1,12 @@
+[package]
+name = "ginexus-sanitize"
+description = "In-core PII/secret sanitizer (Rust port of the ai-export-sanitizer reference) — scrubs personal-data exports before they enter memory"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+# fancy-regex: lookbehind/lookahead support (the standard `regex` crate is RE2 and has none),
+# needed to faithfully port the reference patterns. Linear-ish on these patterns.
+fancy-regex = "0.14"
