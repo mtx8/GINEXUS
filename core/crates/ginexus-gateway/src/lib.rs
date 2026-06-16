@@ -78,6 +78,15 @@ impl Gateway {
                 label: "Smart · Qwen3 30B-A3B".into(),
             },
         );
+        m.insert(
+            "embed".to_string(),
+            Endpoint {
+                model: "nomic-embed-text".into(),
+                api_base: OLLAMA_BASE.into(),
+                api_key: "ollama".into(),
+                label: "Embed · nomic-embed-text".into(),
+            },
+        );
         Self::new(m)
     }
 
@@ -198,6 +207,26 @@ impl Gateway {
         }
         Ok(AssistantTurn { content, tool_calls })
     }
+}
+
+/// Blocking embedding call (OpenAI-compatible `/embeddings`) → a dense vector. Used by the memory
+/// store for semantic recall; it runs inside the agent loop's `spawn_blocking`, so blocking is fine.
+pub fn embed_text(api_base: &str, api_key: &str, model: &str, text: &str) -> Result<Vec<f32>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("embed client: {e}"))?;
+    let v: Value = client
+        .post(format!("{}/embeddings", api_base.trim_end_matches('/')))
+        .bearer_auth(api_key)
+        .json(&json!({"model": model, "input": text}))
+        .send()
+        .and_then(|r| r.error_for_status())
+        .map_err(|e| format!("embed request: {e}"))?
+        .json()
+        .map_err(|e| format!("embed parse: {e}"))?;
+    let arr = v["data"][0]["embedding"].as_array().ok_or("no embedding in response")?;
+    Ok(arr.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect())
 }
 
 /// Binds a logical model name to the gateway so the agent loop can call it via `ModelCall`.

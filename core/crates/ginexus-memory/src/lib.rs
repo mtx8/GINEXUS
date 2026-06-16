@@ -36,11 +36,34 @@ pub struct Fact {
     pub ts: i64,
     pub text: String,
     pub origin: Origin,
+    /// Dense embedding for semantic recall (absent on facts written before the vector upgrade).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emb: Option<Vec<f32>>,
+}
+
+/// Pluggable embedder: text → dense vector (None on failure). Keeps the store network-free; the
+/// server injects a closure that calls the model gateway's embedding endpoint.
+pub type EmbedFn = Arc<dyn Fn(&str) -> Option<Vec<f32>> + Send + Sync>;
+
+/// Cosine similarity in [-1, 1]; -1 on length mismatch / zero vectors.
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return -1.0;
+    }
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        -1.0
+    } else {
+        dot / (na * nb)
+    }
 }
 
 pub struct MemoryStore {
     dir: PathBuf,
     core: Mutex<BTreeMap<String, String>>,
+    embed: Mutex<Option<EmbedFn>>,
 }
 
 impl MemoryStore {
@@ -50,7 +73,15 @@ impl MemoryStore {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
-        Self { dir, core: Mutex::new(core) }
+        Self { dir, core: Mutex::new(core), embed: Mutex::new(None) }
+    }
+
+    /// Install the embedder for semantic recall. Without it, search falls back to keyword scoring.
+    pub fn set_embedder(&self, f: EmbedFn) {
+        *self.embed.lock().unwrap() = Some(f);
+    }
+    fn embedder(&self) -> Option<EmbedFn> {
+        self.embed.lock().unwrap().clone()
     }
 
     fn persist_core(&self, core: &BTreeMap<String, String>) {
@@ -74,7 +105,8 @@ impl MemoryStore {
     }
 
     pub fn append_fact(&self, text: &str, origin: Origin) {
-        let f = Fact { ts: now_ms(), text: text.to_string(), origin };
+        let emb = self.embedder().and_then(|e| e(text));
+        let f = Fact { ts: now_ms(), text: text.to_string(), origin, emb };
         if let Ok(line) = serde_json::to_string(&f) {
             if let Ok(mut file) =
                 std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("archival.jsonl"))
@@ -91,12 +123,29 @@ impl MemoryStore {
             .unwrap_or_default()
     }
 
-    /// Keyword retrieval: score facts by how many query words they contain (case-insensitive),
-    /// newest first on ties. (Vector search is a later drop-in behind this API.)
+    /// Retrieval. Semantic (cosine over embeddings) when an embedder is installed and the query
+    /// embeds + facts carry vectors; otherwise keyword scoring (word overlap). Semantic recall
+    /// matches by MEANING — e.g. "favorite food" finds "I love sushi" with zero shared words.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Fact> {
+        let facts = self.all_facts();
+        if facts.is_empty() {
+            return Vec::new();
+        }
+        if let Some(e) = self.embedder() {
+            if let Some(q) = e(query) {
+                let mut scored: Vec<(f32, Fact)> = facts
+                    .iter()
+                    .filter_map(|f| f.emb.as_ref().map(|v| (cosine(&q, v), f.clone())))
+                    .collect();
+                if !scored.is_empty() {
+                    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                    return scored.into_iter().take(limit).map(|(_, f)| f).collect();
+                }
+            }
+        }
+        // Keyword fallback: no embedder, embed failed, or no vectors stored yet.
         let words: Vec<String> = query.to_lowercase().split_whitespace().map(String::from).collect();
-        let mut scored: Vec<(usize, Fact)> = self
-            .all_facts()
+        let mut scored: Vec<(usize, Fact)> = facts
             .into_iter()
             .map(|f| {
                 let t = f.text.to_lowercase();
@@ -265,6 +314,30 @@ mod tests {
         // untrusted flag surfaces in recall
         remember.run(json!({"text": "scraped claim X", "untrusted": true}));
         assert!(recall.run(json!({"query": "scraped claim"})).output.contains("untrusted-origin"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn semantic_recall_beats_keyword() {
+        let dir = tmp();
+        let m = MemoryStore::open(dir.clone());
+        // Deterministic 3-dim "theme" embedder: [food, code, place]. No network.
+        m.set_embedder(Arc::new(|t: &str| {
+            let t = t.to_lowercase();
+            let food = (t.contains("sushi") || t.contains("ramen") || t.contains("food") || t.contains("eat")) as i32 as f32;
+            let code = (t.contains("rust") || t.contains("code") || t.contains("program")) as i32 as f32;
+            let place = (t.contains("okinawa") || t.contains("japan") || t.contains("live")) as i32 as f32;
+            Some(vec![food, code, place])
+        }));
+        m.append_fact("I love sushi and ramen", Origin::Trusted);
+        m.append_fact("I write Rust code daily", Origin::Trusted);
+        m.append_fact("I live in Okinawa", Origin::Trusted);
+        // Query shares NO words with any fact, but is semantically about food → keyword finds nothing.
+        let hits = m.search("what is my favorite thing to eat", 1);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].text.contains("sushi"), "semantic recall should return the food fact, got: {}", hits[0].text);
+        // Stored facts carry embeddings now.
+        assert!(m.all_facts().iter().all(|f| f.emb.is_some()));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

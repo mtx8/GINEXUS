@@ -233,6 +233,16 @@ async fn main() {
         _ => Gateway::default_local(),
     };
 
+    // Semantic memory: install an embedder backed by the gateway's "embed" tier so recall matches
+    // by MEANING (cosine over vectors), falling back to keyword if the embed model is unavailable.
+    {
+        let ep = gateway.resolve("embed");
+        let (base, key, model) = (ep.api_base.clone(), ep.api_key.clone(), ep.model.clone());
+        memory.set_embedder(std::sync::Arc::new(move |t: &str| {
+            ginexus_gateway::embed_text(&base, &key, &model, t).ok()
+        }));
+    }
+
     let state = Arc::new(AppState {
         token,
         boot_id,
