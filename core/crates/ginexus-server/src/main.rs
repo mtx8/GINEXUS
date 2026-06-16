@@ -1,8 +1,9 @@
 //! GINEXUS core server (Rust). UDS-only + per-launch bearer token, fail-closed on missing
 //! HMAC keys. Minimal HTTP/1.1 (the Swift UDSClient uses Connection: close). Routes:
 //!   GET  /healthz
-//!   POST /v1/chat                      {model?, messages}            → SSE
-//!   POST /v1/agent                     {model?, messages, grants?}   → JSON (HITL-gated loop)
+//!   GET  /v1/models                    → {default, models:[{id,model,label}]} (selector roster)
+//!   POST /v1/chat        {model?, difficulty?, latency_sensitive?, messages}  → SSE
+//!   POST /v1/agent       {model?, difficulty?, messages, grants?}             → JSON (HITL loop)
 //!   GET  /v1/admin/killswitch          → {engaged, tier, boot_id}
 //!   POST /v1/admin/killswitch/engage   {tier, reason}
 //!   POST /v1/admin/killswitch/reset    {token, nonce, expiry_ms, boot_id, reason}  (approval-gated)
@@ -145,10 +146,26 @@ async fn main() {
             }
         }
     }
+    // Model roster: data-driven from GINEXUS_MODELS_CONFIG (JSON), else the built-in local stack
+    // (fast=Qwen3-1.7B, smart=Qwen3-30B-A3B). Selection (auto/manual) happens per request.
+    let gateway = match std::env::var("GINEXUS_MODELS_CONFIG") {
+        Ok(p) if !p.is_empty() => match Gateway::from_config_file(std::path::Path::new(&p)) {
+            Ok(g) => {
+                eprintln!("models: loaded roster from {p}");
+                g
+            }
+            Err(e) => {
+                eprintln!("models: config load failed ({e}); using default_local");
+                Gateway::default_local()
+            }
+        },
+        _ => Gateway::default_local(),
+    };
+
     let state = Arc::new(AppState {
         token,
         boot_id,
-        gateway: Gateway::default_local(),
+        gateway,
         registry,
         hitl: HitlPolicy::new(),
         audit,
@@ -282,16 +299,30 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
         ("GET", "/healthz") => {
             json_ok(&mut stream, json!({"status": "ready", "engine": "rust", "version": VERSION})).await;
         }
+        ("GET", "/v1/models") => {
+            // Roster for the app's model picker. "auto" is the implicit policy-routed default.
+            let models: Vec<Value> = state
+                .gateway
+                .roster()
+                .into_iter()
+                .map(|(k, e)| json!({"id": k, "model": e.model, "label": e.label}))
+                .collect();
+            json_ok(&mut stream, json!({"default": "auto", "models": models})).await;
+        }
         ("POST", "/v1/chat") => {
             let blocked = state.killswitch.lock().unwrap().guard().err();
             if let Some(e) = blocked {
                 err(&mut stream, 503, "Service Unavailable", &e.to_string()).await;
                 return Ok(());
             }
-            let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("fast");
+            // Auto/manual model selection: model absent/"auto" → policy route; else explicit tier.
+            let requested = body.get("model").and_then(|m| m.as_str());
+            let difficulty = body.get("difficulty").and_then(|d| d.as_str()).unwrap_or("normal");
+            let latency = body.get("latency_sensitive").and_then(|l| l.as_bool()).unwrap_or(false);
+            let model = state.gateway.select(requested, "chat", difficulty, latency);
             let messages = with_memory(&state.memory,
                 body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
-            match state.gateway.chat(model, &messages).await {
+            match state.gateway.chat(&model, &messages).await {
                 Ok(content) => {
                     let _ = state.audit.record("chat", json!({"model": model, "out_len": content.len()}));
                     let sse = format!("data: {}\n\ndata: [DONE]\n\n", content.replace('\n', " "));
@@ -306,7 +337,10 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 err(&mut stream, 503, "Service Unavailable", &e.to_string()).await;
                 return Ok(());
             }
-            let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("fast").to_string();
+            // Agent work defaults to the strong model (task "reason"); explicit pick still wins.
+            let requested = body.get("model").and_then(|m| m.as_str());
+            let difficulty = body.get("difficulty").and_then(|d| d.as_str()).unwrap_or("normal");
+            let model = state.gateway.select(requested, "reason", difficulty, false);
             let messages = with_memory(&state.memory,
                 body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
             let grants = parse_grants(&body);

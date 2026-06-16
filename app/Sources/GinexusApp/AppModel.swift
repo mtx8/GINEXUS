@@ -12,6 +12,12 @@ struct ChatMsg: Identifiable, Sendable {
     let text: String
 }
 
+/// A selectable model: "auto" (policy-routed) plus each roster tier from GET /v1/models.
+struct ModelOption: Identifiable, Sendable, Hashable {
+    let id: String      // "auto" | "fast" | "smart" | …  (sent as the request's `model`)
+    let label: String
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var bundleId = Bundle.main.bundleIdentifier ?? "(unbundled)"
@@ -20,6 +26,9 @@ final class AppModel: ObservableObject {
     @Published var chat: [ChatMsg] = []
     @Published var chatInput = ""
     @Published var sending = false
+    /// Model picker: "auto" + the roster from GET /v1/models. Default "auto" → the 30B for chat/agent.
+    @Published var models: [ModelOption] = [ModelOption(id: "auto", label: "Auto (smart by default)")]
+    @Published var selectedModel = "auto"
 
     private let spine = SpineController()
     private var pollTimer: Timer?
@@ -67,6 +76,7 @@ final class AppModel: ObservableObject {
         if !connected {
             connected = true
             spineStatus = "CONNECTED · live spine over UDS"
+            await fetchModels()
             renderSnapshot()
             // Auto-demo once: prove the app gets a real model answer through the spine.
             let tok = currentToken()
@@ -81,6 +91,27 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Populate the picker from the core's roster: "auto" first, then each tier (id + label).
+    func fetchModels() async {
+        let sock = spine.socketPath
+        let tok = currentToken()
+        let res = await Task.detached {
+            UDSClient.request(socketPath: sock, method: "GET", path: "/v1/models", token: tok, jsonBody: nil)
+        }.value
+        guard case .success(let r) = res, r.status == 200,
+              let data = r.body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr = obj["models"] as? [[String: Any]] else { return }
+        var opts = [ModelOption(id: "auto", label: "Auto (smart by default)")]
+        for m in arr {
+            if let id = m["id"] as? String {
+                opts.append(ModelOption(id: id, label: (m["label"] as? String) ?? id))
+            }
+        }
+        models = opts
+        dbg("models: \(opts.map { $0.id })")
+    }
+
     // MARK: chat
     func send(_ prompt: String) {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -92,7 +123,7 @@ final class AppModel: ObservableObject {
         let sock = spine.socketPath
         let tok = currentToken()
         let msgs = chat.map { ["role": $0.role, "content": $0.text] }
-        let body = try? JSONSerialization.data(withJSONObject: ["model": "fast", "messages": msgs])
+        let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs])
         Task {
             let res = await Task.detached {
                 UDSClient.request(socketPath: sock, method: "POST", path: "/v1/chat", token: tok, jsonBody: body)

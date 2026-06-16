@@ -1,0 +1,32 @@
+{
+  "_about": "GINEXUS local model roster. Point the core at this file via GINEXUS_MODELS_CONFIG. Keys are logical tiers; the agent picks 'auto' (policy-routed) or a specific tier. Inference is served by Ollama/MLX; the Rust core only orchestrates.",
+  "_provenance": {
+    "qwen3:30b-a3b-instruct-2507-q4_K_M": {
+      "official_source": "https://hf.co/Qwen/Qwen3-30B-A3B-Instruct-2507 (Qwen org)",
+      "license": "apache-2.0",
+      "format": "safetensors (HF) / GGUF Q4_K_M (Ollama official library)",
+      "ollama_digest": "19e422b02313",
+      "verified": "2026-06-16 — HF official repo (12.1M downloads, apache-2.0, qwen3_moe); pulled from Ollama official library tag; avoids FP8/fp16 (Metal crash class)."
+    },
+    "qwen3:1.7b": {
+      "official_source": "https://hf.co/Qwen/Qwen3-1.7B (Qwen org)",
+      "license": "apache-2.0",
+      "note": "fast dev/utility model"
+    }
+  },
+  "default": "auto",
+  "models": {
+    "fast": {
+      "model": "qwen3:1.7b",
+      "api_base": "http://127.0.0.1:11434/v1",
+      "api_key": "ollama",
+      "label": "Fast · Qwen3 1.7B"
+    },
+    "smart": {
+      "model": "qwen3:30b-a3b-instruct-2507-q4_K_M",
+      "api_base": "http://127.0.0.1:11434/v1",
+      "api_key": "ollama",
+      "label": "Smart · Qwen3 30B-A3B (2507)"
+    }
+  }
+}

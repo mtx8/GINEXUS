@@ -81,7 +81,21 @@ struct ContentView: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(model.connected ? Brand.ok : Brand.muted)
             Spacer()
+            modelPicker
         }
+    }
+
+    /// Auto/manual model selector — "Auto" routes to the 30B for chat/agent; pick a tier to pin it.
+    private var modelPicker: some View {
+        Picker("Model", selection: $model.selectedModel) {
+            ForEach(model.models) { m in Text(m.label).tag(m.id) }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .tint(Brand.ember500)
+        .frame(maxWidth: 240)
+        .disabled(!model.connected)
     }
 
     private var transcript: some View {
