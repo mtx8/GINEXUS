@@ -18,6 +18,11 @@ final class SpineController {
     private let appHostSocketPath: String
     private var appHost: AppToolHost?
 
+    /// SP6: the local image-generation sidecar (mflux/Z-Image-Turbo). Launched as a sibling of the
+    /// core; the core gets its base URL via env and exposes the image_generate tool.
+    private let mediaPort = 8765
+    private var mediaProcess: Process?
+
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         socketPath = "\(home)/Library/Application Support/GINEXUS/run/ginexus.sock"
@@ -61,6 +66,11 @@ final class SpineController {
         host.start()
         appHost = host
 
+        // SP6: best-effort launch the media sidecar (dev: from the project dir via uv). If it's
+        // already running (or can't be launched), the core still points at the base URL and the
+        // image_generate tool simply errors until a sidecar answers.
+        startMediaSidecar()
+
         let p = Process()
         p.executableURL = embeddedBinary
         p.arguments = ["--uds", socketPath]
@@ -70,6 +80,7 @@ final class SpineController {
         env["GINEXUS_APPROVAL_KEY"] = approval
         env["GINEXUS_APP_HOST_SOCK"] = appHostSocketPath
         env["GINEXUS_APP_HOST_TOKEN"] = appHostToken
+        env["GINEXUS_MEDIA_BASE"] = "http://127.0.0.1:\(mediaPort)"
         p.environment = env
         if let logHandle {
             p.standardOutput = logHandle
@@ -81,5 +92,28 @@ final class SpineController {
         process = p
     }
 
-    func shutdown() { process?.terminate(); appHost?.stop() }
+    /// Launch the uv media sidecar from the project dir (dev). Best-effort: needs `uv` + the
+    /// sidecar sources; if the port is taken (already running) uvicorn just exits — harmless.
+    private func startMediaSidecar() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dir = ProcessInfo.processInfo.environment["GINEXUS_MEDIA_SIDECAR_DIR"]
+            ?? "\(home)/Desktop/GINEXUS/app/media-sidecar"
+        let uv = "\(home)/.local/bin/uv"
+        guard FileManager.default.fileExists(atPath: "\(dir)/server.py"),
+              FileManager.default.isExecutableFile(atPath: uv) else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: uv)
+        p.currentDirectoryURL = URL(fileURLWithPath: dir)
+        p.arguments = ["run", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "\(mediaPort)"]
+        var env = ProcessInfo.processInfo.environment
+        env["GINEXUS_MEDIA_PRELOAD"] = "1"
+        p.environment = env
+        let mediaLog = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GINEXUS/media.log")
+        FileManager.default.createFile(atPath: mediaLog.path, contents: nil)
+        if let h = try? FileHandle(forWritingTo: mediaLog) { p.standardOutput = h; p.standardError = h }
+        do { try p.run(); mediaProcess = p } catch { /* sidecar optional */ }
+    }
+
+    func shutdown() { process?.terminate(); appHost?.stop(); mediaProcess?.terminate() }
 }

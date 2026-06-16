@@ -11,6 +11,7 @@ struct ChatMsg: Identifiable, Sendable {
     let id = UUID()
     let role: String   // "user" | "assistant"
     let text: String
+    var imagePath: String? = nil   // a generated image under the media dir, rendered inline
 }
 
 /// A selectable model: "auto" (policy-routed) plus each roster tier from GET /v1/models.
@@ -223,13 +224,45 @@ final class AppModel: ObservableObject {
             } else {
                 let answer = (o["answer"] as? String) ?? ""
                 dbg("agent HTTP \(r.status); status=\(st)")
-                chat.append(ChatMsg(role: "assistant", text: answer.isEmpty ? "(\(st))" : answer))
+                // SP6: if the agent generated an image, render it inline. Prefer the path echoed in
+                // the answer; fall back to the newest media PNG when the trace shows a generation.
+                let trace = (o["trace"] as? [[Any]]) ?? []
+                let didGenerate = trace.contains {
+                    ($0.first as? String) == "image_generate" && ($0.count > 1 ? (($0[1] as? Bool) ?? false) : false)
+                }
+                var img = Self.extractImagePath(answer)
+                if img == nil, didGenerate { img = Self.newestMediaImage() }
+                chat.append(ChatMsg(role: "assistant", text: answer.isEmpty ? "(\(st))" : answer, imagePath: img))
             }
         case .failure(let e):
             dbg("agent failure: \(e)")
             chat.append(ChatMsg(role: "assistant", text: "error: \(e)"))
         }
         renderSnapshot()
+    }
+
+    /// Pull a generated image path (…/GINEXUS/media/*.png) out of the assistant's reply. The media
+    /// dir contains a space ("Application Support"), so match the known prefix, not whitespace tokens.
+    static func extractImagePath(_ text: String) -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let prefix = "\(home)/Library/Application Support/GINEXUS/media/"
+        guard let start = text.range(of: prefix) else { return nil }
+        let rest = text[start.lowerBound...]
+        guard let png = rest.range(of: ".png") else { return nil }
+        return String(rest[..<png.upperBound])
+    }
+
+    /// Newest PNG in the media dir — fallback when the model didn't echo the exact path.
+    static func newestMediaImage() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dir = "\(home)/Library/Application Support/GINEXUS/media"
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
+        let pngs = files.filter { $0.hasSuffix(".png") }.map { "\(dir)/\($0)" }
+        return pngs.max { a, b in
+            let da = (try? FileManager.default.attributesOfItem(atPath: a))?[.modificationDate] as? Date
+            let db = (try? FileManager.default.attributesOfItem(atPath: b))?[.modificationDate] as? Date
+            return (da ?? .distantPast) < (db ?? .distantPast)
+        }
     }
 
     // MARK: HITL — biometric approval

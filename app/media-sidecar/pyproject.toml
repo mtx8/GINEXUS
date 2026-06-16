@@ -1,0 +1,15 @@
+[project]
+name = "ginexus-media-sidecar"
+version = "0.1.0"
+description = "GINEXUS local image-generation sidecar (mflux / Z-Image-Turbo on Apple MLX)"
+requires-python = ">=3.10"
+# mflux pinned (pre-1.0, solo-maintainer): a breaking minor must not surprise the sidecar.
+dependencies = [
+    "mflux==0.18.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pillow>=10.0",
+]
+
+[tool.uv]
+package = false

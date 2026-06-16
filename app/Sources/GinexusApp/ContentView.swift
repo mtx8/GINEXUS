@@ -180,6 +180,11 @@ struct ContentView: View {
                 .padding(12)
                 .background(isUser ? Brand.ink800 : Color.white.opacity(0.03))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+            if let path = msg.imagePath, let img = NSImage(contentsOfFile: path) {
+                Image(nsImage: img).resizable().scaledToFit()
+                    .frame(maxWidth: 360, maxHeight: 360)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
         }
     }
 

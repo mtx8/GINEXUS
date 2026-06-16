@@ -123,6 +123,20 @@ async fn main() {
     let memory = Arc::new(MemoryStore::open(sd.join("memory")));
     let mut registry = ginexus_agent::tools::notes_registry(sd.join("notes"));
     registry.register(ginexus_gateway::web::web_fetch_tool()); // SP4: read-only web research
+    // SP6: local image generation — registered only when the app launched the media sidecar and
+    // injected its base URL. Generation is autonomous (writes only into the media dir).
+    if let Ok(base) = std::env::var("GINEXUS_MEDIA_BASE") {
+        if !base.is_empty() {
+            registry.register(ginexus_gateway::media::image_generate_tool(base));
+            let _ = std::fs::create_dir_all(sd.join("media"));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(sd.join("media"), std::fs::Permissions::from_mode(0o700));
+            }
+            eprintln!("registered image_generate tool (media sidecar)");
+        }
+    }
     for t in ginexus_memory::memory_tools(memory.clone()) { // SP3: remember/recall/set/get memory
         registry.register(t);
     }
