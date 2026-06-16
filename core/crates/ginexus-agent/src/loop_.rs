@@ -63,11 +63,33 @@ fn tool_msg(call_id: &str, output: &str) -> Value {
     json!({"role": "tool", "tool_call_id": call_id, "content": output})
 }
 
+/// Max delegation depth: the top agent may delegate; a subagent may not delegate further. Bounds
+/// the recursion (no runaway fan-out / infinite spawning).
+pub const MAX_DELEGATE_DEPTH: usize = 1;
+/// Max sub-tasks per delegate call (caps fan-out).
+const MAX_SUBTASKS: usize = 4;
+
 pub struct AgentLoop<'a> {
     pub model: &'a dyn ModelCall,
     pub registry: &'a ToolRegistry,
     pub hitl: &'a HitlPolicy,
     pub max_iters: usize,
+    /// Delegation depth (0 = top-level agent). Subagents run at depth+1 and can't delegate at MAX.
+    pub depth: usize,
+}
+
+/// The synthetic `delegate` tool the loop advertises (handled by the loop itself, not the registry).
+fn delegate_def() -> Value {
+    json!({"type": "function", "function": {
+        "name": "delegate",
+        "description": "Delegate focused sub-task(s) to fresh worker agents — each gets its own clean \
+                        context and the read-only tools (web_fetch, recall, system_status, …) and returns \
+                        a result. Use to decompose a complex job or research several things at once. Pass \
+                        'tasks' (array of self-contained instructions) or a single 'task'.",
+        "parameters": {"type": "object", "properties": {
+            "tasks": {"type": "array", "items": {"type": "string"}},
+            "task": {"type": "string"}}}
+    }})
 }
 
 impl<'a> AgentLoop<'a> {
@@ -81,8 +103,17 @@ impl<'a> AgentLoop<'a> {
         let mut msgs = messages;
         let mut trace: Vec<(String, bool)> = Vec::new();
 
+        // Subagent delegation: advertise + handle `delegate` only below the depth ceiling. Workers
+        // get a READ-ONLY registry (they can never perform an irreversible/HITL action on their own).
+        let can_delegate = self.depth < MAX_DELEGATE_DEPTH;
+        let sub_registry = if can_delegate { Some(self.registry.readonly()) } else { None };
+        let mut defs = self.registry.definitions();
+        if can_delegate {
+            defs.push(delegate_def());
+        }
+
         for _ in 0..self.max_iters {
-            let turn = self.model.call(&msgs, &self.registry.definitions()).await;
+            let turn = self.model.call(&msgs, &defs).await;
             if turn.tool_calls.is_empty() {
                 return AgentResult {
                     status: AgentStatus::Final,
@@ -105,6 +136,15 @@ impl<'a> AgentLoop<'a> {
                              "tool_calls": tcs}));
 
             for tc in &turn.tool_calls {
+                // Delegation is handled by the loop itself (spawns a sub-agent), not the registry.
+                if can_delegate && tc.name == "delegate" {
+                    let out = self
+                        .run_delegate(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms)
+                        .await;
+                    trace.push(("delegate".to_string(), true));
+                    msgs.push(tool_msg(&tc.id, &out));
+                    continue;
+                }
                 let tool = match self.registry.get(&tc.name) {
                     Some(t) => t,
                     None => {
@@ -158,6 +198,38 @@ impl<'a> AgentLoop<'a> {
             pending: None,
             trace,
         }
+    }
+
+    /// Run sub-task(s) as fresh worker agents (own clean context, read-only tools, depth+1) and
+    /// return their results. Sequential; recursion is depth-bounded (MAX_DELEGATE_DEPTH) so the
+    /// boxed future is finite. Workers get no approvals (read-only registry → nothing to gate).
+    async fn run_delegate(&self, args: &Value, sub_registry: &ToolRegistry, now_ms: i64) -> String {
+        let tasks: Vec<String> = match args.get("tasks").and_then(|t| t.as_array()) {
+            Some(arr) => arr.iter().filter_map(|t| t.as_str().map(str::to_string)).collect(),
+            None => args
+                .get("task")
+                .and_then(|t| t.as_str())
+                .map(|s| vec![s.to_string()])
+                .unwrap_or_default(),
+        };
+        if tasks.is_empty() {
+            return "error: delegate requires 'task' (string) or 'tasks' (array of strings)".into();
+        }
+        let mut out = String::new();
+        for (i, task) in tasks.into_iter().take(MAX_SUBTASKS).enumerate() {
+            let sub = AgentLoop {
+                model: self.model,
+                registry: sub_registry,
+                hitl: self.hitl,
+                max_iters: self.max_iters.min(4),
+                depth: self.depth + 1,
+            };
+            let msgs = vec![json!({"role": "user", "content": &task})];
+            // Box the recursive call so the returned future has a finite size.
+            let res = Box::pin(sub.run(msgs, &[], None, now_ms)).await;
+            out.push_str(&format!("[subagent {}] {} → {}\n\n", i + 1, task, res.answer.trim()));
+        }
+        out.trim_end().to_string()
     }
 }
 
@@ -227,7 +299,7 @@ mod tests {
             final_turn("The note says: hello world"),
         ]);
         let hitl = HitlPolicy::new();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
         let res = loop_.run(vec![json!({"role": "user", "content": "read n"})], &[], None, NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert!(res.answer.contains("hello world"));
@@ -241,7 +313,7 @@ mod tests {
         let model = Mock::new(vec![call_turn(tc("write_note", json!({"name": "x", "content": "d"})))]);
         let hitl = HitlPolicy::new();
         let av = ApprovalVerifier::new(key(), BOOT).unwrap();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
         let res = loop_.run(vec![], &[], Some(&av), NOW).await;
         assert_eq!(res.status, AgentStatus::PendingApproval);
         assert_eq!(res.pending.unwrap()["tool"], "write_note");
@@ -260,7 +332,7 @@ mod tests {
         let model = Mock::new(vec![call_turn(tc("write_note", args)), final_turn("saved")]);
         let hitl = HitlPolicy::new();
         let av = ApprovalVerifier::new(key(), BOOT).unwrap();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
         let res = loop_.run(vec![], &[grant], Some(&av), NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert_eq!(res.answer, "saved");
@@ -274,7 +346,7 @@ mod tests {
         let reg = notes_registry(dir);
         let model = Mock::new(vec![call_turn(tc("read_note", json!({"name": "n"})))]); // never finals
         let hitl = HitlPolicy::new();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 3 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 3, depth: 0 };
         let res = loop_.run(vec![], &[], None, NOW).await;
         assert_eq!(res.status, AgentStatus::MaxIters);
     }
@@ -288,7 +360,43 @@ mod tests {
             final_turn("recovered"),
         ]);
         let hitl = HitlPolicy::new();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
+        let res = loop_.run(vec![], &[], None, NOW).await;
+        assert_eq!(res.status, AgentStatus::Final);
+        assert_eq!(res.answer, "recovered");
+        assert!(res.trace.contains(&("unknown_tool".to_string(), false)));
+    }
+
+    #[tokio::test]
+    async fn delegate_spawns_a_subagent() {
+        let dir = tmp_dir();
+        let reg = notes_registry(dir);
+        // Shared Mock advances: parent(0)→delegate, subagent(1)→final, parent(2)→final.
+        let model = Mock::new(vec![
+            call_turn(tc("delegate", json!({"task": "find the answer"}))),
+            final_turn("the answer is 42"),
+            final_turn("Done — a subagent reported: 42"),
+        ]);
+        let hitl = HitlPolicy::new();
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
+        let res = loop_.run(vec![json!({"role": "user", "content": "do it"})], &[], None, NOW).await;
+        assert_eq!(res.status, AgentStatus::Final);
+        assert!(res.trace.iter().any(|(n, _)| n == "delegate"));
+        assert!(res.answer.contains("42"));
+    }
+
+    #[tokio::test]
+    async fn subagent_cannot_delegate_further() {
+        let dir = tmp_dir();
+        let reg = notes_registry(dir);
+        // At the depth ceiling, `delegate` is neither advertised nor handled → treated as an
+        // unknown tool, and the agent recovers. (Bounds the recursion.)
+        let model = Mock::new(vec![
+            call_turn(tc("delegate", json!({"task": "x"}))),
+            final_turn("recovered"),
+        ]);
+        let hitl = HitlPolicy::new();
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: MAX_DELEGATE_DEPTH };
         let res = loop_.run(vec![], &[], None, NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert_eq!(res.answer, "recovered");

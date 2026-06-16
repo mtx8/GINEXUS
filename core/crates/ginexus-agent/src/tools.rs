@@ -25,6 +25,7 @@ impl ToolResult {
 // tools run on the blocking pool, never blocking the async agent loop).
 pub type ToolFn = Arc<dyn Fn(Value) -> ToolResult + Send + Sync>;
 
+#[derive(Clone)]
 pub struct Tool {
     pub name: String,
     pub description: String,
@@ -71,6 +72,18 @@ impl ToolRegistry {
     }
     pub fn definitions(&self) -> Vec<Value> {
         self.tools.values().map(|t| t.definition()).collect()
+    }
+    /// A registry of only read-only (non-irreversible) tools — what subagents are given, so a
+    /// worker can never perform an HITL-gated / irreversible action on its own.
+    pub fn readonly(&self) -> ToolRegistry {
+        ToolRegistry {
+            tools: self
+                .tools
+                .iter()
+                .filter(|(_, t)| !t.irreversible)
+                .map(|(k, t)| (k.clone(), t.clone()))
+                .collect(),
+        }
     }
     pub fn names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()

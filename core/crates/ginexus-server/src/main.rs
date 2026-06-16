@@ -426,7 +426,7 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
             let grants = parse_grants(&body);
             let bound = BoundModel { gateway: &state.gateway, model };
-            let agent = AgentLoop { model: &bound, registry: &state.registry, hitl: &state.hitl, max_iters: 6 };
+            let agent = AgentLoop { model: &bound, registry: &state.registry, hitl: &state.hitl, max_iters: 6, depth: 0 };
             let res = agent.run(messages, &grants, Some(&state.approvals), now_ms()).await;
             let status = match res.status {
                 AgentStatus::Final => "final",
