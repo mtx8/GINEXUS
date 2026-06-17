@@ -541,6 +541,43 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             };
             tokio::join!(runner, drain);
         }
+        ("POST", "/v1/hf/search") => {
+            // Type-ahead over Hugging Face's public model search. Filtered to GGUF repos — those are
+            // the ones Ollama can pull directly via hf.co/<org>/<repo>[:QUANT]. Sorted by downloads.
+            let q = body.get("query").and_then(|x| x.as_str()).unwrap_or("").trim();
+            if q.len() < 2 {
+                json_ok(&mut stream, json!({"results": []})).await;
+                return Ok(());
+            }
+            let url = format!(
+                "https://huggingface.co/api/models?search={}&filter=gguf&limit=15&sort=downloads&direction=-1",
+                url_q(q)
+            );
+            match state.gateway.http_client().get(&url).header("User-Agent", "GINEXUS").send().await {
+                Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
+                    Ok(v) => {
+                        let results: Vec<Value> = v
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|m| {
+                                        let id = m.get("id").or_else(|| m.get("modelId"))
+                                            .and_then(|x| x.as_str())?;
+                                        let downloads = m.get("downloads").and_then(|x| x.as_u64()).unwrap_or(0);
+                                        let gated = m.get("gated").map_or(false, |g| g.as_bool() != Some(false));
+                                        Some(json!({"id": id, "downloads": downloads, "gguf": true, "gated": gated}))
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        json_ok(&mut stream, json!({"results": results})).await;
+                    }
+                    Err(e) => err(&mut stream, 502, "Bad Gateway", &format!("hf parse: {e}")).await,
+                },
+                Ok(resp) => err(&mut stream, 502, "Bad Gateway", &format!("hf HTTP {}", resp.status())).await,
+                Err(e) => err(&mut stream, 502, "Bad Gateway", &format!("hf unreachable: {e}")).await,
+            }
+        }
         ("POST", "/v1/chat") => {
             let blocked = state.killswitch.lock().unwrap().guard().err();
             if let Some(e) = blocked {
@@ -855,6 +892,17 @@ async fn heartbeat(state: Arc<AppState>) {
             state.schedules.record_result(&id, now_ms(), &res.answer);
         }
     }
+}
+
+/// Minimal percent-encoding for a URL query value (RFC 3986 unreserved kept; space → '+').
+fn url_q(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b' ' => "+".to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn parse_grants(body: &Value) -> Vec<ApprovalGrant> {
