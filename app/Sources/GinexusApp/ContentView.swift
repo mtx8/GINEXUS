@@ -69,14 +69,12 @@ struct ContentView: View {
     /// matching tool; Profile distills long-term memory into the always-in-context self-model.
     private var capabilityBar: some View {
         HStack(spacing: 8) {
-            capChip("COUNCIL", help: "Deliberate the message with a panel of expert personas, then synthesize",
+            capChip("PERSPECTIVES", help: "Answer your message from several expert viewpoints, then give a balanced take.",
                     enabled: model.canQuickAction) { model.runCouncil() }
-            capChip("RESEARCH", help: "Decompose the message → research in parallel → cited report",
+            capChip("RESEARCH", help: "Investigate your message in depth across multiple angles, then return a written, sourced answer.",
                     enabled: model.canQuickAction) { model.runResearch() }
-            capChip("IMAGE", help: "Generate an image from the message",
+            capChip("CREATE IMAGE", help: "Generate an image from your message.",
                     enabled: model.canQuickAction) { model.runImage() }
-            capChip("PROFILE", help: "Distill long-term memory into a durable self-model",
-                    enabled: model.connected && !model.sending) { model.buildProfile() }
             Spacer()
         }
     }
@@ -183,15 +181,21 @@ struct ContentView: View {
                         .foregroundStyle(Brand.muted)
                     Spacer()
                     if model.memLoading { ProgressView().controlSize(.small) }
-                    Button("DONE") { model.memoryOpen = false }
+                    Button("BUILD PROFILE") { model.buildProfile() }
                         .buttonStyle(.plain).font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundStyle(Brand.ember500)
+                        .disabled(!model.connected || model.sending)
+                        .help("Summarize what GINEXUS knows about you from memory, and keep it in mind")
+                    Button("DONE") { model.memoryOpen = false }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Brand.muted)
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         if model.memBlocks.isEmpty {
-                            Text("No core blocks yet. Tap PROFILE to build a self-model from memory.")
+                            Text("Nothing learned about you yet. Tap BUILD PROFILE above to summarize what GINEXUS knows from your memory.")
                                 .font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.muted)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         ForEach(model.memBlocks) { b in
                             VStack(alignment: .leading, spacing: 4) {
