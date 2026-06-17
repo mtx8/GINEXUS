@@ -154,8 +154,8 @@ struct ContentView: View {
             }
             .foregroundStyle(model.autonomous ? Brand.ember500 : Brand.bone300)
             .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(Brand.ink700).clipShape(Capsule())
-            .overlay(Capsule().stroke(model.autonomous ? Brand.ember600 : Brand.line2, lineWidth: 1))
+            .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(model.autonomous ? Brand.ember600 : Brand.line2, lineWidth: 1))
         }
         .buttonStyle(.plain).disabled(!model.connected)
         .help(model.autonomous
@@ -178,8 +178,8 @@ struct ContentView: View {
             }
             .foregroundStyle(Brand.bone100)
             .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(Brand.ink700).clipShape(Capsule())
-            .overlay(Capsule().stroke(Brand.line2, lineWidth: 1))
+            .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line2, lineWidth: 1))
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .frame(maxWidth: 260).disabled(!model.connected)
@@ -245,12 +245,10 @@ struct ContentView: View {
             if let path = msg.imagePath { StreamImage(path: path) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
+        .padding(.horizontal, 16).padding(.vertical, 13)
+        // Soft, flat conversation fill — NOT a button (no border, no shadow, no raised highlight).
         .background(isUser ? Brand.ink700 : Brand.ink600)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(active ? Brand.ember600.opacity(0.6) : Brand.line2, lineWidth: 1))
-        .overlay(alignment: .top) { Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1).padding(.horizontal, 8) }
-        .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 4)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     /// Inline Human Approval block — replaces the modal sheet; Approve drives Touch ID.
@@ -362,8 +360,8 @@ struct ContentView: View {
                 }.buttonStyle(.plain)
             }
             .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(Brand.ink700).clipShape(Capsule())
-            .overlay(Capsule().stroke(Brand.line1, lineWidth: 1))
+            .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
         }
     }
 
