@@ -80,13 +80,12 @@ struct ContentView: View {
             }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Brand.bone50)
-                .frame(width: 42, height: 42)
-                .background(Brand.ink800)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Brand.bone50.opacity(0.8))
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
         }
-        .menuStyle(.button)
+        .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(!model.connected)
@@ -351,15 +350,19 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             attachmentChip
             HStack(spacing: 10) {
-                plusMenu
-                TextField("Message GINEXUS…", text: $model.chatInput)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14, design: .monospaced))
-                    .foregroundStyle(Brand.bone50)
-                    .padding(12)
-                    .background(Brand.ink800)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .onSubmit { model.send(model.chatInput) }
+                // The "+" lives INSIDE the input pill (bare icon, no box), like a modern chat box.
+                HStack(spacing: 8) {
+                    plusMenu
+                    TextField("Message GINEXUS…", text: $model.chatInput)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundStyle(Brand.bone50)
+                        .onSubmit { model.send(model.chatInput) }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
+                .background(Brand.ink800)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
                 Button(action: { model.send(model.chatInput) }) {
                     Text("SEND").font(.system(size: 12, weight: .bold, design: .monospaced)).kerning(1.5)
                         .padding(.horizontal, 18).padding(.vertical, 12)
