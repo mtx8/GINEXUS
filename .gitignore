@@ -52,3 +52,6 @@ Library/
 
 # Xcode: staged Rust core for the in-Xcode embed (built by the GINEXUS scheme pre-action)
 app/artifacts/
+
+# deployed clickable app (built by app/scripts/build_app.sh)
+/GINEXUS.app
