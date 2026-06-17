@@ -6,6 +6,7 @@ import AppKit
 import EventKit
 import LocalAuthentication
 import PDFKit
+import ImageIO
 import GinexusCore
 
 // ChatMsg now lives in GinexusCore (testable; the persisted unit inside a Conversation).
@@ -61,7 +62,7 @@ struct PendingAction: Identifiable {
     let args: [String: Any]
     let target: String
     let preview: String
-    let messages: [[String: String]]   // the conversation to re-run once approved
+    let messages: [[String: Any]]   // the conversation to re-run once approved (content may be multimodal)
 }
 
 @MainActor
@@ -111,6 +112,9 @@ final class AppModel: ObservableObject {
 
     /// File/image attached to the next message via the "+" menu (nil when none).
     @Published var attachment: Attachment?
+    /// A small thumbnail of an attached image, decoded ONCE at pick time (the chip must not re-decode
+    /// the full image from disk on every keystroke/streamed token).
+    @Published var attachmentThumb: NSImage?
 
     /// Model manager ("download models from Hugging Face / Ollama"): installed list, version, pull.
     @Published var modelsOpen = false
@@ -126,6 +130,17 @@ final class AppModel: ObservableObject {
     /// qwen3-vl (vision) needs Ollama ≥ 0.12.7; surface an upgrade prompt when older.
     var ollamaNeedsUpgradeForVision: Bool {
         !ollamaVersion.isEmpty && versionLess(ollamaVersion, "0.12.7")
+    }
+    /// True when a vision-capable model is actually installed (cross-checked in fetchModels).
+    @Published var vlmInstalled = false
+    /// Vision is usable only with a new-enough Ollama AND a VLM pulled. Until then, image attachments
+    /// degrade to a text note (the model says it can't view images).
+    var visionAvailable: Bool { !ollamaNeedsUpgradeForVision && vlmInstalled }
+    /// Short, ALL-CAPS guidance shown on an image chip when vision isn't ready.
+    var visionStatus: String {
+        if ollamaNeedsUpgradeForVision { return "UPDATE OLLAMA 0.12.7+ FOR VISION" }
+        if !vlmInstalled { return "PULL A VISION MODEL" }
+        return ""
     }
     /// The core's current boot id (binds approval tokens to this server launch). Fetched on connect.
     private var bootId = ""
@@ -354,24 +369,32 @@ final class AppModel: ObservableObject {
         async let instT = Task.detached {
             UDSClient.request(socketPath: sock, method: "GET", path: "/v1/models/installed", token: tok, jsonBody: nil)
         }.value
-        let (rosterRes, instRes) = await (rosterT, instT)
+        async let verT = Task.detached {
+            UDSClient.request(socketPath: sock, method: "GET", path: "/v1/ollama/version", token: tok, jsonBody: nil)
+        }.value
+        let (rosterRes, instRes, verRes) = await (rosterT, instT, verT)
 
         func base(_ s: String) -> String { s.hasSuffix(":latest") ? String(s.dropLast(7)) : s }
         var opts = [ModelOption(id: "auto", label: "Auto (smart by default)")]
         var rosterUnderlying = Set<String>()
+        var vlmModel = ""   // the vlm tier's underlying model id, to detect an installed VLM
         if case .success(let r) = rosterRes, let d = r.body.data(using: .utf8),
            let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
            let arr = o["models"] as? [[String: Any]] {
             for m in arr {
                 guard let id = m["id"] as? String else { continue }
                 opts.append(ModelOption(id: id, label: (m["label"] as? String) ?? id))
-                if let u = m["model"] as? String { rosterUnderlying.insert(base(u)) }
+                if let u = m["model"] as? String {
+                    rosterUnderlying.insert(base(u))
+                    if id == "vlm" { vlmModel = base(u) }
+                }
             }
         }
         if case .success(let r) = instRes, let d = r.body.data(using: .utf8),
            let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
            let arr = o["models"] as? [[String: Any]] {
             var inst: [InstalledModel] = []
+            var foundVLM = false
             for m in arr {
                 guard let name = m["name"] as? String else { continue }
                 let det = m["details"] as? [String: Any]
@@ -383,11 +406,25 @@ final class AppModel: ObservableObject {
                 if !rosterUnderlying.contains(base(name)) && !opts.contains(where: { $0.id == name }) {
                     opts.append(ModelOption(id: name, label: name))
                 }
+                if isVisionModel(base(name), vlmBase: vlmModel) { foundVLM = true }
             }
             installed = inst.sorted { $0.name < $1.name }
+            vlmInstalled = foundVLM
+        }
+        if case .success(let r) = verRes, let d = r.body.data(using: .utf8),
+           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+            ollamaVersion = (o["version"] as? String) ?? ollamaVersion
         }
         models = opts
-        dbg("models: \(opts.map { $0.id })")
+        dbg("models: \(opts.map { $0.id }); vlmInstalled=\(vlmInstalled); ollama=\(ollamaVersion)")
+    }
+
+    /// Heuristic: is an installed model vision-capable? Primary signal is matching the roster vlm
+    /// tier's base; the substring markers catch common VLMs pulled under a different tag form.
+    private func isVisionModel(_ name: String, vlmBase: String) -> Bool {
+        if !vlmBase.isEmpty && name == vlmBase { return true }
+        let n = name.lowercased()
+        return n.contains("-vl") || n.contains("vl:") || n.contains("llava") || n.contains("vision")
     }
 
     /// Import a sanitized personal-data export (ChatGPT/Claude/generic JSON). The app reads the
@@ -456,6 +493,7 @@ final class AppModel: ObservableObject {
         var displayText = text
         var sendText = text
         var userImage: String?
+        var imageName: String?
         if let att {
             switch att.kind {
             case "file":
@@ -465,8 +503,8 @@ final class AppModel: ObservableObject {
                 displayText = (text.isEmpty ? "" : text + "\n\n") + "(attached: \(att.name))"
             case "image":
                 userImage = att.imagePath
-                sendText = (text.isEmpty ? "Take a look at this image." : text)
-                    + "\n\n[The user attached an image: \(att.name). If you don't have a vision model active, briefly say you can't view images yet.]"
+                imageName = att.name
+                sendText = text.isEmpty ? "Take a look at this image." : text
                 displayText = text
             default: break
             }
@@ -475,12 +513,31 @@ final class AppModel: ObservableObject {
         chat.append(ChatMsg(role: "user", text: displayText, imagePath: userImage))
         chatInput = ""
         attachment = nil
+        attachmentThumb = nil
         autoTitleIfNeeded(displayText)
         persistActive()   // never lose a user turn even if streaming is interrupted
         renderSnapshot()
-        // Send the full content for the LAST user turn; earlier turns keep their displayed text.
-        var msgs = chat.map { ["role": $0.role, "content": $0.text] }
-        if let last = msgs.indices.last { msgs[last]["content"] = sendText }
+        // Build the outbound messages. Each turn's content is its displayed text, except the LAST
+        // user turn carries the full send text — and, when an image is attached AND a vision model is
+        // ready, an OpenAI multimodal content array (text + image_url data URL). Otherwise it degrades
+        // to a text note so the model can clearly say it can't view images yet.
+        var msgs: [[String: Any]] = chat.map { ["role": $0.role, "content": $0.text] }
+        if let last = msgs.indices.last {
+            if let img = userImage, visionAvailable, let dataURL = imageDataURL(img) {
+                msgs[last]["content"] = [
+                    ["type": "text", "text": sendText],
+                    ["type": "image_url", "image_url": ["url": dataURL]],
+                ]
+            } else {
+                var content = sendText
+                if userImage != nil {
+                    let named = imageName.map { ": \($0)" } ?? ""
+                    content += "\n\n[The user attached an image\(named), but no vision model is active. "
+                        + "Briefly say you can't view images yet — they can enable vision from the Models manager.]"
+                }
+                msgs[last]["content"] = content
+            }
+        }
         let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "mode": modeString])
         Task { await postAgent(body: body, contextMessages: msgs) }
     }
@@ -635,7 +692,54 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: attachments (via the + menu)
-    func clearAttachment() { attachment = nil }
+    func clearAttachment() { attachment = nil; attachmentThumb = nil }
+
+    /// Set an image attachment + decode its chip thumbnail once (off the hot render path).
+    private func setImageAttachment(name: String, path: String) {
+        attachment = Attachment(kind: "image", name: name, text: nil, imagePath: path)
+        attachmentThumb = Self.thumbnailImage(path, maxPixel: 48)
+    }
+
+    /// A vision-bound thumbnail capped to an exact PIXEL size (deterministic regardless of source DPI
+    /// or display backing scale), EXIF-stripped and orientation-corrected. Used for both the vision
+    /// payload and the attachment chip so a large image is decoded/downsampled ONCE.
+    static func thumbnailImage(_ path: String, maxPixel: Int) -> NSImage? {
+        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,   // honor EXIF orientation
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+
+    /// Encode an attached image as an OpenAI `image_url` data URL for the vision path. Downsamples to
+    /// an exact 1536px max edge (via ImageIO — deterministic, no backing-scale surprises) and JPEG-
+    /// recompresses; returns nil (→ text-note fallback) on failure or above a hard 12MB ceiling.
+    func imageDataURL(_ path: String) -> String? {
+        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 1536,
+              ] as CFDictionary) else { return nil }
+        let rep = NSBitmapImageRep(cgImage: cg)
+        guard let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else { return nil }
+        guard jpeg.count <= 12 * 1024 * 1024 else { return nil }   // ~16MB base64; never blow the cap
+        return "data:image/jpeg;base64,\(jpeg.base64EncodedString())"
+    }
+
+    /// Attach an image specifically (image-filtered picker). Goes to the vision path when a VLM is
+    /// ready; otherwise the model is told it can't view it yet.
+    func attachImage() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.image]
+        panel.message = "Attach an image"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        setImageAttachment(name: url.lastPathComponent, path: url.path)
+    }
 
     /// Smart attach: accept ANY file, detect its type, and extract content the model can work with —
     /// PDFs (PDFKit) and Word/RTF/HTML docs (NSAttributedString) become text; text/code is read as
@@ -655,7 +759,7 @@ final class AppModel: ObservableObject {
         let docExts: Set<String> = ["doc", "docx", "rtf", "rtfd", "html", "htm", "odt", "pages"]
 
         if imageExts.contains(ext) {
-            attachment = Attachment(kind: "image", name: name, text: nil, imagePath: url.path)
+            setImageAttachment(name: name, path: url.path)
             return
         }
         if videoExts.contains(ext) {
@@ -769,7 +873,7 @@ final class AppModel: ObservableObject {
     /// no grant ends in pending_approval → the biometric sheet (re-run carries the grant). The SSE
     /// reader runs on a detached task and only Sendable values cross the boundary (an AsyncStream
     /// continuation), so tokens apply IN ORDER on the main actor.
-    private func postAgent(body: Data?, contextMessages: [[String: String]]) async {
+    private func postAgent(body: Data?, contextMessages: [[String: Any]]) async {
         let sock = spine.socketPath, tok = currentToken()
         let placeholder = ChatMsg(role: "assistant", text: "", streaming: true)
         let msgId = placeholder.id
@@ -799,7 +903,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Apply one SSE frame to the streaming assistant bubble (runs on the main actor, in order).
-    private func handleSSE(event: String, data: String, msgId: UUID, context: [[String: String]]) {
+    private func handleSSE(event: String, data: String, msgId: UUID, context: [[String: Any]]) {
         guard let i = chat.firstIndex(where: { $0.id == msgId }) else { return }
         switch event {
         case "token":

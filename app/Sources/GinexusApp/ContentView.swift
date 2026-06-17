@@ -304,6 +304,7 @@ struct ContentView: View {
             }
             Section("Attach") {
                 Button("Attach file…", action: model.attachAny)   // PDF / doc / text / code / image / video
+                Button("Attach image…", action: model.attachImage)
                 Button("Import AI data…", action: model.importExport)
             }
         } label: {
@@ -324,10 +325,20 @@ struct ContentView: View {
     @ViewBuilder private var attachmentChip: some View {
         if let att = model.attachment {
             HStack(spacing: 6) {
-                Image(systemName: att.kind == "image" ? "photo" : "doc.text")
-                    .font(.system(size: 11)).foregroundStyle(Brand.ember500)
+                if att.kind == "image", let thumb = model.attachmentThumb {
+                    Image(nsImage: thumb).resizable().scaledToFill()
+                        .frame(width: 22, height: 22).clipShape(RoundedRectangle(cornerRadius: 4))
+                } else {
+                    Image(systemName: att.kind == "image" ? "photo" : "doc.text")
+                        .font(.system(size: 11)).foregroundStyle(Brand.ember500)
+                }
                 Text(att.name).font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Brand.bone50).lineLimit(1)
+                // Vision not ready → tell the user the image will be described, not seen.
+                if att.kind == "image", !model.visionAvailable, !model.visionStatus.isEmpty {
+                    Text(model.visionStatus).font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(0.5)
+                        .foregroundStyle(Brand.muted)
+                }
                 Button(action: { model.clearAttachment() }) {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Brand.muted)
                 }.buttonStyle(.plain)

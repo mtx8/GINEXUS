@@ -41,6 +41,9 @@ pub struct Endpoint {
 /// Quality-first default: chat/reason/agent → the strong model ("smart"); only trivial or
 /// explicitly latency-sensitive work drops to "fast".
 pub fn route(task: &str, difficulty: &str, latency_sensitive: bool) -> &'static str {
+    if task == "vision" {
+        return "vlm";
+    }
     if task == "embed" {
         return "embed";
     }
@@ -51,6 +54,16 @@ pub fn route(task: &str, difficulty: &str, latency_sensitive: bool) -> &'static 
         return "fast";
     }
     "smart"
+}
+
+/// True if any message carries an image part (OpenAI multimodal content array with an `image_url`).
+/// Used to force the vision tier so an image request can never silently route to a text-only model.
+pub fn has_image(messages: &[Value]) -> bool {
+    messages.iter().any(|m| {
+        m.get("content").and_then(|c| c.as_array()).is_some_and(|parts| {
+            parts.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"))
+        })
+    })
 }
 
 pub struct Gateway {
@@ -93,6 +106,17 @@ impl Gateway {
                 api_base: base.clone(),
                 api_key: "ollama".into(),
                 label: "Embed · nomic-embed-text".into(),
+            },
+        );
+        // Vision tier (image understanding). Inert until the operator pulls a VLM — selected only
+        // when a request carries an image; vision must FAIL LOUD, never downgrade to a text model.
+        m.insert(
+            "vlm".to_string(),
+            Endpoint {
+                model: "qwen3-vl:30b-a3b-instruct".into(),
+                api_base: base.clone(),
+                api_key: "ollama".into(),
+                label: "Vision · Qwen3-VL 30B-A3B".into(),
             },
         );
         Self::new(m)
@@ -155,6 +179,10 @@ impl Gateway {
                 let tier = route(task, difficulty, latency_sensitive);
                 if self.has(tier) {
                     tier.to_string()
+                } else if tier == "vlm" {
+                    // Vision must fail LOUD: if no VLM is pulled, return the literal vlm model so the
+                    // request errors cleanly rather than silently routing an image to a blind text model.
+                    "vlm".to_string()
                 } else if self.has("fast") {
                     "fast".to_string()
                 } else {
@@ -542,6 +570,38 @@ mod tests {
         );
         let gw = Gateway::new(m);
         assert_eq!(gw.select(None, "chat", "normal", false), "fast");
+    }
+
+    #[test]
+    fn vision_routing_and_detection() {
+        // has_image: string content → false; content array with an image_url part → true.
+        let text_only = vec![json!({"role": "user", "content": "hello"})];
+        assert!(!has_image(&text_only));
+        let with_image = vec![json!({"role": "user", "content": [
+            {"type": "text", "text": "what is this?"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+        ]})];
+        assert!(has_image(&with_image));
+
+        // route(vision) → vlm; default_local has it.
+        assert_eq!(route("vision", "normal", false), "vlm");
+        let gw = Gateway::default_local();
+        assert_eq!(gw.select(None, "vision", "normal", false), "vlm");
+        // explicit override still wins over vision auto-routing.
+        assert_eq!(gw.select(Some("smart"), "vision", "normal", false), "smart");
+    }
+
+    #[test]
+    fn vision_fails_loud_when_vlm_absent() {
+        // roster without a "vlm" tier: a vision request must NOT downgrade to "fast" — return the
+        // literal "vlm" so Ollama errors cleanly instead of a blind text model hallucinating.
+        let mut m = HashMap::new();
+        m.insert(
+            "fast".to_string(),
+            Endpoint { model: "qwen3:1.7b".into(), api_base: OLLAMA_BASE.into(), api_key: "ollama".into(), label: "Fast".into() },
+        );
+        let gw = Gateway::new(m);
+        assert_eq!(gw.select(None, "vision", "normal", false), "vlm");
     }
 
     // Encode each embedding as a 1-dim vector tagging its SOURCE position, so a realignment bug is

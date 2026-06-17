@@ -12,6 +12,12 @@
       "official_source": "https://hf.co/Qwen/Qwen3-1.7B (Qwen org)",
       "license": "apache-2.0",
       "note": "fast dev/utility model"
+    },
+    "qwen3-vl:30b-a3b-instruct": {
+      "official_source": "https://hf.co/Qwen/Qwen3-VL-30B-A3B-Instruct (Qwen org)",
+      "license": "apache-2.0",
+      "format": "GGUF via Ollama (curated registry tag — NOT raw GGUF+mmproj, which crashes on Apple Silicon, Ollama #16264)",
+      "note": "vision tier; same MoE shape as the chat 30B. REQUIRES Ollama >= 0.12.7 (target 0.30.x). Inert until pulled; selected only when a request carries an image, and vision fails loud (never downgrades to a text model)."
     }
   },
   "default": "auto",
@@ -33,6 +39,12 @@
       "api_base": "http://127.0.0.1:11434/v1",
       "api_key": "ollama",
       "label": "Embed · nomic-embed-text (semantic memory)"
+    },
+    "vlm": {
+      "model": "qwen3-vl:30b-a3b-instruct",
+      "api_base": "http://127.0.0.1:11434/v1",
+      "api_key": "ollama",
+      "label": "Vision · Qwen3-VL 30B-A3B"
     }
   }
 }
