@@ -2,6 +2,7 @@
 // hardened core. Icon rail · conversation sidebar · execution stream · context+tools rail. All
 // MackTrax brand tokens (see Brand.swift) — dark-only, ember the single accent, no fake stats.
 import SwiftUI
+import AppKit
 import GinexusCore
 
 struct ContentView: View {
@@ -130,7 +131,8 @@ struct ContentView: View {
         VStack(spacing: 0) {
             streamHeader.padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 14)
             executionStream
-            inputBar.padding(.horizontal, 24).padding(.vertical, 16)
+            inputBar.frame(maxWidth: 760).frame(maxWidth: .infinity)
+                .padding(.horizontal, 24).padding(.vertical, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -188,14 +190,15 @@ struct ContentView: View {
     private var executionStream: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 22) {
                     if model.chat.isEmpty && model.pending == nil { emptyState }
                     ForEach(model.chat) { msg in streamBlock(msg).id(msg.id) }
                     if let p = model.pending { approvalBlock(p).id("approval") }
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .padding(.horizontal, 24).padding(.bottom, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: 760, alignment: .leading)   // readable centered column (Gemini-style)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 8)
             }
             .onChange(of: model.chat.count) { _, _ in withAnimation(Brand.ease) { proxy.scrollTo("bottom", anchor: .bottom) } }
             .onChange(of: model.chat.last?.text.count) { _, _ in
@@ -215,40 +218,58 @@ struct ContentView: View {
         .padding(.top, 44)
     }
 
-    /// One typed execution block — a raised card framed + labeled by role/phase (the reference look).
-    private func streamBlock(_ msg: ChatMsg) -> some View {
-        let isUser = msg.role == "user"
-        let icon: String, title: String, tint: Color, active: Bool
-        if isUser { icon = "person.fill"; title = "User Input"; tint = Brand.ember500; active = false }
-        else if msg.streaming {
-            if let s = msg.status { icon = "bolt.fill"; title = s; tint = Brand.ember300; active = true }
-            else { icon = "sparkles"; title = "Agent Thought"; tint = Brand.ember300; active = true }
-        } else { icon = "asterisk"; title = "GINEXUS"; tint = Brand.bone200; active = false }
-
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 7) {
-                Image(systemName: icon).font(.system(size: 11)).foregroundStyle(tint)
-                Eyebrow(text: title, color: tint)
-                if active && msg.status != nil { ProgressView().controlSize(.mini) }
-                Spacer()
-            }
-            Group {
-                if isUser {
-                    Text(msg.text).font(Brand.mono(13.5)).foregroundStyle(Brand.bone50).textSelection(.enabled)
-                } else if msg.streaming {
-                    StreamingText(text: msg.text)
-                } else {
-                    MarkdownReply(text: msg.text)
+    /// One conversation turn (Gemini-style): your message as a right-aligned soft bubble; GINEXUS's
+    /// reply as bare full-width prose led by the brand glyph — no card, no button chrome.
+    @ViewBuilder private func streamBlock(_ msg: ChatMsg) -> some View {
+        if msg.role == "user" {
+            HStack(alignment: .top, spacing: 0) {
+                Spacer(minLength: 64)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(msg.text).font(Brand.body(14)).foregroundStyle(Brand.bone50)
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    if let path = msg.imagePath { StreamImage(path: path) }
                 }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(Brand.ink700)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if let path = msg.imagePath { StreamImage(path: path) }
+        } else {
+            HStack(alignment: .top, spacing: 12) {
+                GlyphMark(size: 22)
+                VStack(alignment: .leading, spacing: 10) {
+                    if msg.streaming {
+                        if let s = msg.status {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text(s).font(Brand.mono(11, weight: .medium)).foregroundStyle(Brand.ember300)
+                            }
+                        }
+                        StreamingText(text: msg.text)
+                    } else {
+                        MarkdownReply(text: msg.text)
+                        if let path = msg.imagePath { StreamImage(path: path) }
+                        assistantActions(msg)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 0)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16).padding(.vertical, 13)
-        // Soft, flat conversation fill — NOT a button (no border, no shadow, no raised highlight).
-        .background(isUser ? Brand.ink700 : Brand.ink600)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// Subtle action row under a finished reply (copy, for now).
+    private func assistantActions(_ msg: ChatMsg) -> some View {
+        HStack(spacing: 16) {
+            Button(action: { copyText(msg.text) }) {
+                Image(systemName: "doc.on.doc").font(.system(size: 12)).foregroundStyle(Brand.bone400)
+            }.buttonStyle(.plain).help("Copy")
+            Spacer()
+        }
+        .padding(.top, 4)
+    }
+    private func copyText(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
     }
 
     /// Inline Human Approval block — replaces the modal sheet; Approve drives Touch ID.
