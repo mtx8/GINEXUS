@@ -81,6 +81,11 @@ final class SpineController {
         env["GINEXUS_APP_HOST_SOCK"] = appHostSocketPath
         env["GINEXUS_APP_HOST_TOKEN"] = appHostToken
         env["GINEXUS_MEDIA_BASE"] = "http://127.0.0.1:\(mediaPort)"
+        // Obsidian: auto-detect the operator's open vault so the core's vault tools light up with no
+        // config. Skipped if the vault lives in iCloud (hard rule: never touch ~/Library/Mobile Documents).
+        if let vault = Self.detectObsidianVault() {
+            env["GINEXUS_OBSIDIAN_VAULT"] = vault
+        }
         p.environment = env
         if let logHandle {
             p.standardOutput = logHandle
@@ -116,4 +121,31 @@ final class SpineController {
     }
 
     func shutdown() { process?.terminate(); appHost?.stop(); mediaProcess?.terminate() }
+
+    /// Best-effort discovery of the operator's Obsidian vault from Obsidian's own registry
+    /// (~/Library/Application Support/obsidian/obsidian.json). Prefers the currently-open vault, else
+    /// the most-recently-used. Returns nil if none, the dir is missing, or it lives in iCloud
+    /// (~/Library/Mobile Documents) — which GINEXUS must never touch (global hard rule).
+    static func detectObsidianVault() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let cfg = "\(home)/Library/Application Support/obsidian/obsidian.json"
+        guard let data = FileManager.default.contents(atPath: cfg),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let vaults = root["vaults"] as? [String: [String: Any]] else { return nil }
+        // Sort candidates: open vault first, then by recency (ts).
+        let sorted = vaults.values.sorted { a, b in
+            let ao = (a["open"] as? Bool) ?? false, bo = (b["open"] as? Bool) ?? false
+            if ao != bo { return ao }
+            return ((a["ts"] as? Double) ?? 0) > ((b["ts"] as? Double) ?? 0)
+        }
+        for v in sorted {
+            guard let path = v["path"] as? String else { continue }
+            if path.contains("Mobile Documents") || path.contains("com~apple~CloudDocs") { continue } // iCloud → skip
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+                return path
+            }
+        }
+        return nil
+    }
 }
