@@ -144,6 +144,19 @@ async fn main() {
             eprintln!("registered image_generate tool (media sidecar)");
         }
     }
+    // Obsidian vault tools — registered only when the operator points GINEXUS at a vault dir
+    // (GINEXUS_OBSIDIAN_VAULT). list/search/read are autonomous; write/append are HITL-gated.
+    if let Ok(vault) = std::env::var("GINEXUS_OBSIDIAN_VAULT") {
+        let vp = std::path::PathBuf::from(&vault);
+        if !vault.is_empty() && vp.is_dir() {
+            for t in ginexus_agent::obsidian::obsidian_tools(vp) {
+                registry.register(t);
+            }
+            eprintln!("registered Obsidian vault tools ({vault})");
+        } else if !vault.is_empty() {
+            eprintln!("GINEXUS_OBSIDIAN_VAULT set but not a directory: {vault}");
+        }
+    }
     for t in ginexus_memory::memory_tools(memory.clone()) { // SP3: remember/recall/set/get memory
         registry.register(t);
     }
