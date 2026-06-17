@@ -127,8 +127,27 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .help("Import a sanitized ChatGPT/Claude export into memory")
             .disabled(!model.connected)
+            autonomyToggle
             modelPicker
         }
+    }
+
+    /// HITL ⇄ Autonomous toggle. The hard gate (money / external comms / legal / delete / exec) still
+    /// requires Touch ID even in autonomous mode — this only relaxes ordinary irreversible tools.
+    private var autonomyToggle: some View {
+        Button(action: { model.autonomous.toggle() }) {
+            HStack(spacing: 5) {
+                Image(systemName: model.autonomous ? "bolt.fill" : "hand.raised.fill")
+                Text(model.autonomous ? "AUTO" : "HITL")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
+            }
+            .foregroundStyle(model.autonomous ? Brand.ember500 : Brand.muted)
+        }
+        .buttonStyle(.plain)
+        .help(model.autonomous
+            ? "Autonomous: irreversible actions run unattended — EXCEPT hard-gated ones (money, external comms, legal, delete, code execution), which always ask. Click for human-in-the-loop."
+            : "Human-in-the-loop: every irreversible action asks for Touch ID. Click to enable autonomous mode.")
+        .disabled(!model.connected)
     }
 
     /// Auto/manual model selector — "Auto" routes to the 30B for chat/agent; pick a tier to pin it.
