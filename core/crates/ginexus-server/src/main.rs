@@ -639,6 +639,29 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 Err(e) => err(&mut stream, 502, "Bad Gateway", &e).await,
             }
         }
+        ("GET", "/v1/memory") => {
+            // Inspect long-term memory: core blocks (always-in-context, incl. the consolidated
+            // profile) + total archival fact count + the most recent facts. Read-only.
+            let blocks = state.memory.blocks();
+            let facts = state.memory.all_facts();
+            let recent: Vec<Value> = facts
+                .iter()
+                .rev()
+                .take(25)
+                .map(|f| json!({"text": f.text, "origin": format!("{:?}", f.origin).to_lowercase(), "ts": f.ts}))
+                .collect();
+            json_ok(&mut stream, json!({"blocks": blocks, "facts_count": facts.len(), "recent": recent})).await;
+        }
+        ("POST", "/v1/memory/search") => {
+            // Semantic search over archival memory (cosine when embeddings exist, else keyword).
+            let q = body.get("query").and_then(|x| x.as_str()).unwrap_or("").trim();
+            let hits = if q.is_empty() { Vec::new() } else { state.memory.search(q, 15) };
+            let facts: Vec<Value> = hits
+                .iter()
+                .map(|f| json!({"text": f.text, "origin": format!("{:?}", f.origin).to_lowercase()}))
+                .collect();
+            json_ok(&mut stream, json!({"query": q, "facts": facts})).await;
+        }
         ("POST", "/v1/ingest") => {
             // Import a sanitized personal-data export into quarantined memory. The signed app
             // reads the file under its own TCC and posts the bytes as `data`; `path` is for

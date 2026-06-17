@@ -22,6 +22,20 @@ struct ModelOption: Identifiable, Sendable, Hashable {
     let label: String
 }
 
+/// A core-memory block (name → value), e.g. the consolidated "profile".
+struct BlockKV: Identifiable, Sendable {
+    let id = UUID()
+    let name: String
+    let value: String
+}
+
+/// One archival memory fact surfaced in the memory browser.
+struct MemFact: Identifiable, Sendable {
+    let id = UUID()
+    let text: String
+    let origin: String   // "trusted" | "untrusted"
+}
+
 /// An irreversible/OS action the agent paused on, awaiting biometric approval before it runs.
 struct PendingAction: Identifiable {
     let id = UUID()
@@ -52,6 +66,14 @@ final class AppModel: ObservableObject {
     private var modeString: String { autonomous ? "autonomous" : "hitl" }
     /// HITL: when set, an irreversible/OS action is waiting on the biometric approval sheet.
     @Published var pending: PendingAction?
+
+    /// Memory browser ("what GINEXUS knows about you"): core blocks + searchable archival facts.
+    @Published var memoryOpen = false
+    @Published var memBlocks: [BlockKV] = []
+    @Published var memFactsCount = 0
+    @Published var memResults: [MemFact] = []
+    @Published var memQuery = ""
+    @Published var memLoading = false
     /// The core's current boot id (binds approval tokens to this server launch). Fetched on connect.
     private var bootId = ""
 
@@ -205,6 +227,84 @@ final class AppModel: ObservableObject {
         let msgs = chat.map { ["role": $0.role, "content": $0.text] }
         let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "mode": modeString])
         Task { await postAgent(body: body, contextMessages: msgs) }
+    }
+
+    // MARK: capability quick-actions (wrap the current input → invoke a specific capability)
+    var canQuickAction: Bool { !chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !sending }
+    private func quick(_ directive: String) {
+        let t = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        send("\(directive)\n\n\(t)")
+    }
+    func runCouncil()  { quick("Convene a council to deliberate on this, then give me the synthesized verdict:") }
+    func runResearch() { quick("Do deep research on this and produce a clear, cited report:") }
+    func runImage()    { quick("Generate an image:") }
+
+    /// Build/refresh the durable self-model from long-term memory (POST /v1/consolidate). Appends the
+    /// saved profile to the chat and refreshes the memory browser if open.
+    func buildProfile() {
+        guard !sending else { return }
+        sending = true
+        chat.append(ChatMsg(role: "assistant", text: "", streaming: true, status: "building your profile from memory…"))
+        guard let id = chat.last?.id else { sending = false; return }
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["block": "profile"])
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/consolidate", token: tok, jsonBody: body)
+            }.value
+            if let i = chat.firstIndex(where: { $0.id == id }) {
+                if case .success(let r) = res, let d = r.body.data(using: .utf8),
+                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                    let answer = (o["answer"] as? String) ?? "(no profile)"
+                    chat[i].text = "**Profile** (saved to memory):\n\n\(answer)"
+                } else {
+                    chat[i].text = "Profile build failed."
+                }
+                chat[i].streaming = false
+                chat[i].status = nil
+            }
+            sending = false
+            renderSnapshot()
+            if memoryOpen { openMemory() }
+        }
+    }
+
+    // MARK: memory browser
+    func openMemory() {
+        memoryOpen = true
+        memLoading = true
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/memory", token: tok, jsonBody: nil)
+            }.value
+            memLoading = false
+            guard case .success(let r) = res, let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+            memFactsCount = (o["facts_count"] as? Int) ?? 0
+            let blocks = (o["blocks"] as? [String: String]) ?? [:]
+            memBlocks = blocks.map { BlockKV(name: $0.key, value: $0.value) }.sorted { $0.name < $1.name }
+            let recent = (o["recent"] as? [[String: Any]]) ?? []
+            memResults = recent.map { MemFact(text: ($0["text"] as? String) ?? "", origin: ($0["origin"] as? String) ?? "") }
+        }
+    }
+    func searchMemory() {
+        let q = memQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return }
+        memLoading = true
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["query": q])
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/memory/search", token: tok, jsonBody: body)
+            }.value
+            memLoading = false
+            guard case .success(let r) = res, let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+            let facts = (o["facts"] as? [[String: Any]]) ?? []
+            memResults = facts.map { MemFact(text: ($0["text"] as? String) ?? "", origin: ($0["origin"] as? String) ?? "") }
+        }
     }
 
     /// Streaming /v1/agent/stream round-trip. A placeholder assistant bubble is appended and grows
