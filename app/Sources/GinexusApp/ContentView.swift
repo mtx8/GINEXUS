@@ -259,12 +259,31 @@ struct ContentView: View {
                         } else {
                             MarkdownReply(text: msg.text)
                             if let path = msg.imagePath { StreamImage(path: path) }
+                            if let doc = msg.docPath { finalOutputCard(doc) }
                             assistantActions(msg)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     Spacer(minLength: 0)
                 }
+            }
+        }
+    }
+
+    /// Final Output card — a generated PDF/Word document with open + reveal actions.
+    private func finalOutputCard(_ path: String) -> some View {
+        let url = URL(fileURLWithPath: path)
+        let isPDF = path.lowercased().hasSuffix(".pdf")
+        return BlockCard(label: "Final Output", icon: "doc.richtext", accent: Brand.ember500) {
+            HStack(spacing: 12) {
+                Image(systemName: isPDF ? "doc.fill" : "doc.text.fill").font(.system(size: 20)).foregroundStyle(Brand.ember500)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(url.lastPathComponent).font(Brand.mono(12, weight: .medium)).foregroundStyle(Brand.bone50).lineLimit(1).truncationMode(.middle)
+                    Text(isPDF ? "PDF DOCUMENT" : "WORD DOCUMENT").font(Brand.mono(8.5, weight: .bold)).kerning(0.8).foregroundStyle(Brand.bone400)
+                }
+                Spacer()
+                Button(action: { NSWorkspace.shared.open(url) }) { TacticalLabel(text: "Open", icon: "arrow.up.forward", filled: true) }.buttonStyle(.plain)
+                Button(action: { NSWorkspace.shared.activateFileViewerSelecting([url]) }) { TacticalLabel(text: "Reveal") }.buttonStyle(.plain)
             }
         }
     }
