@@ -366,6 +366,12 @@ async fn read_request(stream: &mut UnixStream) -> Option<Request> {
             }
         }
     }
+    // Bound the body so a huge (or lying) Content-Length can't drive unbounded allocation. A 24MB
+    // ceiling leaves headroom for a ~16MB base64 image + the transcript; bigger bodies are refused.
+    const MAX_BODY: usize = 24 * 1024 * 1024;
+    if content_length > MAX_BODY {
+        return None;
+    }
     let mut body = buf[header_end..].to_vec();
     while body.len() < content_length {
         let n = stream.read(&mut tmp).await.ok()?;
@@ -373,6 +379,9 @@ async fn read_request(stream: &mut UnixStream) -> Option<Request> {
             break;
         }
         body.extend_from_slice(&tmp[..n]);
+        if body.len() > MAX_BODY {
+            return None; // body exceeded the ceiling even if Content-Length lied
+        }
     }
     body.truncate(content_length);
     Some(Request { method, path, bearer, body })
@@ -609,12 +618,16 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 return Ok(());
             }
             // Auto/manual model selection: model absent/"auto" → policy route; else explicit tier.
-            let requested = body.get("model").and_then(|m| m.as_str());
             let difficulty = body.get("difficulty").and_then(|d| d.as_str()).unwrap_or("normal");
             let latency = body.get("latency_sensitive").and_then(|l| l.as_bool()).unwrap_or(false);
-            let model = state.gateway.select(requested, "chat", difficulty, latency);
-            let messages = with_memory(&state.memory,
-                body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
+            let raw = body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+            // An image FORCES the vision tier: drop any explicit pick so an image can never be sent
+            // to a blind text model (the fail-loud invariant). Otherwise honor the requested model.
+            let has_img = ginexus_gateway::has_image(&raw);
+            let requested = if has_img { None } else { body.get("model").and_then(|m| m.as_str()) };
+            let task = if has_img { "vision" } else { "chat" };
+            let model = state.gateway.select(requested, task, difficulty, latency);
+            let messages = with_memory(&state.memory, raw);
             match state.gateway.chat(&model, &messages).await {
                 Ok(content) => {
                     let _ = state.audit.record("chat", json!({"model": model, "out_len": content.len()}));
@@ -630,12 +643,15 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 err(&mut stream, 503, "Service Unavailable", &e.to_string()).await;
                 return Ok(());
             }
-            // Agent work defaults to the strong model (task "reason"); explicit pick still wins.
-            let requested = body.get("model").and_then(|m| m.as_str());
+            // Agent work defaults to the strong model (task "reason"); explicit pick wins UNLESS an
+            // image is present, which forces the vision tier (never blind a text model with an image).
             let difficulty = body.get("difficulty").and_then(|d| d.as_str()).unwrap_or("normal");
-            let model = state.gateway.select(requested, "reason", difficulty, false);
-            let messages = with_memory(&state.memory,
-                body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
+            let raw = body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+            let has_img = ginexus_gateway::has_image(&raw);
+            let requested = if has_img { None } else { body.get("model").and_then(|m| m.as_str()) };
+            let task = if has_img { "vision" } else { "reason" };
+            let model = state.gateway.select(requested, task, difficulty, false);
+            let messages = with_memory(&state.memory, raw);
             let grants = parse_grants(&body);
             // Autonomy mode: "autonomous" runs irreversible tools unattended EXCEPT hard-gated ones
             // (money/comms/legal/delete/arbitrary-exec); default is human-in-the-loop.
@@ -667,11 +683,13 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 err(&mut stream, 503, "Service Unavailable", &e.to_string()).await;
                 return Ok(());
             }
-            let requested = body.get("model").and_then(|m| m.as_str());
             let difficulty = body.get("difficulty").and_then(|d| d.as_str()).unwrap_or("normal");
-            let model = state.gateway.select(requested, "reason", difficulty, false);
-            let messages = with_memory(&state.memory,
-                body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
+            let raw = body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+            let has_img = ginexus_gateway::has_image(&raw);
+            let requested = if has_img { None } else { body.get("model").and_then(|m| m.as_str()) };
+            let task = if has_img { "vision" } else { "reason" };
+            let model = state.gateway.select(requested, task, difficulty, false);
+            let messages = with_memory(&state.memory, raw);
             let grants = parse_grants(&body);
             let mode = match body.get("mode").and_then(|m| m.as_str()) {
                 Some("autonomous") => ginexus_agent::Mode::Autonomous,
