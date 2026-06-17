@@ -31,9 +31,6 @@ fn safe_vault_path(vault: &Path, rel: &str, must_exist: bool) -> Result<PathBuf,
         return Err("path may not contain '.' or '..' components".into());
     }
     let rel_md = if rel.ends_with(".md") { rel.to_string() } else { format!("{rel}.md") };
-    if rel_md.starts_with(".obsidian") || rel_md.split('/').next() == Some(".obsidian") {
-        return Err("the .obsidian config dir is off-limits".into());
-    }
     let root = vault.canonicalize().map_err(|e| format!("vault not found: {e}"))?;
     let target = root.join(&rel_md);
     // Confinement: the parent must exist and canonicalize inside the vault (defeats symlink escape).
@@ -42,6 +39,16 @@ fn safe_vault_path(vault: &Path, rel: &str, must_exist: bool) -> Result<PathBuf,
         parent.canonicalize().map_err(|_| "target folder does not exist in the vault".to_string())?;
     if !parent_canon.starts_with(&root) {
         return Err("path escapes the vault".into());
+    }
+    // Block config/system dirs anywhere in the CANONICALIZED path — case-insensitive, so a case
+    // variant like ".Obsidian" can't slip past on a case-insensitive macOS volume.
+    if let Ok(rel_dir) = parent_canon.strip_prefix(&root) {
+        for comp in rel_dir.components() {
+            let c = comp.as_os_str().to_string_lossy().to_lowercase();
+            if SKIP_DIRS.contains(&c.as_str()) {
+                return Err("that folder is off-limits".into());
+            }
+        }
     }
     if must_exist && !target.exists() {
         return Err(format!("note '{rel_md}' not found"));
@@ -306,8 +313,11 @@ mod tests {
         assert!(!read.run(json!({"path": "../secret"})).ok); // parent escape
         assert!(!read.run(json!({"path": "/etc/passwd"})).ok); // absolute
         assert!(!read.run(json!({"path": ".obsidian/app.json"})).ok); // config off-limits
+        assert!(!read.run(json!({"path": ".Obsidian/app.json"})).ok); // case variant also blocked
         let write = tool(&tools, "obsidian_write");
         assert!(!write.run(json!({"path": "../evil", "content": "x"})).ok);
+        assert!(!write.run(json!({"path": ".obsidian/evil", "content": "x"})).ok); // no config writes
+        assert!(!write.run(json!({"path": ".Obsidian/evil", "content": "x"})).ok); // case variant too
         std::fs::remove_dir_all(&dir).ok();
     }
 
