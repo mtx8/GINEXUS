@@ -41,6 +41,13 @@ final class AppModel: ObservableObject {
     /// Model picker: "auto" + the roster from GET /v1/models. Default "auto" → the 30B for chat/agent.
     @Published var models: [ModelOption] = [ModelOption(id: "auto", label: "Auto (smart by default)")]
     @Published var selectedModel = "auto"
+
+    /// Autonomy mode. false = human-in-the-loop (every irreversible action asks for Touch ID).
+    /// true = autonomous: irreversible tools run unattended EXCEPT hard-gated ones (money / external
+    /// comms / legal / irreversible delete / arbitrary execution), which ALWAYS require approval —
+    /// the non-overridable hard gate. Sent to /v1/agent as `mode`.
+    @Published var autonomous = false
+    private var modeString: String { autonomous ? "autonomous" : "hitl" }
     /// HITL: when set, an irreversible/OS action is waiting on the biometric approval sheet.
     @Published var pending: PendingAction?
     /// The core's current boot id (binds approval tokens to this server launch). Fetched on connect.
@@ -190,7 +197,7 @@ final class AppModel: ObservableObject {
         chatInput = ""
         renderSnapshot()
         let msgs = chat.map { ["role": $0.role, "content": $0.text] }
-        let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs])
+        let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "mode": modeString])
         Task { await postAgent(body: body, contextMessages: msgs) }
     }
 
@@ -310,7 +317,7 @@ final class AppModel: ObservableObject {
         ]
         let msgs = p.messages
         // Serialize here (in @MainActor scope) so only Sendable Data crosses the Task boundary.
-        let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "grants": [grant]])
+        let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "grants": [grant], "mode": modeString])
         pending = nil
         sending = true
         renderSnapshot()
