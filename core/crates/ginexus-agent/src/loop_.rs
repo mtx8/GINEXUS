@@ -216,8 +216,12 @@ impl<'a> AgentLoop<'a> {
     }
 
     /// Run sub-task(s) as fresh worker agents (own clean context, read-only tools, depth+1) and
-    /// return their results. Sequential; recursion is depth-bounded (MAX_DELEGATE_DEPTH) so the
-    /// boxed future is finite. Workers get no approvals (read-only registry → nothing to gate).
+    /// return their results. **Concurrent**: the sub-agents run together (`join_all`), so wall-clock
+    /// is the SLOWEST worker, not the sum — the model calls are I/O-bound, and while one worker
+    /// awaits the model another fires its request. Output preserves task order (join_all is
+    /// order-preserving). Recursion is depth-bounded (MAX_DELEGATE_DEPTH) and each worker future is
+    /// boxed (`dyn Future`) so the recursive future type is finite. Fan-out is capped (MAX_SUBTASKS).
+    /// Workers get a read-only registry + no approvals (nothing to gate); safe to run unattended.
     async fn run_delegate(&self, args: &Value, sub_registry: &ToolRegistry, now_ms: i64) -> String {
         let tasks: Vec<String> = match args.get("tasks").and_then(|t| t.as_array()) {
             Some(arr) => arr.iter().filter_map(|t| t.as_str().map(str::to_string)).collect(),
@@ -230,22 +234,41 @@ impl<'a> AgentLoop<'a> {
         if tasks.is_empty() {
             return "error: delegate requires 'task' (string) or 'tasks' (array of strings)".into();
         }
-        let mut out = String::new();
-        for (i, task) in tasks.into_iter().take(MAX_SUBTASKS).enumerate() {
-            let sub = AgentLoop {
+        let tasks: Vec<String> = tasks.into_iter().take(MAX_SUBTASKS).collect();
+
+        // One worker AgentLoop per task. Kept in a Vec that outlives the join so each worker future
+        // can borrow its loop (run takes &self) across the concurrent await.
+        let subs: Vec<AgentLoop> = (0..tasks.len())
+            .map(|_| AgentLoop {
                 model: self.model,
                 registry: sub_registry,
                 hitl: self.hitl,
                 max_iters: self.max_iters.min(4),
                 depth: self.depth + 1,
                 mode: Mode::Hitl, // workers are read-only; mode is moot, Hitl is the safe default
-            };
-            let msgs = vec![json!({"role": "user", "content": &task})];
-            // Box the recursive call so the returned future has a finite size.
-            let res = Box::pin(sub.run(msgs, &[], None, now_ms)).await;
-            out.push_str(&format!("[subagent {}] {} → {}\n\n", i + 1, task, res.answer.trim()));
-        }
-        out.trim_end().to_string()
+            })
+            .collect();
+
+        // Box each worker future (heap indirection breaks the recursive run→delegate→run type into a
+        // finite size). Keep it a CONCRETE boxed future (not `dyn … + Send`): all worker blocks share
+        // one anonymous type, so auto-trait inference propagates Send through the recursion concretely
+        // — a `dyn … + Send` cast can't, because proving its Send bound is circular through the
+        // recursion. The server (multi-thread runtime) needs the loop future Send; this stays Send.
+        let futs: Vec<_> = subs
+            .iter()
+            .zip(tasks.iter())
+            .enumerate()
+            .map(|(i, (sub, task))| {
+                let msgs = vec![json!({"role": "user", "content": task})];
+                Box::pin(async move {
+                    let res = sub.run(msgs, &[], None, now_ms).await;
+                    format!("[subagent {}] {} → {}\n\n", i + 1, task, res.answer.trim())
+                })
+            })
+            .collect();
+
+        let parts = futures_util::future::join_all(futs).await;
+        parts.concat().trim_end().to_string()
     }
 }
 
@@ -292,6 +315,51 @@ mod tests {
             let turn = self.turns[(*i).min(self.turns.len() - 1)].clone();
             *i += 1;
             turn
+        }
+    }
+
+    /// Concurrency-safe mock: response is a PURE FUNCTION of the messages (no shared counter), so it
+    /// behaves deterministically even when workers call it in nondeterministic order under join_all.
+    struct RoutingMock;
+    #[async_trait]
+    impl ModelCall for RoutingMock {
+        async fn call(&self, m: &[Value], _t: &[Value]) -> AssistantTurn {
+            let blob: String =
+                m.iter().filter_map(|x| x["content"].as_str()).collect::<Vec<_>>().join(" ");
+            let last = m.last().and_then(|x| x["content"].as_str()).unwrap_or("");
+            // Parent's 2nd call: both workers' results are present → synthesize. (Checked FIRST so the
+            // task strings echoed in the delegate output don't re-trigger a worker branch.)
+            if blob.contains("ALPHA_OK") && blob.contains("BETA_OK") {
+                final_turn("both done: ALPHA_OK + BETA_OK")
+            } else if last.contains("alpha subtask") {
+                final_turn("ALPHA_OK")
+            } else if last.contains("beta subtask") {
+                final_turn("BETA_OK")
+            } else {
+                // Parent's 1st call: fan out two concurrent workers.
+                call_turn(tc("delegate", json!({"tasks": ["alpha subtask", "beta subtask"]})))
+            }
+        }
+    }
+
+    /// Mock that SLEEPS inside each worker call, to prove fan-out is concurrent (wall-clock = slowest
+    /// worker, not the sum). Routes by message shape (no shared counter → concurrency-safe).
+    struct SleepMock {
+        per_call_ms: u64,
+    }
+    #[async_trait]
+    impl ModelCall for SleepMock {
+        async fn call(&self, m: &[Value], _t: &[Value]) -> AssistantTurn {
+            let has_tool = m.iter().any(|x| x["role"] == "tool");
+            let last = m.last().and_then(|x| x["content"].as_str()).unwrap_or("");
+            if has_tool {
+                final_turn("done") // parent synthesis after workers return
+            } else if last.contains("slow") {
+                tokio::time::sleep(std::time::Duration::from_millis(self.per_call_ms)).await;
+                final_turn("OK")
+            } else {
+                call_turn(tc("delegate", json!({"tasks": ["slow1", "slow2", "slow3"]})))
+            }
         }
     }
 
@@ -399,6 +467,41 @@ mod tests {
         assert_eq!(res.status, AgentStatus::Final);
         assert!(res.trace.iter().any(|(n, _)| n == "delegate"));
         assert!(res.answer.contains("42"));
+    }
+
+    #[tokio::test]
+    async fn delegate_runs_subagents_concurrently_and_preserves_order() {
+        let dir = tmp_dir();
+        let reg = notes_registry(dir);
+        let model = RoutingMock;
+        let hitl = HitlPolicy::new();
+        let loop_ =
+            AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
+        let res = loop_
+            .run(vec![json!({"role": "user", "content": "do the parallel job"})], &[], None, NOW)
+            .await;
+        assert_eq!(res.status, AgentStatus::Final);
+        // The synthesis only fires if BOTH workers completed and their results reached the parent —
+        // proving the concurrent fan-out ran both sub-agents to completion.
+        assert!(res.answer.contains("ALPHA_OK") && res.answer.contains("BETA_OK"), "got: {}", res.answer);
+        assert_eq!(res.trace.iter().filter(|(n, _)| n == "delegate").count(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delegate_fan_out_is_concurrent_not_sequential() {
+        let dir = tmp_dir();
+        let reg = notes_registry(dir);
+        let model = SleepMock { per_call_ms: 150 };
+        let hitl = HitlPolicy::new();
+        let loop_ =
+            AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
+        let t0 = std::time::Instant::now();
+        let res = loop_.run(vec![json!({"role": "user", "content": "begin"})], &[], None, NOW).await;
+        let elapsed = t0.elapsed();
+        assert_eq!(res.status, AgentStatus::Final);
+        // 3 workers × 150ms each: concurrent ≈ 150ms, sequential ≈ 450ms. Generous ceiling at 350ms
+        // proves they overlapped (would be impossible if run one-after-another).
+        assert!(elapsed.as_millis() < 350, "fan-out not concurrent: took {}ms (sequential would be ~450ms)", elapsed.as_millis());
     }
 
     #[tokio::test]
