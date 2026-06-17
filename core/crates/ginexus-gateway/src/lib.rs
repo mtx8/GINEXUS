@@ -207,6 +207,99 @@ impl Gateway {
         }
         Ok(AssistantTurn { content, tool_calls })
     }
+
+    /// Streaming completion: same as `complete_with_tools` but forwards each content delta to
+    /// `on_token` AS IT ARRIVES (OpenAI-style SSE, `stream:true`), and still returns the assembled
+    /// `AssistantTurn` (content + any tool calls) at the end. Tool-call deltas arrive fragmented
+    /// (per `index`, with `arguments` concatenated across chunks), so we accumulate them and parse
+    /// once complete. Content during a tool-calling turn (model "thinking") streams too — harmless.
+    pub async fn complete_with_tools_streaming<F>(
+        &self, model: &str, messages: &[Value], tools: &[Value], on_token: F,
+    ) -> Result<AssistantTurn, String>
+    where
+        F: Fn(&str),
+    {
+        use futures_util::StreamExt;
+        let ep = self.resolve(model);
+        let mut body =
+            json!({"model": ep.model, "messages": messages, "stream": true, "temperature": 0});
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
+        let resp = self
+            .client
+            .post(format!("{}/chat/completions", ep.api_base))
+            .bearer_auth(&ep.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("model server HTTP {}", resp.status()));
+        }
+
+        let mut content = String::new();
+        // tool-call accumulators keyed by index: (id, name, arguments-so-far)
+        let mut tcs: std::collections::BTreeMap<usize, (String, String, String)> = Default::default();
+        let mut stream = resp.bytes_stream();
+        let mut buf = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("stream error: {e}"))?;
+            buf.push_str(&String::from_utf8_lossy(&chunk));
+            // Process complete SSE lines; keep any partial trailing line in `buf`.
+            while let Some(nl) = buf.find('\n') {
+                let line = buf[..nl].trim().to_string();
+                buf.drain(..=nl);
+                let data = match line.strip_prefix("data:") {
+                    Some(d) => d.trim(),
+                    None => continue,
+                };
+                if data.is_empty() || data == "[DONE]" {
+                    continue;
+                }
+                let v: Value = match serde_json::from_str(data) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let delta = &v["choices"][0]["delta"];
+                if let Some(tok) = delta.get("content").and_then(|c| c.as_str()) {
+                    if !tok.is_empty() {
+                        content.push_str(tok);
+                        on_token(tok);
+                    }
+                }
+                if let Some(arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                    for tc in arr {
+                        let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                        let e = tcs.entry(idx).or_default();
+                        if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
+                            if !id.is_empty() {
+                                e.0 = id.to_string();
+                            }
+                        }
+                        if let Some(n) = tc["function"].get("name").and_then(|n| n.as_str()) {
+                            if !n.is_empty() {
+                                e.1 = n.to_string();
+                            }
+                        }
+                        if let Some(a) = tc["function"].get("arguments").and_then(|a| a.as_str()) {
+                            e.2.push_str(a);
+                        }
+                    }
+                }
+            }
+        }
+
+        let tool_calls = tcs
+            .into_values()
+            .filter(|(_, name, _)| !name.is_empty())
+            .map(|(id, name, args)| {
+                let arguments = serde_json::from_str(&args).unwrap_or_else(|_| json!({}));
+                ToolCall { id, name, arguments }
+            })
+            .collect();
+        Ok(AssistantTurn { content: if content.is_empty() { None } else { Some(content) }, tool_calls })
+    }
 }
 
 /// Build the shared blocking embed client once (connection pool + TLS config reused across calls).

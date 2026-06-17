@@ -30,7 +30,7 @@ hex = "0.4"
 async-trait = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "sync", "time"] }
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
 ginexus-security = { path = "crates/ginexus-security" }
 ginexus-agent = { path = "crates/ginexus-agent" }
 ginexus-gateway = { path = "crates/ginexus-gateway" }
