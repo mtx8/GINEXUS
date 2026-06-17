@@ -61,11 +61,13 @@ pkill -f "GINEXUS.app/Contents/MacOS/GinexusApp" 2>/dev/null || true
 pkill -f "GINEXUS.app/Contents/MacOS/ginexus-server" 2>/dev/null || true
 rm -f "$HOME/Library/Application Support/GINEXUS/run/ginexus.sock" 2>/dev/null || true
 sleep 1
-HOME_DESKTOP="$HOME/Desktop/GINEXUS.app"
 DESTS=()
-# /Applications (Launchpad/Spotlight) when writable, else ~/Applications.
+# Install to /Applications (Launchpad/Spotlight/Dock) when writable, else ~/Applications.
 if [ -w /Applications ] 2>/dev/null; then DESTS+=("/Applications/GINEXUS.app"); else mkdir -p "$HOME/Applications"; DESTS+=("$HOME/Applications/GINEXUS.app"); fi
-DESTS+=("$HOME_DESKTOP")   # always drop a clickable copy on the Desktop
+# Also drop a clickable copy INSIDE the project folder (repo root), which is the parent of this app/ dir.
+DESTS+=("$(dirname "$PWD")/GINEXUS.app")
+# Keep the Desktop uncluttered — remove any loose Desktop copy from earlier builds.
+rm -rf "$HOME/Desktop/GINEXUS.app" 2>/dev/null || true
 for dest in "${DESTS[@]}"; do
   rm -rf "$dest"
   cp -R "$APP" "$dest"
