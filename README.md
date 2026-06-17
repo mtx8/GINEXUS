@@ -15,7 +15,7 @@ shell) · `ai-export-sanitizer` (ingest) · `Hermes` (always-on body, later).
 ## Status
 **v1 daily-driver works end-to-end** (acceptance: *researched X → wrote it to a file → recalled it
 the next session*). The core engine is **Rust** (`core/` — crates: security, agent, gateway, mcp,
-memory, skills, sanitize, server; 80+ tests green). Python is the reference impl only, retired from
+memory, skills, sanitize, server; 85 tests green). Python is the reference impl only, retired from
 the runtime path (ADR 0003).
 
 Shipped: SP0 security spine · SP1 model router · SP1.5 notarized self-contained app (Rust core
@@ -24,7 +24,8 @@ injection-quarantined ingestion · **semantic recall** (Rust-native vector cosin
 embeddings) · SP5 macOS integration (Shortcuts/EventKit + Touch-ID approval) · SP6 image generation ·
 hot-loadable **skills** · **subagents** (delegate) · **scheduler/heartbeat** · **autonomy modes**
 (HITL default + fully-autonomous + non-overridable hard gate). The operator's **real ChatGPT export
-(3,779 messages)** is sanitized + embedded into quarantined memory in ~25s (batched embeddings).
+(3,779 user-message facts** across 11 shards) is sanitized + embedded into quarantined memory in a
+measured 25s (batched embeddings).
 
 Remaining: SP7 Home Assistant IoT · SP8 self-improvement + Council/Group mode · SP9 Hermes always-on
 body + iPhone/Watch. See the master design:
