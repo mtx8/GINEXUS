@@ -15,19 +15,20 @@ shell) · `ai-export-sanitizer` (ingest) · `Hermes` (always-on body, later).
 ## Status
 **v1 daily-driver works end-to-end** (acceptance: *researched X → wrote it to a file → recalled it
 the next session*). The core engine is **Rust** (`core/` — crates: security, agent, gateway, mcp,
-memory, skills, sanitize, server; 85 tests green). Python is the reference impl only, retired from
+memory, skills, sanitize, server; 93 tests green). Python is the reference impl only, retired from
 the runtime path (ADR 0003).
 
 Shipped: SP0 security spine · SP1 model router · SP1.5 notarized self-contained app (Rust core
 embedded + signed) · SP2 agent loop + MCP host · SP4 web + safe terminal · SP3 two-tier memory +
 injection-quarantined ingestion · **semantic recall** (Rust-native vector cosine over Ollama
 embeddings) · SP5 macOS integration (Shortcuts/EventKit + Touch-ID approval) · SP6 image generation ·
-hot-loadable **skills** · **subagents** (delegate) · **scheduler/heartbeat** · **autonomy modes**
-(HITL default + fully-autonomous + non-overridable hard gate). The operator's **real ChatGPT export
-(3,779 user-message facts** across 11 shards) is sanitized + embedded into quarantined memory in a
-measured 25s (batched embeddings).
+hot-loadable **skills** · **subagents** (concurrent fan-out) · **Council/Group mode** (parallel
+persona deliberation → synthesis) · **deep research** (decompose → parallel research → cited report) ·
+**scheduler/heartbeat** · **autonomy modes** (HITL default + fully-autonomous + non-overridable hard
+gate, toggled from the UI). The operator's **real ChatGPT export (3,779 user-message facts** across
+11 shards) is sanitized + embedded into quarantined memory in a measured 25s (batched embeddings).
 
-Remaining: SP7 Home Assistant IoT · SP8 self-improvement + Council/Group mode · SP9 Hermes always-on
+Remaining: SP7 Home Assistant IoT · SP8 self-improvement loop · SP9 Hermes always-on
 body + iPhone/Watch. See the master design:
 [`docs/superpowers/specs/2026-06-15-ginexus-master-design.md`](docs/superpowers/specs/2026-06-15-ginexus-master-design.md).
 
