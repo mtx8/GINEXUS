@@ -564,7 +564,15 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             };
             let drain = async {
                 while let Some(frame) = rx.recv().await {
+                    let is_done = frame.starts_with("event: done");
                     if stream.write_all(frame.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    // Terminate on the final `done` frame rather than waiting for the channel to
+                    // close — the on_token/on_event sender clones outlive the run, so the channel
+                    // would otherwise never close and this would deadlock the join (connection
+                    // stays open → the client's read never returns → its UI stays "sending").
+                    if is_done {
                         break;
                     }
                 }
