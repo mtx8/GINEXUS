@@ -154,6 +154,38 @@ fn council_def() -> Value {
     }})
 }
 
+/// Best-effort extract a JSON array of non-empty strings from model output (tolerates prose or a
+/// ```json fence around it by slicing the outermost `[` … `]`).
+fn parse_string_array(s: &str) -> Option<Vec<String>> {
+    let start = s.find('[')?;
+    let end = s.rfind(']')?;
+    if end <= start {
+        return None;
+    }
+    let arr: Value = serde_json::from_str(&s[start..=end]).ok()?;
+    let v: Vec<String> = arr
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_str().map(str::to_string))
+        .filter(|x| !x.trim().is_empty())
+        .collect();
+    (!v.is_empty()).then_some(v)
+}
+
+/// The synthetic `deep_research` tool (handled by the loop): decompose → parallel research → report.
+fn deep_research_def() -> Value {
+    json!({"type": "function", "function": {
+        "name": "deep_research",
+        "description": "Conduct DEEP RESEARCH on a question: decompose it into sub-questions, \
+                        investigate each IN PARALLEL with fresh worker agents (web search/fetch + \
+                        memory recall), then synthesize a cited report. Use for open-ended questions \
+                        that need multiple sources or angles. Pass 'question'.",
+        "parameters": {"type": "object",
+                       "properties": {"question": {"type": "string"}},
+                       "required": ["question"]}
+    }})
+}
+
 /// The synthetic `delegate` tool the loop advertises (handled by the loop itself, not the registry).
 fn delegate_def() -> Value {
     json!({"type": "function", "function": {
@@ -188,6 +220,7 @@ impl<'a> AgentLoop<'a> {
         let mut defs = self.registry.definitions();
         if can_delegate {
             defs.push(delegate_def());
+            defs.push(deep_research_def()); // also spawns workers → same depth gate as delegate
         }
         if can_council {
             defs.push(council_def());
@@ -223,6 +256,15 @@ impl<'a> AgentLoop<'a> {
                         .run_delegate(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms)
                         .await;
                     trace.push(("delegate".to_string(), true));
+                    msgs.push(tool_msg(&tc.id, &out));
+                    continue;
+                }
+                // Deep research is handled by the loop (decompose → concurrent workers → synthesize).
+                if can_delegate && tc.name == "deep_research" {
+                    let out = self
+                        .run_deep_research(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms)
+                        .await;
+                    trace.push(("deep_research".to_string(), true));
                     msgs.push(tool_msg(&tc.id, &out));
                     continue;
                 }
@@ -291,13 +333,48 @@ impl<'a> AgentLoop<'a> {
         }
     }
 
-    /// Run sub-task(s) as fresh worker agents (own clean context, read-only tools, depth+1) and
-    /// return their results. **Concurrent**: the sub-agents run together (`join_all`), so wall-clock
-    /// is the SLOWEST worker, not the sum — the model calls are I/O-bound, and while one worker
-    /// awaits the model another fires its request. Output preserves task order (join_all is
-    /// order-preserving). Recursion is depth-bounded (MAX_DELEGATE_DEPTH) and each worker future is
-    /// boxed (`dyn Future`) so the recursive future type is finite. Fan-out is capped (MAX_SUBTASKS).
-    /// Workers get a read-only registry + no approvals (nothing to gate); safe to run unattended.
+    /// Run `tasks` as fresh worker agents (own clean context, read-only tools, depth+1), CONCURRENTLY.
+    /// Returns each worker's trimmed answer in INPUT ORDER. Shared by `delegate` and `deep_research`.
+    ///
+    /// Concurrency: the workers run together (`join_all`) — model calls are I/O-bound, so while one
+    /// awaits the model another fires its request; wall-clock is the slowest worker, not the sum.
+    /// Each worker future is boxed (heap indirection breaks the recursive run→worker→run type into a
+    /// finite size). The futures stay CONCRETE (not `dyn … + Send`): all worker blocks share one
+    /// anonymous type, so auto-trait inference propagates Send through the recursion concretely — a
+    /// `dyn … + Send` cast can't (its Send bound is circular through the recursion), and the server's
+    /// multi-thread runtime needs the loop future to be Send. Workers get the read-only registry + no
+    /// approvals (nothing to gate); safe to run unattended.
+    async fn run_workers(
+        &self, tasks: &[String], sub_registry: &ToolRegistry, now_ms: i64,
+    ) -> Vec<String> {
+        // One worker AgentLoop per task, kept in a Vec that outlives the join so each worker future
+        // can borrow its loop (run takes &self) across the concurrent await.
+        let subs: Vec<AgentLoop> = (0..tasks.len())
+            .map(|_| AgentLoop {
+                model: self.model,
+                registry: sub_registry,
+                hitl: self.hitl,
+                max_iters: self.max_iters.min(4),
+                depth: self.depth + 1,
+                mode: Mode::Hitl, // workers are read-only; mode is moot, Hitl is the safe default
+            })
+            .collect();
+        let futs: Vec<_> = subs
+            .iter()
+            .zip(tasks.iter())
+            .map(|(sub, task)| {
+                let msgs = vec![json!({"role": "user", "content": task})];
+                Box::pin(async move {
+                    let res = sub.run(msgs, &[], None, now_ms).await;
+                    res.answer.trim().to_string()
+                })
+            })
+            .collect();
+        futures_util::future::join_all(futs).await
+    }
+
+    /// `delegate`: split a job into sub-tasks and run fresh workers on them concurrently. Output
+    /// preserves task order. Fan-out is capped (MAX_SUBTASKS).
     async fn run_delegate(&self, args: &Value, sub_registry: &ToolRegistry, now_ms: i64) -> String {
         let tasks: Vec<String> = match args.get("tasks").and_then(|t| t.as_array()) {
             Some(arr) => arr.iter().filter_map(|t| t.as_str().map(str::to_string)).collect(),
@@ -311,40 +388,57 @@ impl<'a> AgentLoop<'a> {
             return "error: delegate requires 'task' (string) or 'tasks' (array of strings)".into();
         }
         let tasks: Vec<String> = tasks.into_iter().take(MAX_SUBTASKS).collect();
-
-        // One worker AgentLoop per task. Kept in a Vec that outlives the join so each worker future
-        // can borrow its loop (run takes &self) across the concurrent await.
-        let subs: Vec<AgentLoop> = (0..tasks.len())
-            .map(|_| AgentLoop {
-                model: self.model,
-                registry: sub_registry,
-                hitl: self.hitl,
-                max_iters: self.max_iters.min(4),
-                depth: self.depth + 1,
-                mode: Mode::Hitl, // workers are read-only; mode is moot, Hitl is the safe default
-            })
-            .collect();
-
-        // Box each worker future (heap indirection breaks the recursive run→delegate→run type into a
-        // finite size). Keep it a CONCRETE boxed future (not `dyn … + Send`): all worker blocks share
-        // one anonymous type, so auto-trait inference propagates Send through the recursion concretely
-        // — a `dyn … + Send` cast can't, because proving its Send bound is circular through the
-        // recursion. The server (multi-thread runtime) needs the loop future Send; this stays Send.
-        let futs: Vec<_> = subs
+        let answers = self.run_workers(&tasks, sub_registry, now_ms).await;
+        tasks
             .iter()
-            .zip(tasks.iter())
+            .zip(answers.iter())
             .enumerate()
-            .map(|(i, (sub, task))| {
-                let msgs = vec![json!({"role": "user", "content": task})];
-                Box::pin(async move {
-                    let res = sub.run(msgs, &[], None, now_ms).await;
-                    format!("[subagent {}] {} → {}\n\n", i + 1, task, res.answer.trim())
-                })
-            })
-            .collect();
+            .map(|(i, (task, ans))| format!("[subagent {}] {} → {}\n\n", i + 1, task, ans))
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
 
-        let parts = futures_util::future::join_all(futs).await;
-        parts.concat().trim_end().to_string()
+    /// `deep_research`: decompose a question into focused sub-questions, investigate each in parallel
+    /// with fresh web-enabled workers, then synthesize a cited report. The flagship research flow —
+    /// decompose (1 call) → concurrent worker research → synthesize (1 call).
+    async fn run_deep_research(
+        &self, args: &Value, sub_registry: &ToolRegistry, now_ms: i64,
+    ) -> String {
+        let question = args.get("question").and_then(|q| q.as_str()).unwrap_or("").trim();
+        if question.is_empty() {
+            return "error: deep_research requires 'question' (string)".into();
+        }
+        // 1 — decompose into independent sub-questions (fall back to the question itself).
+        let decompose = format!(
+            "Break this research question into 3-5 focused, independent sub-questions that together \
+             fully cover it. Return ONLY a JSON array of strings.\n\nQuestion: {question}"
+        );
+        let turn = self.model.call(&[json!({"role": "user", "content": decompose})], &[]).await;
+        let subqs = turn
+            .content
+            .as_deref()
+            .and_then(parse_string_array)
+            .unwrap_or_else(|| vec![question.to_string()]);
+        let subqs: Vec<String> = subqs.into_iter().take(MAX_SUBTASKS).collect();
+
+        // 2 — research each sub-question concurrently (workers have read-only web/recall tools).
+        let findings = self.run_workers(&subqs, sub_registry, now_ms).await;
+
+        // 3 — synthesize a cited report from the findings.
+        let mut prompt = format!(
+            "You are a research analyst. Research question:\n\n{question}\n\nFindings from \
+             parallel sub-investigations:\n"
+        );
+        for (q, f) in subqs.iter().zip(findings.iter()) {
+            prompt.push_str(&format!("\n### {q}\n{}\n", f.trim()));
+        }
+        prompt.push_str(
+            "\nWrite a clear, well-structured report that answers the research question, drawing on \
+             and citing the findings above. Flag any gaps or uncertainty honestly.",
+        );
+        let report = self.model.call(&[json!({"role": "user", "content": prompt})], &[]).await;
+        report.content.unwrap_or_default()
     }
 
     /// Convene a council: gather N persona-diverse opinions CONCURRENTLY on the bound model, then
@@ -518,6 +612,39 @@ mod tests {
         }
     }
 
+    /// Concurrency-safe deep-research mock: routes by content. Top-level → deep_research; decompose
+    /// → a JSON array of sub-questions; each worker → a finding; synthesis → counts findings.
+    struct ResearchMock;
+    #[async_trait]
+    impl ModelCall for ResearchMock {
+        async fn call(&self, m: &[Value], _t: &[Value]) -> AssistantTurn {
+            let usr: String =
+                m.iter().filter(|x| x["role"] == "user").filter_map(|x| x["content"].as_str()).collect();
+            let has_tool = m.iter().any(|x| x["role"] == "tool");
+            if has_tool {
+                let out: String = m
+                    .iter()
+                    .filter(|x| x["role"] == "tool")
+                    .filter_map(|x| x["content"].as_str())
+                    .collect();
+                final_turn(&format!("FINAL[{out}]"))
+            } else if usr.contains("research analyst") {
+                let n = usr.matches("FOUND_").count();
+                final_turn(&format!("REPORT(found={n})"))
+            } else if usr.contains("Break this research question") {
+                final_turn("here you go: [\"subq alpha\", \"subq beta\", \"subq gamma\"]")
+            } else if usr.contains("subq alpha") {
+                final_turn("FOUND_ALPHA")
+            } else if usr.contains("subq beta") {
+                final_turn("FOUND_BETA")
+            } else if usr.contains("subq gamma") {
+                final_turn("FOUND_GAMMA")
+            } else {
+                call_turn(tc("deep_research", json!({"question": usr})))
+            }
+        }
+    }
+
     fn tc(name: &str, args: Value) -> ToolCall {
         ToolCall { id: "c1".into(), name: name.into(), arguments: args }
     }
@@ -675,6 +802,36 @@ mod tests {
         assert_eq!(res.status, AgentStatus::Final);
         assert_eq!(res.answer, "recovered");
         assert!(res.trace.contains(&("unknown_tool".to_string(), false)));
+    }
+
+    #[test]
+    fn parse_string_array_tolerates_prose_and_fences() {
+        assert_eq!(parse_string_array(r#"["a","b"]"#).unwrap(), vec!["a", "b"]);
+        assert_eq!(parse_string_array("sure: [\"x\", \"y\"] done").unwrap(), vec!["x", "y"]);
+        assert_eq!(
+            parse_string_array("```json\n[\"one\", \"two\"]\n```").unwrap(),
+            vec!["one", "two"]
+        );
+        assert!(parse_string_array("no array here").is_none());
+        assert!(parse_string_array("[]").is_none()); // empty → None (caller falls back)
+        assert!(parse_string_array(r#"["", "  "]"#).is_none()); // all-blank → None
+    }
+
+    #[tokio::test]
+    async fn deep_research_decomposes_researches_and_synthesizes() {
+        let dir = tmp_dir();
+        let reg = notes_registry(dir);
+        let model = ResearchMock;
+        let hitl = HitlPolicy::new();
+        let loop_ =
+            AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 6, depth: 0, mode: Mode::Hitl };
+        let res = loop_
+            .run(vec![json!({"role": "user", "content": "Research the future of local AI"})], &[], None, NOW)
+            .await;
+        assert_eq!(res.status, AgentStatus::Final);
+        assert!(res.trace.iter().any(|(n, _)| n == "deep_research"));
+        // All 3 decomposed sub-questions were researched and reached synthesis → found=3.
+        assert!(res.answer.contains("found=3"), "report missing findings: {}", res.answer);
     }
 
     #[tokio::test]
