@@ -1,300 +1,327 @@
-// ContentView.swift (SP2) — chat-forward UI over the live hardened spine. Brand spine tokens.
+// ContentView.swift — the GINEXUS "Execution Stream": a three-pane agentic console over the live
+// hardened core. Icon rail · conversation sidebar · execution stream · context+tools rail. All
+// MackTrax brand tokens (see Brand.swift) — dark-only, ember the single accent, no fake stats.
 import SwiftUI
 import GinexusCore
 
-/// Headless-render-safe view (no ScrollView/TextField, which ImageRenderer won't draw) used
-/// only to capture a PNG of the live conversation for verification.
-struct SnapshotView: View {
-    @ObservedObject var model: AppModel
-    var body: some View {
-        ZStack {
-            Brand.ink900
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 10) {
-                    Text("GINEXUS").font(.system(size: 30, weight: .heavy)).kerning(2).foregroundStyle(Brand.bone50)
-                    Text("nexus").font(.system(size: 26, weight: .semibold, design: .serif)).italic().foregroundStyle(Brand.ember500)
-                    Spacer()
-                }
-                HStack(spacing: 8) {
-                    Circle().fill(model.connected ? Brand.ok : Brand.muted).frame(width: 8, height: 8)
-                    Text(model.spineStatus).font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(model.connected ? Brand.ok : Brand.muted)
-                    Spacer()
-                }
-                ForEach(model.chat) { msg in
-                    let isUser = msg.role == "user"
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(isUser ? "YOU" : "GINEXUS")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
-                            .foregroundStyle(isUser ? Brand.ember500 : Brand.muted)
-                        Text(msg.text).font(.system(size: 14, design: .monospaced)).foregroundStyle(Brand.bone50)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                            .background(isUser ? Brand.ink800 : Color.white.opacity(0.03))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                }
-                if model.sending {
-                    Text("…thinking").font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.ember500)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(24)
-        }
-        .frame(width: 640, height: 560)
-    }
-}
-
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
-    @State private var pendingDelete: String?   // model name awaiting uninstall confirmation
-    @State private var renamingID: UUID?        // conversation being inline-renamed
+    @State private var pendingDelete: String?                 // model name awaiting uninstall confirm
+    @State private var renamingID: UUID?                      // conversation being inline-renamed
     @State private var renameText = ""
     @State private var pendingDeleteConversation: ConversationMeta?
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $model.sidebarColumn) {
+        HStack(spacing: 0) {
+            iconRail
             conversationSidebar
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
-        } detail: {
-            ZStack {
-                Brand.ink900.ignoresSafeArea()
-                VStack(alignment: .leading, spacing: 16) {
-                    header
-                    statusStrip
-                    transcript
-                    inputRow
-                }
-                .padding(24)
-            }
+            centerColumn
+            contextRail
         }
-        .frame(minWidth: 820, minHeight: 480)
+        .background(ZStack { Brand.ink900; Brand.canvasGlow }.ignoresSafeArea())
+        .frame(minWidth: 1180, minHeight: 680)
         .preferredColorScheme(.dark)
-        .sheet(item: $model.pending) { p in approvalSheet(p) }
         .sheet(isPresented: $model.memoryOpen) { memorySheet }
         .sheet(isPresented: $model.modelsOpen) { modelsSheet }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model, store: model.settings) }
     }
 
-    // MARK: conversation sidebar
+    // MARK: ── far-left icon rail ───────────────────────────────────────────────
+    private var iconRail: some View {
+        VStack(spacing: 6) {
+            GlyphMark(size: 30).padding(.top, 14).padding(.bottom, 10)
+            railIcon("square.and.pencil", "New conversation", enabled: model.connected && !model.sending) { model.newChat() }
+            railIcon("brain", "Memory — what GINEXUS knows", enabled: model.connected) { model.openMemory() }
+            railIcon("cube.box", "Models — download / manage", enabled: model.connected) { model.openModels() }
+            railIcon("gearshape", "Settings") { model.openSettings() }   // always reachable (recovery)
+            Spacer()
+            StatusDot(color: model.connected ? Brand.success : Brand.bone400, glow: model.connected, size: 8)
+                .padding(.bottom, 16)
+                .help(model.connected ? "Connected to the local core" : "Core offline")
+        }
+        .frame(width: 56)
+        .frame(maxHeight: .infinity)
+        .background(Brand.ink850)
+        .overlay(alignment: .trailing) { Rectangle().fill(Brand.line1).frame(width: 1) }
+    }
 
-    /// Left rail of saved conversations: NEW CHAT, select, inline rename, delete. Brand tokens only;
-    /// selection reads as the ink-800 card fill + an ember title (no accent border-stripe). Switching
-    /// is blocked while a reply streams (the streaming bubble is found by id in the active `chat`).
+    private func railIcon(_ system: String, _ help: String, enabled: Bool = true,
+                          _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system).font(.system(size: 16))
+                .foregroundStyle(enabled ? Brand.bone300 : Brand.bone400)
+                .frame(width: 40, height: 40)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).help(help).disabled(!enabled)
+    }
+
+    // MARK: ── conversation sidebar ─────────────────────────────────────────────
     private var conversationSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("CHATS").font(.system(size: 11, weight: .bold, design: .monospaced)).kerning(1.5)
-                    .foregroundStyle(Brand.muted)
+                Eyebrow(text: "Conversations")
                 Spacer()
                 Button(action: { model.newChat() }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus")
-                        Text("NEW").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
-                    }
-                    .foregroundStyle(Brand.ember500)
+                    Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.ember500)
                 }
-                .buttonStyle(.plain)
-                .help("Start a new conversation")
-                .disabled(!model.connected || model.sending)
+                .buttonStyle(.plain).help("New conversation").disabled(!model.connected || model.sending)
             }
-            .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 10)
-
-            Divider().overlay(Color.white.opacity(0.08))
+            .padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 10)
+            Divider().overlay(Brand.line1)
 
             if model.conversations.isEmpty {
-                Text("No conversations yet")
-                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.muted)
+                Text("No conversations yet").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
                     .padding(.horizontal, 14).padding(.top, 12)
                 Spacer()
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 4) {
+                    LazyVStack(alignment: .leading, spacing: 3) {
                         ForEach(model.conversations) { c in
                             ConversationRow(
-                                c: c,
-                                selected: c.id == model.activeConversationID,
+                                c: c, selected: c.id == model.activeConversationID,
                                 disabled: model.sending && c.id != model.activeConversationID,
-                                renamingID: $renamingID,
-                                renameText: $renameText,
+                                renamingID: $renamingID, renameText: $renameText,
                                 onSelect: { renamingID = nil; model.selectConversation(c.id) },
                                 onCommitRename: { model.renameConversation(c.id, to: renameText); renamingID = nil },
                                 onRequestRename: { renameText = c.title; renamingID = c.id },
-                                onRequestDelete: { pendingDeleteConversation = c }
-                            )
+                                onRequestDelete: { pendingDeleteConversation = c })
                         }
                     }
                     .padding(.horizontal, 8).padding(.vertical, 8)
-                    .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.2), value: model.conversations)
+                    .animation(Brand.ease, value: model.conversations)
                 }
             }
+            agentStatusFooter
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(width: 248)
+        .frame(maxHeight: .infinity)
         .background(Brand.ink900)
+        .overlay(alignment: .trailing) { Rectangle().fill(Brand.line1).frame(width: 1) }
         .confirmationDialog(
             "Delete this conversation?",
-            isPresented: Binding(get: { pendingDeleteConversation != nil },
-                                 set: { if !$0 { pendingDeleteConversation = nil } }),
+            isPresented: Binding(get: { pendingDeleteConversation != nil }, set: { if !$0 { pendingDeleteConversation = nil } }),
             presenting: pendingDeleteConversation
         ) { c in
             Button("Delete", role: .destructive) { model.deleteConversation(c.id); pendingDeleteConversation = nil }
             Button("Cancel", role: .cancel) { pendingDeleteConversation = nil }
-        } message: { c in
-            Text("\"\(c.title)\" will be permanently removed. This cannot be undone.")
+        } message: { c in Text("\"\(c.title)\" will be permanently removed. This cannot be undone.") }
+    }
+
+    private var agentStatusFooter: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Divider().overlay(Brand.line1)
+            HStack(spacing: 8) {
+                StatusDot(color: statusColor, glow: model.connected, size: 7)
+                VStack(alignment: .leading, spacing: 1) {
+                    Eyebrow(text: "Agent Status")
+                    Text(statusLabel).font(Brand.mono(11, weight: .medium)).foregroundStyle(statusColor)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+        }
+    }
+    private var statusColor: Color { model.sending ? Brand.warning : (model.connected ? Brand.success : Brand.bone400) }
+    private var statusLabel: String { model.sending ? "THINKING" : (model.connected ? "ONLINE" : "OFFLINE") }
+
+    // MARK: ── center: execution stream ────────────────────────────────────────
+    private var centerColumn: some View {
+        VStack(spacing: 0) {
+            streamHeader.padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 14)
+            executionStream
+            inputBar.padding(.horizontal, 24).padding(.vertical, 16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var streamHeader: some View {
+        HStack(spacing: 14) {
+            Wordmark(size: 16)
+            Rectangle().fill(Brand.line2).frame(width: 1, height: 18)
+            Text("Execution Stream").font(Brand.display(24, weight: .bold)).foregroundStyle(Brand.bone50)
+            Spacer()
+            autonomyToggle
+            modelSelector
         }
     }
 
+    private var autonomyToggle: some View {
+        Button(action: { model.autonomous.toggle() }) {
+            HStack(spacing: 5) {
+                Image(systemName: model.autonomous ? "bolt.fill" : "hand.raised.fill").font(.system(size: 10))
+                Text(model.autonomous ? "AUTO" : "HITL").font(Brand.display(11, weight: .bold)).kerning(1)
+            }
+            .foregroundStyle(model.autonomous ? Brand.ember500 : Brand.bone300)
+            .padding(.horizontal, 11).padding(.vertical, 8)
+            .background(Brand.ink700).clipShape(Capsule())
+            .overlay(Capsule().stroke(model.autonomous ? Brand.ember600 : Brand.line2, lineWidth: 1))
+        }
+        .buttonStyle(.plain).disabled(!model.connected)
+        .help(model.autonomous
+            ? "Autonomous — irreversible actions run unattended EXCEPT the hard gate (money / comms / legal / delete / exec)."
+            : "Human-in-the-loop — every irreversible action asks for Touch ID.")
+    }
 
-    /// Model manager — download models into the local runtime (Ollama registry tags or Hugging Face
-    /// GGUF, e.g. hf.co/<org>/<repo>:<QUANT>), with live progress. Suggested picks are commercial-clean.
-    private var modelsSheet: some View {
-        ZStack {
-            Brand.ink900.ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text("MODELS").font(.system(size: 14, weight: .bold, design: .monospaced)).kerning(2)
-                        .foregroundStyle(Brand.bone50)
-                    if !model.ollamaVersion.isEmpty {
-                        Text("Ollama \(model.ollamaVersion)").font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(Brand.muted)
-                    }
-                    Spacer()
-                    Button("DONE") { model.modelsOpen = false }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Brand.ember500)
-                }
-                if model.ollamaNeedsUpgradeForVision {
-                    Text("Vision models (e.g. Qwen3-VL) need Ollama ≥ 0.12.7 — upgrade Ollama to enable image understanding. Text models still pull fine.")
-                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.ember500)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Brand.ember500.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                Text("SUGGESTED (Apache-2.0)").font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
-                    .foregroundStyle(Brand.muted)
-                HStack(spacing: 8) {
-                    pickChip("Qwen3-VL 30B", "qwen3-vl:30b-a3b-instruct")
-                    pickChip("Qwen3-VL 8B", "qwen3-vl:8b")
-                    pickChip("Mistral-Small 3.2", "mistral-small3.2")
-                    Spacer()
-                }
-                HStack {
-                    Text("INSTALLED").font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
-                        .foregroundStyle(Brand.muted)
-                    if !model.installed.isEmpty {
-                        Text("· \(model.installed.count) · \(sizeFmt(model.installed.reduce(0) { $0 + $1.size }))")
-                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(Brand.muted)
-                    }
-                    Spacer()
-                    Button(action: { model.refreshModels() }) {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Brand.muted)
-                    }.buttonStyle(.plain).help("Refresh the installed list")
-                }
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if model.installed.isEmpty {
-                            Text("No models installed yet.").font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(Brand.muted)
-                        }
-                        ForEach(model.installed) { m in
-                            ModelRow(m: m, sizeText: sizeFmt(m.size)) { pendingDelete = m.name }
-                        }
-                    }
-                    .padding(.vertical, 2)
-                    .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.25), value: model.installed.count)
-                }
-                if model.pulling || model.pullProgress > 0 {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(model.pullStatus).font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.ember500)
-                        ProgressView(value: model.pullProgress).tint(Brand.ember500)
-                    }
-                }
-                // Live Hugging Face type-ahead (GGUF repos) — tap to fill the pull field.
-                if !model.hfResults.isEmpty {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(model.hfResults) { r in
-                                Button(action: { model.pickHF(r) }) {
-                                    HStack {
-                                        Text(r.id).font(.system(size: 11, design: .monospaced))
-                                            .foregroundStyle(Brand.bone50).lineLimit(1)
-                                        if r.gated {
-                                            Text("gated").font(.system(size: 8, weight: .bold, design: .monospaced))
-                                                .foregroundStyle(Brand.ember500)
-                                        }
-                                        Spacer()
-                                        Text(dlFmt(r.downloads)).font(.system(size: 9, design: .monospaced))
-                                            .foregroundStyle(Brand.muted)
-                                    }
-                                    .padding(.horizontal, 10).padding(.vertical, 6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                                }.buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    .frame(maxHeight: 180)
-                    .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.06), lineWidth: 1))
-                }
-                HStack(spacing: 8) {
-                    TextField("search Hugging Face, or paste a tag / hf.co/<org>/<repo>:<QUANT>", text: $model.pullInput)
-                        .textFieldStyle(.plain).font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Brand.bone50).padding(10).background(Brand.ink800)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .onChange(of: model.pullInput) { _, _ in model.scheduleHFSearch() }
-                        .onSubmit { model.pullModel(model.pullInput) }
-                    Button(action: { model.pullModel(model.pullInput) }) {
-                        Text("PULL").font(.system(size: 11, weight: .bold, design: .monospaced)).kerning(1)
-                            .padding(.horizontal, 14).padding(.vertical, 10)
-                            .foregroundStyle(Brand.ink900).background(Brand.ember500)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }.buttonStyle(.plain).disabled(model.pulling)
+    private var modelSelector: some View {
+        Menu {
+            ForEach(model.models) { m in
+                Button(action: { model.selectedModel = m.id }) {
+                    if m.id == model.selectedModel { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
                 }
             }
-            .padding(24)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "cpu").font(.system(size: 11))
+                Text(model.activeModelLabel).font(Brand.mono(12, weight: .medium)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+            }
+            .foregroundStyle(Brand.bone100)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Brand.ink700).clipShape(Capsule())
+            .overlay(Capsule().stroke(Brand.line2, lineWidth: 1))
         }
-        .frame(width: 640, height: 620)
-        .preferredColorScheme(.dark)
-        .confirmationDialog(
-            "Uninstall \(pendingDelete ?? "")?",
-            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-            presenting: pendingDelete
-        ) { name in
-            Button("Uninstall · free disk", role: .destructive) { model.deleteModel(name); pendingDelete = nil }
-            Button("Cancel", role: .cancel) { pendingDelete = nil }
-        } message: { name in
-            Text("Removes \(name) and its layers from disk. You can re-download it anytime.")
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .frame(maxWidth: 260).disabled(!model.connected)
+    }
+
+    private var executionStream: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if model.chat.isEmpty && model.pending == nil { emptyState }
+                    ForEach(model.chat) { msg in streamBlock(msg).id(msg.id) }
+                    if let p = model.pending { approvalBlock(p).id("approval") }
+                    Color.clear.frame(height: 1).id("bottom")
+                }
+                .padding(.horizontal, 24).padding(.bottom, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onChange(of: model.chat.count) { _, _ in withAnimation(Brand.ease) { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .onChange(of: model.chat.last?.text.count) { _, _ in
+                if model.sending { withAnimation(Brand.ease) { proxy.scrollTo("bottom", anchor: .bottom) } }
+            }
+            .onChange(of: model.pending?.id) { _, id in if id != nil { withAnimation(Brand.ease) { proxy.scrollTo("approval", anchor: .bottom) } } }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Eyebrow(text: "Ready", color: Brand.ember500)
+            Text("Ask GINEXUS anything — it runs entirely on this Mac.")
+                .font(Brand.body(14)).foregroundStyle(Brand.bone300)
+        }
+        .padding(.top, 44)
+    }
+
+    /// One typed execution block — a raised card framed + labeled by role/phase (the reference look).
+    private func streamBlock(_ msg: ChatMsg) -> some View {
+        let isUser = msg.role == "user"
+        let icon: String, title: String, tint: Color, active: Bool
+        if isUser { icon = "person.fill"; title = "User Input"; tint = Brand.ember500; active = false }
+        else if msg.streaming {
+            if let s = msg.status { icon = "bolt.fill"; title = s; tint = Brand.ember300; active = true }
+            else { icon = "sparkles"; title = "Agent Thought"; tint = Brand.ember300; active = true }
+        } else { icon = "asterisk"; title = "GINEXUS"; tint = Brand.bone200; active = false }
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                Image(systemName: icon).font(.system(size: 11)).foregroundStyle(tint)
+                Eyebrow(text: title, color: tint)
+                if active && msg.status != nil { ProgressView().controlSize(.mini) }
+                Spacer()
+            }
+            Group {
+                if isUser {
+                    Text(msg.text).font(Brand.mono(13.5)).foregroundStyle(Brand.bone50).textSelection(.enabled)
+                } else if msg.streaming {
+                    StreamingText(text: msg.text)
+                } else {
+                    MarkdownReply(text: msg.text)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if let path = msg.imagePath { StreamImage(path: path) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(isUser ? Brand.ink700 : Brand.ink600)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(active ? Brand.ember600.opacity(0.6) : Brand.line2, lineWidth: 1))
+        .overlay(alignment: .top) { Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1).padding(.horizontal, 8) }
+        .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 4)
+    }
+
+    /// Inline Human Approval block — replaces the modal sheet; Approve drives Touch ID.
+    private func approvalBlock(_ p: PendingAction) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Eyebrow(text: "Approval Required", color: Brand.ember500)
+            Text("GINEXUS wants to run an action that changes something. Approve with Touch ID to proceed.")
+                .font(Brand.body(12)).foregroundStyle(Brand.bone300).fixedSize(horizontal: false, vertical: true)
+            Text(p.preview).font(Brand.mono(13)).foregroundStyle(Brand.bone50).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                .background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 8))
+            HStack(spacing: 10) {
+                Button(action: { model.approve() }) {
+                    HStack(spacing: 6) { Image(systemName: "touchid"); Text("APPROVE") }
+                        .font(Brand.display(12, weight: .bold)).kerning(1.2)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .foregroundStyle(Brand.ink900).background(Brand.ember500)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }.buttonStyle(.plain)
+                Button(action: { model.deny() }) {
+                    Text("DENY").font(Brand.display(12, weight: .bold)).kerning(1.2)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .foregroundStyle(Brand.bone300).background(Brand.ink700)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line2, lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }.buttonStyle(.plain)
+                Spacer()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(Brand.ember500.opacity(0.06))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Brand.ember600.opacity(0.55), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    // MARK: ── input bar ───────────────────────────────────────────────────────
+    private var inputBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            attachmentChip
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    plusMenu
+                    TextField("Message GINEXUS…", text: $model.chatInput)
+                        .textFieldStyle(.plain).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
+                        .onSubmit { model.send(model.chatInput) }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 12)
+                .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+                Button(action: { model.send(model.chatInput) }) {
+                    HStack(spacing: 7) {
+                        Text("EXECUTE").font(Brand.display(13, weight: .bold)).kerning(1.2)
+                        Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
+                    }
+                    .padding(.horizontal, 18).padding(.vertical, 13)
+                    .foregroundStyle(canSend ? Brand.ink900 : Brand.bone400)
+                    .background(canSend ? Brand.ember500 : Brand.ink700)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain).disabled(!canSend)
+            }
         }
     }
 
-    private func sizeFmt(_ bytes: Int) -> String {
-        let gb = Double(bytes) / 1_073_741_824
-        if gb >= 1 { return String(format: "%.1f GB", gb) }
-        return String(format: "%.0f MB", Double(bytes) / 1_048_576)
+    private var canSend: Bool {
+        model.connected && !model.sending &&
+        (!model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.attachment != nil)
     }
 
-    private func pickChip(_ title: String, _ ref: String) -> some View {
-        Button(action: { model.pullModel(ref) }) {
-            Text(title)
-                .font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(0.5)
-                .foregroundStyle(Brand.ember500)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember500.opacity(0.4), lineWidth: 1))
-        }
-        .buttonStyle(.plain).disabled(model.pulling)
-        .help("Pull \(ref)")
-    }
-
-    private func dlFmt(_ n: Int) -> String {
-        if n >= 1_000_000 { return String(format: "%.1fM↓", Double(n) / 1_000_000) }
-        if n >= 1_000 { return "\(n / 1_000)K↓" }
-        return "\(n)↓"
-    }
-
-    /// The "+" menu inside the input row: capabilities that act on your message, plus attachments
-    /// (file / image / import). The modern chat-input pattern — one discoverable entry point.
+    /// The "+" menu inside the input row: capabilities that act on your message, plus attachments.
     private var plusMenu: some View {
         Menu {
             Section("Do with your message") {
@@ -303,25 +330,19 @@ struct ContentView: View {
                 Button("Create image", action: model.runImage).disabled(!model.canQuickAction)
             }
             Section("Attach") {
-                Button("Attach file…", action: model.attachAny)   // PDF / doc / text / code / image / video
+                Button("Attach file…", action: model.attachAny)
                 Button("Attach image…", action: model.attachImage)
                 Button("Import AI data…", action: model.importExport)
             }
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Brand.bone50.opacity(0.8))
-                .frame(width: 24, height: 24)
-                .contentShape(Rectangle())
+            Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Brand.bone200).frame(width: 24, height: 24).contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .disabled(!model.connected)
-        .help("Capabilities + attach a file, image, or AI data export")
+        .help("Capabilities + attach a file, image, or AI-data export")
     }
 
-    /// Chip shown above the input when a file/image is attached to the next message.
     @ViewBuilder private var attachmentChip: some View {
         if let att = model.attachment {
             HStack(spacing: 6) {
@@ -332,102 +353,221 @@ struct ContentView: View {
                     Image(systemName: att.kind == "image" ? "photo" : "doc.text")
                         .font(.system(size: 11)).foregroundStyle(Brand.ember500)
                 }
-                Text(att.name).font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Brand.bone50).lineLimit(1)
-                // Vision not ready → tell the user the image will be described, not seen.
+                Text(att.name).font(Brand.mono(11)).foregroundStyle(Brand.bone50).lineLimit(1)
                 if att.kind == "image", !model.visionAvailable, !model.visionStatus.isEmpty {
-                    Text(model.visionStatus).font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(0.5)
-                        .foregroundStyle(Brand.muted)
+                    Text(model.visionStatus).font(Brand.mono(9, weight: .bold)).kerning(0.5).foregroundStyle(Brand.bone300)
                 }
                 Button(action: { model.clearAttachment() }) {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Brand.muted)
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Brand.bone400)
                 }.buttonStyle(.plain)
             }
             .padding(.horizontal, 10).padding(.vertical, 5)
-            .background(Brand.ink800).clipShape(Capsule())
+            .background(Brand.ink700).clipShape(Capsule())
+            .overlay(Capsule().stroke(Brand.line1, lineWidth: 1))
         }
     }
 
-    /// HITL: GINEXUS pauses an irreversible/OS action here until you approve with Touch ID.
-    private func approvalSheet(_ p: PendingAction) -> some View {
+    // MARK: ── right: context & tools rail ─────────────────────────────────────
+    private var contextRail: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Eyebrow(text: "Context & Tools").padding(.bottom, 2)
+                sessionPanel
+                currentContextPanel
+                capabilitiesPanel
+            }
+            .padding(16)
+        }
+        .frame(width: 288)
+        .frame(maxHeight: .infinity)
+        .background(Brand.ink850)
+        .overlay(alignment: .leading) { Rectangle().fill(Brand.line1).frame(width: 1) }
+    }
+
+    private var sessionPanel: some View {
+        Panel(title: "Session") {
+            statRow("Status", model.connected ? "CONNECTED" : "OFFLINE", dot: model.connected ? Brand.success : Brand.bone400)
+            statRow("Model", model.activeModelLabel, dot: nil)
+            statRow("Conversations", "\(model.conversations.count)", dot: nil)
+            statRow("Memory facts", model.memFactsCount > 0 ? "\(model.memFactsCount)" : "—", dot: nil)
+        }
+    }
+    private func statRow(_ label: String, _ value: String, dot: Color?) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(Brand.body(12)).foregroundStyle(Brand.bone300)
+            Spacer(minLength: 8)
+            if let dot { StatusDot(color: dot, size: 6) }
+            Text(value).font(Brand.mono(12, weight: .medium)).foregroundStyle(Brand.bone100)
+                .lineLimit(1).truncationMode(.middle)
+        }
+    }
+
+    private var currentContextPanel: some View {
+        Panel(title: "Current Context") {
+            if let att = model.attachment {
+                HStack(spacing: 10) {
+                    if att.kind == "image", let t = model.attachmentThumb {
+                        Image(nsImage: t).resizable().scaledToFill().frame(width: 32, height: 32)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    } else {
+                        Image(systemName: att.kind == "image" ? "photo" : "doc.text")
+                            .font(.system(size: 14)).foregroundStyle(Brand.ember500)
+                            .frame(width: 32, height: 32).background(Brand.ink600).clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(att.name).font(Brand.mono(11)).foregroundStyle(Brand.bone50).lineLimit(1).truncationMode(.middle)
+                        Text(att.kind.uppercased()).font(Brand.mono(9, weight: .bold)).foregroundStyle(Brand.bone400)
+                    }
+                    Spacer()
+                    Button(action: { model.clearAttachment() }) {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(Brand.bone400)
+                    }.buttonStyle(.plain)
+                }
+            } else {
+                Text("No file attached. Use + to add a file, image, or AI-data export.")
+                    .font(Brand.body(11)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var capabilitiesPanel: some View {
+        Panel(title: "Capabilities") {
+            capRow("globe", "Web research", on: true)
+            capRow("terminal", "Terminal", on: true)
+            capRow("brain", "Memory", on: true)
+            capRow("person.3", "Council", on: true)
+            capRow("doc.text.magnifyingglass", "Deep research", on: true)
+            capRow("photo.badge.plus", "Image generation", on: model.settings.settings.mediaSidecarEnabled) { model.openSettings() }
+            capRow("eye", "Vision", on: model.visionAvailable, warn: !model.visionAvailable, note: model.visionStatus) { model.openModels() }
+            capRow("books.vertical", "Obsidian vault", on: model.obsidianAvailable) { model.openSettings() }
+        }
+    }
+
+    private func capRow(_ icon: String, _ label: String, on: Bool, warn: Bool = false,
+                        note: String = "", config: (() -> Void)? = nil) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon).font(.system(size: 12))
+                .foregroundStyle(on ? Brand.ember500.opacity(0.9) : Brand.bone400).frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(Brand.body(12)).foregroundStyle(on ? Brand.bone100 : Brand.bone300)
+                if warn, !note.isEmpty {
+                    Text(note).font(Brand.mono(8, weight: .bold)).foregroundStyle(Brand.bone400).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 6)
+            if let config {
+                Button(action: config) {
+                    Image(systemName: "slider.horizontal.3").font(.system(size: 10)).foregroundStyle(Brand.bone400)
+                }.buttonStyle(.plain).help("Configure")
+            }
+            StatusDot(color: on ? Brand.success : (warn ? Brand.warning : Brand.bone400), size: 6)
+        }
+    }
+
+    // MARK: ── sheets (memory / models) ────────────────────────────────────────
+    /// Model manager — download models (Ollama registry tags or Hugging Face GGUF), with live progress.
+    private var modelsSheet: some View {
         ZStack {
             Brand.ink900.ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 16) {
-                Text("APPROVAL REQUIRED")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced)).kerning(2)
-                    .foregroundStyle(Brand.ember500)
-                Text("GINEXUS wants to run an action that changes something. Approve with Touch ID to proceed.")
-                    .font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(p.preview)
-                    .font(.system(size: 13, design: .monospaced)).foregroundStyle(Brand.bone50)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                    .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 8))
-                HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("MODELS").font(Brand.display(15, weight: .bold)).kerning(2).foregroundStyle(Brand.bone50)
+                    if !model.ollamaVersion.isEmpty {
+                        Text("Ollama \(model.ollamaVersion)").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                    }
                     Spacer()
-                    Button(action: { model.deny() }) {
-                        Text("DENY").font(.system(size: 12, weight: .bold, design: .monospaced)).kerning(1.5)
-                            .padding(.horizontal, 16).padding(.vertical, 10)
-                            .foregroundStyle(Brand.muted).background(Brand.ink800)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }.buttonStyle(.plain)
-                    Button(action: { model.approve() }) {
-                        Text("APPROVE · TOUCH ID").font(.system(size: 12, weight: .bold, design: .monospaced)).kerning(1.5)
-                            .padding(.horizontal, 16).padding(.vertical, 10)
-                            .foregroundStyle(Brand.ink900).background(Brand.ember500)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }.buttonStyle(.plain)
+                    Button("DONE") { model.modelsOpen = false }
+                        .buttonStyle(.plain).font(Brand.display(12, weight: .bold)).foregroundStyle(Brand.ember500)
+                }
+                if model.ollamaNeedsUpgradeForVision {
+                    Text("Vision models (e.g. Qwen3-VL) need Ollama ≥ 0.12.7 — upgrade Ollama to enable image understanding. Text models still pull fine.")
+                        .font(Brand.mono(11)).foregroundStyle(Brand.ember300)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Brand.ember500.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                Eyebrow(text: "Suggested (Apache-2.0)")
+                HStack(spacing: 8) {
+                    pickChip("Qwen3-VL 30B", "qwen3-vl:30b-a3b-instruct")
+                    pickChip("Qwen3-VL 8B", "qwen3-vl:8b")
+                    pickChip("Mistral-Small 3.2", "mistral-small3.2")
+                    Spacer()
+                }
+                HStack {
+                    Eyebrow(text: "Installed")
+                    if !model.installed.isEmpty {
+                        Text("· \(model.installed.count) · \(sizeFmt(model.installed.reduce(0) { $0 + $1.size }))")
+                            .font(Brand.mono(9)).foregroundStyle(Brand.bone300)
+                    }
+                    Spacer()
+                    Button(action: { model.refreshModels() }) {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone300)
+                    }.buttonStyle(.plain).help("Refresh the installed list")
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if model.installed.isEmpty {
+                            Text("No models installed yet.").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                        }
+                        ForEach(model.installed) { m in
+                            ModelRow(m: m, sizeText: sizeFmt(m.size)) { pendingDelete = m.name }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .animation(Brand.ease(0.25), value: model.installed.count)
+                }
+                if model.pulling || model.pullProgress > 0 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.pullStatus).font(Brand.mono(11)).foregroundStyle(Brand.ember300)
+                        ProgressView(value: model.pullProgress).tint(Brand.ember500)
+                    }
+                }
+                if !model.hfResults.isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(model.hfResults) { r in
+                                Button(action: { model.pickHF(r) }) {
+                                    HStack {
+                                        Text(r.id).font(Brand.mono(11)).foregroundStyle(Brand.bone50).lineLimit(1)
+                                        if r.gated { Text("gated").font(Brand.mono(8, weight: .bold)).foregroundStyle(Brand.ember500) }
+                                        Spacer()
+                                        Text(dlFmt(r.downloads)).font(Brand.mono(9)).foregroundStyle(Brand.bone300)
+                                    }
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                    .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+                }
+                HStack(spacing: 8) {
+                    TextField("search Hugging Face, or paste a tag / hf.co/<org>/<repo>:<QUANT>", text: $model.pullInput)
+                        .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
+                        .padding(10).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .onChange(of: model.pullInput) { _, _ in model.scheduleHFSearch() }
+                        .onSubmit { model.pullModel(model.pullInput) }
+                    Button(action: { model.pullModel(model.pullInput) }) {
+                        Text("PULL").font(Brand.display(12, weight: .bold)).kerning(1)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                    }.buttonStyle(.plain).disabled(model.pulling)
                 }
             }
             .padding(24)
         }
-        .frame(width: 480)
+        .frame(width: 640, height: 640)
         .preferredColorScheme(.dark)
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Text("GINEXUS")
-                .font(.system(size: 30, weight: .heavy)).kerning(2)
-                .foregroundStyle(Brand.bone50)
-            Text("nexus")
-                .font(.system(size: 26, weight: .semibold, design: .serif)).italic()
-                .foregroundStyle(Brand.ember500)
-            Spacer()
-        }
-    }
-
-    private var statusStrip: some View {
-        HStack(spacing: 8) {
-            Circle().fill(model.connected ? Brand.ok : Brand.muted).frame(width: 8, height: 8)
-            Text(model.spineStatus)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(model.connected ? Brand.ok : Brand.muted)
-            Spacer()
-            Button(action: { model.openMemory() }) {
-                Text("MEMORY").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
-                    .foregroundStyle(Brand.muted)
-            }
-            .buttonStyle(.plain)
-            .help("Browse what GINEXUS knows — core profile + searchable long-term memory")
-            .disabled(!model.connected)
-            Button(action: { model.openModels() }) {
-                Text("MODELS").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
-                    .foregroundStyle(Brand.muted)
-            }
-            .buttonStyle(.plain)
-            .help("Download models from the registry or Hugging Face (GGUF)")
-            .disabled(!model.connected)
-            Button(action: { model.openSettings() }) {
-                Text("SETTINGS").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
-                    .foregroundStyle(Brand.muted)
-            }
-            .buttonStyle(.plain)
-            .help("Defaults, paths, and core runtime configuration")
-            autonomyToggle
-            modelPicker
-        }
+        .confirmationDialog(
+            "Uninstall \(pendingDelete ?? "")?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            presenting: pendingDelete
+        ) { name in
+            Button("Uninstall · free disk", role: .destructive) { model.deleteModel(name); pendingDelete = nil }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { name in Text("Removes \(name) and its layers from disk. You can re-download it anytime.") }
     }
 
     /// Memory browser — core blocks (incl. the consolidated profile) + searchable archival facts.
@@ -436,62 +576,50 @@ struct ContentView: View {
             Brand.ink900.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("MEMORY").font(.system(size: 14, weight: .bold, design: .monospaced)).kerning(2)
-                        .foregroundStyle(Brand.bone50)
-                    Text("\(model.memFactsCount) facts").font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Brand.muted)
+                    Text("MEMORY").font(Brand.display(15, weight: .bold)).kerning(2).foregroundStyle(Brand.bone50)
+                    Text("\(model.memFactsCount) facts").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
                     Spacer()
                     if model.memLoading { ProgressView().controlSize(.small) }
                     Button("BUILD PROFILE") { model.buildProfile() }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Brand.ember500)
+                        .buttonStyle(.plain).font(Brand.display(12, weight: .bold)).foregroundStyle(Brand.ember500)
                         .disabled(!model.connected || model.sending)
                         .help("Summarize what GINEXUS knows about you from memory, and keep it in mind")
                     Button("DONE") { model.memoryOpen = false }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Brand.muted)
+                        .buttonStyle(.plain).font(Brand.display(12, weight: .bold)).foregroundStyle(Brand.bone300)
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         if model.memBlocks.isEmpty {
                             Text("Nothing learned about you yet. Tap BUILD PROFILE above to summarize what GINEXUS knows from your memory.")
-                                .font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.muted)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .font(Brand.mono(12)).foregroundStyle(Brand.bone300).fixedSize(horizontal: false, vertical: true)
                         }
                         ForEach(model.memBlocks) { b in
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(b.name.uppercased())
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1.5)
-                                    .foregroundStyle(Brand.ember500)
-                                Text(b.value).font(.system(size: 13)).foregroundStyle(Brand.bone50)
-                                    .fixedSize(horizontal: false, vertical: true)
+                                Eyebrow(text: b.name, color: Brand.ember500)
+                                Text(b.value).font(Brand.body(13)).foregroundStyle(Brand.bone50).fixedSize(horizontal: false, vertical: true)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                            .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 8))
+                            .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         Divider().overlay(Color.white.opacity(0.08))
                         ForEach(model.memResults) { f in
                             HStack(alignment: .top, spacing: 8) {
-                                Text(f.origin == "untrusted" ? "DATA" : "·")
-                                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(Brand.muted).frame(width: 34, alignment: .leading)
-                                Text(f.text).font(.system(size: 12)).foregroundStyle(Brand.bone50.opacity(0.9))
-                                    .fixedSize(horizontal: false, vertical: true)
+                                Text(f.origin == "untrusted" ? "DATA" : "·").font(Brand.mono(8, weight: .bold))
+                                    .foregroundStyle(Brand.bone300).frame(width: 34, alignment: .leading)
+                                Text(f.text).font(Brand.body(12)).foregroundStyle(Brand.bone100).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
                 }
                 HStack(spacing: 8) {
                     TextField("Search memory…", text: $model.memQuery)
-                        .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(Brand.bone50).padding(10).background(Brand.ink800)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50)
+                        .padding(10).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
                         .onSubmit { model.searchMemory() }
                     Button(action: { model.searchMemory() }) {
-                        Text("SEARCH").font(.system(size: 11, weight: .bold, design: .monospaced)).kerning(1)
+                        Text("SEARCH").font(Brand.display(12, weight: .bold)).kerning(1)
                             .padding(.horizontal, 14).padding(.vertical, 10)
-                            .foregroundStyle(Brand.ink900).background(Brand.ember500)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
                     }.buttonStyle(.plain)
                 }
             }
@@ -501,165 +629,62 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
     }
 
-    /// HITL ⇄ Autonomous toggle. The hard gate (money / external comms / legal / delete / exec) still
-    /// requires Touch ID even in autonomous mode — this only relaxes ordinary irreversible tools.
-    private var autonomyToggle: some View {
-        Button(action: { model.autonomous.toggle() }) {
-            HStack(spacing: 5) {
-                Image(systemName: model.autonomous ? "bolt.fill" : "hand.raised.fill")
-                Text(model.autonomous ? "AUTO" : "HITL")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
-            }
-            .foregroundStyle(model.autonomous ? Brand.ember500 : Brand.muted)
-        }
-        .buttonStyle(.plain)
-        .help(model.autonomous
-            ? "Autonomous: irreversible actions run unattended — EXCEPT hard-gated ones (money, external comms, legal, delete, code execution), which always ask. Click for human-in-the-loop."
-            : "Human-in-the-loop: every irreversible action asks for Touch ID. Click to enable autonomous mode.")
-        .disabled(!model.connected)
+    // MARK: ── helpers ─────────────────────────────────────────────────────────
+    private func sizeFmt(_ bytes: Int) -> String {
+        let gb = Double(bytes) / 1_073_741_824
+        if gb >= 1 { return String(format: "%.1f GB", gb) }
+        return String(format: "%.0f MB", Double(bytes) / 1_048_576)
     }
-
-    /// Auto/manual model selector — "Auto" routes to the 30B for chat/agent; pick a tier to pin it.
-    private var modelPicker: some View {
-        Picker("Model", selection: $model.selectedModel) {
-            ForEach(model.models) { m in Text(m.label).tag(m.id) }
+    private func pickChip(_ title: String, _ ref: String) -> some View {
+        Button(action: { model.pullModel(ref) }) {
+            Text(title).font(Brand.display(11, weight: .bold)).kerning(0.5).foregroundStyle(Brand.ember500)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember500.opacity(0.4), lineWidth: 1))
         }
-        .pickerStyle(.menu)
-        .labelsHidden()
-        .font(.system(size: 11, weight: .medium, design: .monospaced))
-        .tint(Brand.ember500)
-        .frame(maxWidth: 240)
-        .disabled(!model.connected)
+        .buttonStyle(.plain).disabled(model.pulling).help("Pull \(ref)")
     }
-
-    private var transcript: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if model.chat.isEmpty {
-                    Text("Ask GINEXUS anything — it runs entirely on this Mac.")
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(Brand.muted)
-                }
-                ForEach(model.chat) { msg in
-                    bubble(msg)
-                }
-                if model.sending {
-                    Text("…thinking")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(Brand.ember500)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(maxHeight: .infinity)
-    }
-
-    private func bubble(_ msg: ChatMsg) -> some View {
-        let isUser = msg.role == "user"
-        return VStack(alignment: .leading, spacing: 3) {
-            Text(isUser ? "YOU" : "GINEXUS")
-                .font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
-                .foregroundStyle(isUser ? Brand.ember500 : Brand.muted)
-            Group {
-                if isUser {
-                    // The user's own input — show verbatim (monospace), no Markdown rendering.
-                    Text(msg.text)
-                        .font(.system(size: 14, design: .monospaced))
-                        .foregroundStyle(Brand.bone50)
-                        .textSelection(.enabled)
-                } else if msg.streaming {
-                    // Live: plain text + cursor (cheap to update per token); a status line shows
-                    // tool/council/research activity. Switches to rich rendering once finalized.
-                    VStack(alignment: .leading, spacing: 6) {
-                        if let status = msg.status {
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.small)
-                                Text(status).font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(Brand.ember500)
-                            }
-                        }
-                        StreamingText(text: msg.text)
-                    }
-                } else {
-                    // Finalized assistant reply — content-aware rich rendering (text/code/images/…).
-                    MarkdownReply(text: msg.text)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .background(isUser ? Brand.ink800 : Color.white.opacity(0.03))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            // Explicit generated image (from the image_generate tool) attached to the message.
-            if let path = msg.imagePath, let img = NSImage(contentsOfFile: path) {
-                Image(nsImage: img).resizable().scaledToFit()
-                    .frame(maxWidth: 360, maxHeight: 360)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-        }
-    }
-
-    private var inputRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            attachmentChip
-            HStack(spacing: 10) {
-                // The "+" lives INSIDE the input pill (bare icon, no box), like a modern chat box.
-                HStack(spacing: 8) {
-                    plusMenu
-                    TextField("Message GINEXUS…", text: $model.chatInput)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14, design: .monospaced))
-                        .foregroundStyle(Brand.bone50)
-                        .onSubmit { model.send(model.chatInput) }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 11)
-                .background(Brand.ink800)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                Button(action: { model.send(model.chatInput) }) {
-                    Text("SEND").font(.system(size: 12, weight: .bold, design: .monospaced)).kerning(1.5)
-                        .padding(.horizontal, 18).padding(.vertical, 12)
-                        .foregroundStyle(Brand.ink900).background(Brand.ember500)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .buttonStyle(.plain)
-                .disabled((model.sending || !model.connected)
-                          || (model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.attachment == nil))
-            }
-        }
+    private func dlFmt(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM↓", Double(n) / 1_000_000) }
+        if n >= 1_000 { return "\(n / 1_000)K↓" }
+        return "\(n)↓"
     }
 }
 
-/// Streaming answer text with a terminal-style BLINKING filled cursor in the SEND-button accent
-/// (ember). The cursor glyph is always present but alternates ember ⇄ clear, so it blinks in place
-/// with no layout reflow. Inline at the end of the (wrapping) text.
+// MARK: - streaming answer text with a blinking ember cursor (matches the EXECUTE accent)
 private struct StreamingText: View {
     let text: String
     @State private var on = true
     private let blink = Timer.publish(every: 0.53, on: .main, in: .common).autoconnect()
-
     var body: some View {
-        Text(attributed)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .onReceive(blink) { _ in on.toggle() }
+        Text(attributed).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading).onReceive(blink) { _ in on.toggle() }
     }
-
     private var attributed: AttributedString {
-        var s = AttributedString(text)
-        s.font = .system(size: 14)
-        s.foregroundColor = Brand.bone50
-        var cursor = AttributedString("▌")
-        cursor.font = .system(size: 14)
-        cursor.foregroundColor = on ? Brand.ember500 : .clear
+        var s = AttributedString(text); s.font = .system(size: 14); s.foregroundColor = Brand.bone50
+        var cursor = AttributedString("▌"); cursor.font = .system(size: 14); cursor.foregroundColor = on ? Brand.ember500 : .clear
         return s + cursor
     }
 }
 
-/// One conversation in the sidebar. Selection reads as the ink-800 card fill + an ember title (no
-/// accent border-stripe); unselected rows lighten faintly on hover with the brand easing — matching
-/// ModelRow, the app's established clickable-card affordance. Inline rename commits on Return,
-/// cancels on Escape, and is dismissed when the user navigates away (onSelect clears renamingID).
+// MARK: - inline transcript image, decoded ONCE (downsampled) — never per streamed token
+private struct StreamImage: View {
+    let path: String
+    @State private var image: NSImage?
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: 420, maxHeight: 360)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line2, lineWidth: 1))
+            }
+        }
+        // .task(id:) runs once per path (not per render/token); decode a downsampled thumbnail.
+        .task(id: path) { if image == nil { image = AppModel.thumbnailImage(path, maxPixel: 840) } }
+    }
+}
+
+// MARK: - one conversation in the sidebar (hover affordance, inline rename, brand selection)
 private struct ConversationRow: View {
     let c: ConversationMeta
     let selected: Bool
@@ -678,28 +703,23 @@ private struct ConversationRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 if isRenaming {
                     TextField("Title", text: $renameText)
-                        .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(Brand.bone50).tint(Brand.ember500)
+                        .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50).tint(Brand.ember500)
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 6))
-                        .onSubmit(onCommitRename)
-                        .onExitCommand { renamingID = nil }
+                        .onSubmit(onCommitRename).onExitCommand { renamingID = nil }
                 } else {
-                    Text(c.title).font(.system(size: 13, design: .monospaced))
-                        .foregroundStyle(selected ? Brand.ember500 : Brand.bone50).lineLimit(1)
+                    Text(c.title).font(Brand.mono(13)).foregroundStyle(selected ? Brand.ember500 : Brand.bone50).lineLimit(1)
                 }
-                Text("\(relativeTime(c.updatedAt)) · \(c.messageCount)")
-                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(Brand.muted)
+                Text("\(relativeTime(c.updatedAt)) · \(c.messageCount)").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Brand.ink800 : Color.white.opacity(hover ? 0.04 : 0))
+            .background(selected ? Brand.ink700 : Color.white.opacity(hover ? 0.04 : 0))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .onHover { h in withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.2)) { hover = h } }
+        .buttonStyle(.plain).disabled(disabled)
+        .onHover { h in withAnimation(Brand.ease) { hover = h } }
         .contextMenu {
             Button("Rename", action: onRequestRename)
             Button("Delete", role: .destructive, action: onRequestDelete)
@@ -708,40 +728,67 @@ private struct ConversationRow: View {
 }
 
 private func relativeTime(_ d: Date) -> String {
-    let f = RelativeDateTimeFormatter()
-    f.unitsStyle = .short
+    let f = RelativeDateTimeFormatter(); f.unitsStyle = .short
     return f.localizedString(for: d, relativeTo: Date())
 }
 
-/// A modern card for one installed model — name + params/quant/size + uninstall. Semi-transparent ink
-/// surface that lightens on hover with the brand easing (cubic-bezier 0.22,1,0.36,1). Not glassmorphism.
+// MARK: - one installed model card (hover-lighten, uninstall)
 private struct ModelRow: View {
     let m: InstalledModel
     let sizeText: String
     let onDelete: () -> Void
     @State private var hover = false
-
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "shippingbox.fill").font(.system(size: 13))
-                .foregroundStyle(Brand.ember500.opacity(0.85))
+            Image(systemName: "shippingbox.fill").font(.system(size: 13)).foregroundStyle(Brand.ember500.opacity(0.85))
             VStack(alignment: .leading, spacing: 2) {
-                Text(m.name).font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Brand.bone50).lineLimit(1)
+                Text(m.name).font(Brand.mono(12, weight: .medium)).foregroundStyle(Brand.bone50).lineLimit(1)
                 Text([m.detail, sizeText].filter { !$0.isEmpty }.joined(separator: "  ·  "))
-                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(Brand.muted)
+                    .font(Brand.mono(10)).foregroundStyle(Brand.bone300)
             }
             Spacer()
             Button(action: onDelete) {
-                Image(systemName: "trash").font(.system(size: 12))
-                    .foregroundStyle(hover ? Brand.bone50 : Brand.muted)
-            }
-            .buttonStyle(.plain).help("Uninstall and free disk")
+                Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(hover ? Brand.bone50 : Brand.bone400)
+            }.buttonStyle(.plain).help("Uninstall and free disk")
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Color.white.opacity(hover ? 0.07 : 0.035))
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(hover ? 0.13 : 0.06), lineWidth: 1))
-        .onHover { h in withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.2)) { hover = h } }
+        .onHover { h in withAnimation(Brand.ease) { hover = h } }
+    }
+}
+
+// MARK: - headless render-safe mirror of the stream (for ImageRenderer verification)
+struct SnapshotView: View {
+    @ObservedObject var model: AppModel
+    var body: some View {
+        ZStack {
+            Brand.ink900
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) { Wordmark(size: 30); Spacer() }
+                HStack(spacing: 8) {
+                    StatusDot(color: model.connected ? Brand.success : Brand.bone400, size: 8)
+                    Text(model.spineStatus).font(Brand.mono(11, weight: .medium))
+                        .foregroundStyle(model.connected ? Brand.success : Brand.bone400)
+                    Spacer()
+                }
+                ForEach(model.chat) { msg in
+                    let isUser = msg.role == "user"
+                    VStack(alignment: .leading, spacing: 3) {
+                        Eyebrow(text: isUser ? "User Input" : "GINEXUS", color: isUser ? Brand.ember500 : Brand.bone300)
+                        Text(msg.text).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                            .background(isUser ? Brand.ink700 : Color.white.opacity(0.03))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                if model.sending { Text("…thinking").font(Brand.mono(12)).foregroundStyle(Brand.ember500) }
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+        }
+        .frame(width: 640, height: 560)
     }
 }

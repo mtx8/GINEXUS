@@ -142,6 +142,10 @@ final class AppModel: ObservableObject {
         if !vlmInstalled { return "PULL A VISION MODEL" }
         return ""
     }
+    /// Real: an Obsidian vault is available to the core (explicit setting or auto-detected; never iCloud).
+    var obsidianAvailable: Bool { SpineController.resolveVault(settings.settings.obsidianVaultPath) != nil }
+    /// The active model's human label for the context rail.
+    var activeModelLabel: String { models.first { $0.id == selectedModel }?.label ?? selectedModel }
     /// The core's current boot id (binds approval tokens to this server launch). Fetched on connect.
     private var bootId = ""
     /// During a core restart, the pre-restart boot id; pollHealth must not re-latch CONNECTED until it
@@ -342,6 +346,7 @@ final class AppModel: ObservableObject {
             spineStatus = "CONNECTED · live spine over UDS"
             await fetchModels()
             await restoreSession()   // settings defaults + saved conversations (BEFORE the auto-demo)
+            refreshSessionStats()    // real memory fact count for the Context rail
             renderSnapshot()
             // Auto-demo once: prove the app gets a real model answer through the spine. Skipped when a
             // transcript was restored (chat non-empty) so a saved conversation isn't polluted.
@@ -559,6 +564,20 @@ final class AppModel: ObservableObject {
     }
     /// Refresh button: re-fetch picker + installed list.
     func refreshModels() { Task { await fetchModels() } }
+
+    /// Silently refresh the memory fact count for the Context rail SESSION panel (no sheet opened).
+    func refreshSessionStats() {
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/memory", token: tok, jsonBody: nil)
+            }.value
+            if case .success(let r) = res, let d = r.body.data(using: .utf8),
+               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                memFactsCount = (o["facts_count"] as? Int) ?? memFactsCount
+            }
+        }
+    }
 
     // MARK: settings
     func openSettings() { settingsOpen = true }

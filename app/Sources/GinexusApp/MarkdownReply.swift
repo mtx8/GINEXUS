@@ -297,6 +297,7 @@ private struct CodePanel: View {
 
 private struct MediaImage: View {
     let src: String
+    @State private var local: NSImage?
     var body: some View {
         Group {
             if src.lowercased().hasPrefix("http") {
@@ -305,14 +306,20 @@ private struct MediaImage: View {
                 } placeholder: {
                     ProgressView().controlSize(.small)
                 }
-            } else if let ns = NSImage(contentsOfFile: filePath(src)) {
-                Image(nsImage: ns).resizable().scaledToFit()
+            } else if let local {
+                Image(nsImage: local).resizable().scaledToFit()
             } else {
-                Text(src).font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.muted)
+                ProgressView().controlSize(.small)   // decoding once (off the per-render path)
             }
         }
         .frame(maxWidth: 440, maxHeight: 440)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        // Decode a local image ONCE per src (downsampled) — never on every render/streamed token.
+        .task(id: src) {
+            if !src.lowercased().hasPrefix("http"), local == nil {
+                local = AppModel.thumbnailImage(filePath(src), maxPixel: 880)
+            }
+        }
     }
 }
 
