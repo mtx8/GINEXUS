@@ -209,24 +209,92 @@ impl Gateway {
     }
 }
 
-/// Blocking embedding call (OpenAI-compatible `/embeddings`) → a dense vector. Used by the memory
-/// store for semantic recall; it runs inside the agent loop's `spawn_blocking`, so blocking is fine.
-pub fn embed_text(api_base: &str, api_key: &str, model: &str, text: &str) -> Result<Vec<f32>, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+/// Build the shared blocking embed client once (connection pool + TLS config reused across calls).
+/// Constructing a fresh client per embedding is what made bulk import O(N) client builds → slow.
+fn embed_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
         .build()
-        .map_err(|e| format!("embed client: {e}"))?;
+        .map_err(|e| format!("embed client: {e}"))
+}
+
+/// Blocking embedding call (OpenAI-compatible `/embeddings`) → a dense vector. Used by the memory
+/// store for semantic recall (single-query path); it runs inside the agent loop's `spawn_blocking`,
+/// so blocking is fine. For bulk work use `embed_batch` — one round-trip for many texts.
+pub fn embed_text(api_base: &str, api_key: &str, model: &str, text: &str) -> Result<Vec<f32>, String> {
+    embed_batch_with(&embed_client()?, api_base, api_key, model, &[text])?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no embedding in response".to_string())
+}
+
+/// Batched embeddings: ONE HTTP round-trip for many texts (OpenAI `/embeddings` array input).
+/// Ollama runs the whole batch in a single model invocation, so embedding 64 texts costs ~the
+/// same wall-clock as one — the core fix for bulk import (was N sequential calls + N client builds).
+/// Returns vectors aligned to `texts` (sorted by the response `index`). Builds one client per call;
+/// callers doing many batches should prefer `embed_batch_with` to reuse a single client.
+pub fn embed_batch(api_base: &str, api_key: &str, model: &str, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
+    embed_batch_with(&embed_client()?, api_base, api_key, model, texts)
+}
+
+/// `embed_batch` against a caller-provided client — lets a bulk importer reuse one connection pool
+/// across many chunks instead of rebuilding it each time.
+pub fn embed_batch_with(
+    client: &reqwest::blocking::Client, api_base: &str, api_key: &str, model: &str, texts: &[&str],
+) -> Result<Vec<Vec<f32>>, String> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
     let v: Value = client
         .post(format!("{}/embeddings", api_base.trim_end_matches('/')))
         .bearer_auth(api_key)
-        .json(&json!({"model": model, "input": text}))
+        .json(&json!({"model": model, "input": texts}))
         .send()
         .and_then(|r| r.error_for_status())
         .map_err(|e| format!("embed request: {e}"))?
         .json()
         .map_err(|e| format!("embed parse: {e}"))?;
-    let arr = v["data"][0]["embedding"].as_array().ok_or("no embedding in response")?;
-    Ok(arr.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect())
+    let data = v["data"].as_array().ok_or("no data array in embeddings response")?;
+    if data.len() != texts.len() {
+        return Err(format!("embedding count mismatch: got {}, want {}", data.len(), texts.len()));
+    }
+    // OpenAI spec allows out-of-order data; sort by `index` to realign with the input order.
+    let mut indexed: Vec<(usize, Vec<f32>)> = data
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let idx = d.get("index").and_then(|x| x.as_u64()).map(|n| n as usize).unwrap_or(i);
+            let emb = d["embedding"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect())
+                .unwrap_or_default();
+            (idx, emb)
+        })
+        .collect();
+    indexed.sort_by_key(|(i, _)| *i);
+    Ok(indexed.into_iter().map(|(_, e)| e).collect())
+}
+
+/// Embed many texts reusing ONE client, one round-trip per `chunk` texts. Returns one
+/// `Option<Vec<f32>>` per input — `None` where that chunk's request failed (so a transient embed
+/// error degrades a few facts to keyword-only recall rather than failing the whole import). This is
+/// the closure the memory store's batch embedder is backed by.
+pub fn embed_many(
+    api_base: &str, api_key: &str, model: &str, texts: &[&str], chunk: usize,
+) -> Vec<Option<Vec<f32>>> {
+    let chunk = chunk.max(1);
+    let client = match embed_client() {
+        Ok(c) => c,
+        Err(_) => return vec![None; texts.len()],
+    };
+    let mut out: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
+    for c in texts.chunks(chunk) {
+        match embed_batch_with(&client, api_base, api_key, model, c) {
+            Ok(vecs) => out.extend(vecs.into_iter().map(Some)),
+            Err(_) => out.extend(std::iter::repeat_with(|| None).take(c.len())),
+        }
+    }
+    out
 }
 
 /// Binds a logical model name to the gateway so the agent loop can call it via `ModelCall`.

@@ -57,32 +57,31 @@ pub fn detect_source(root: &Value) -> ExportSource {
     ExportSource::Generic
 }
 
-/// Normalize + cap + sanitize one message, append it as an Untrusted fact. Returns true if loaded.
-/// The canonical Rust sanitizer (when provided) scrubs PII/secrets HERE — only the messages we
-/// keep are processed (small strings → fast + no catastrophic backtracking, unlike sanitizing the
-/// whole multi-MB export upfront). One shared Sanitizer per import → consistent placeholders.
-fn push_fact(
-    store: &MemoryStore, report: &mut IngestReport, source_label: &str, role: &str, raw: &str,
-    san: Option<&ginexus_sanitize::Sanitizer>,
-) -> bool {
+/// Normalize + cap + sanitize one message and COLLECT it into `out` (does not write yet). The
+/// canonical Rust sanitizer (when provided) scrubs PII/secrets HERE — only the messages we keep are
+/// processed (small strings → fast + no catastrophic backtracking, unlike sanitizing the whole
+/// multi-MB export upfront). One shared Sanitizer per import → consistent placeholders. Collected
+/// facts are written in one batched pass (embeddings + file) at the end of the import — see
+/// `ingest_value` — instead of one embed round-trip + file open per message.
+fn prep_fact(
+    report: &mut IngestReport, source_label: &str, role: &str, raw: &str,
+    san: Option<&ginexus_sanitize::Sanitizer>, out: &mut Vec<String>,
+) {
     let text = raw.trim();
-    if text.is_empty() || report.facts_loaded >= MAX_FACTS {
+    if text.is_empty() || out.len() >= MAX_FACTS {
         report.skipped += 1;
-        return false;
+        return;
     }
     if text.chars().count() > MAX_FACT_CHARS {
         report.skipped += 1;
-        return false;
+        return;
     }
     let who = if role == "assistant" { "assistant" } else { "you" };
     let clean = match san {
         Some(s) => s.sanitize_text(text),
         None => text.to_string(),
     };
-    let fact = format!("[{source_label} · {who}] {clean}");
-    store.append_fact(&fact, Origin::Untrusted);
-    report.facts_loaded += 1;
-    true
+    out.push(format!("[{source_label} · {who}] {clean}"));
 }
 
 /// Join ChatGPT `content.parts` (strings) into one text blob.
@@ -108,6 +107,8 @@ pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool, 
     let mut report = IngestReport { source: label.to_string(), ..Default::default() };
     // One shared sanitizer for the whole import → consistent placeholders, scrub only kept messages.
     let san = if sanitize { Some(ginexus_sanitize::Sanitizer::new()) } else { None };
+    // Collect kept facts, then write them all in one batched embed + file pass (see `append_facts`).
+    let mut facts: Vec<String> = Vec::new();
     let convs = match root.as_array() {
         Some(a) => a,
         None => return report,
@@ -133,7 +134,7 @@ pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool, 
                             continue;
                         }
                         let text = chatgpt_parts(msg);
-                        push_fact(store, &mut report, label, role, &text, san.as_ref());
+                        prep_fact(&mut report, label, role, &text, san.as_ref(), &mut facts);
                     }
                 }
             }
@@ -147,7 +148,7 @@ pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool, 
                             continue;
                         }
                         let text = m.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                        push_fact(store, &mut report, label, role, text, san.as_ref());
+                        prep_fact(&mut report, label, role, text, san.as_ref(), &mut facts);
                     }
                 }
             }
@@ -174,11 +175,14 @@ pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool, 
                         .or_else(|| m.get("text"))
                         .and_then(|t| t.as_str())
                         .unwrap_or("");
-                    push_fact(store, &mut report, label, role, text, san.as_ref());
+                    prep_fact(&mut report, label, role, text, san.as_ref(), &mut facts);
                 }
             }
         }
     }
+    // Single batched write: one (chunked) embedding pass + one file append for the whole import.
+    report.facts_loaded = facts.len();
+    store.append_facts(facts, Origin::Untrusted);
     report
 }
 

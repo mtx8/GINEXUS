@@ -45,6 +45,10 @@ pub struct Fact {
 /// server injects a closure that calls the model gateway's embedding endpoint.
 pub type EmbedFn = Arc<dyn Fn(&str) -> Option<Vec<f32>> + Send + Sync>;
 
+/// Batch embedder: many texts → many vectors (aligned; None per text on failure). The server backs
+/// this with one batched `/embeddings` call per chunk so bulk import isn't N sequential round-trips.
+pub type BatchEmbedFn = Arc<dyn Fn(&[&str]) -> Vec<Option<Vec<f32>>> + Send + Sync>;
+
 /// Cosine similarity in [-1, 1]; -1 on length mismatch / zero vectors.
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
@@ -64,6 +68,7 @@ pub struct MemoryStore {
     dir: PathBuf,
     core: Mutex<BTreeMap<String, String>>,
     embed: Mutex<Option<EmbedFn>>,
+    batch_embed: Mutex<Option<BatchEmbedFn>>,
 }
 
 impl MemoryStore {
@@ -73,7 +78,7 @@ impl MemoryStore {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
-        Self { dir, core: Mutex::new(core), embed: Mutex::new(None) }
+        Self { dir, core: Mutex::new(core), embed: Mutex::new(None), batch_embed: Mutex::new(None) }
     }
 
     /// Install the embedder for semantic recall. Without it, search falls back to keyword scoring.
@@ -82,6 +87,15 @@ impl MemoryStore {
     }
     fn embedder(&self) -> Option<EmbedFn> {
         self.embed.lock().unwrap().clone()
+    }
+
+    /// Install the batch embedder used by `append_facts` (bulk import). Optional — without it,
+    /// `append_facts` falls back to the per-text embedder.
+    pub fn set_batch_embedder(&self, f: BatchEmbedFn) {
+        *self.batch_embed.lock().unwrap() = Some(f);
+    }
+    fn batch_embedder(&self) -> Option<BatchEmbedFn> {
+        self.batch_embed.lock().unwrap().clone()
     }
 
     fn persist_core(&self, core: &BTreeMap<String, String>) {
@@ -113,6 +127,38 @@ impl MemoryStore {
             {
                 let _ = writeln!(file, "{line}");
             }
+        }
+    }
+
+    /// Bulk-append facts with ONE batched embedding pass + ONE file open. The performance path for
+    /// import: a batch embedder embeds all texts in a few round-trips (vs. one per fact), and every
+    /// line is written in a single buffered append (vs. open-per-fact). Embeddings are best-effort —
+    /// a fact whose vector is missing still persists (and is reachable via keyword recall).
+    pub fn append_facts(&self, texts: Vec<String>, origin: Origin) {
+        if texts.is_empty() {
+            return;
+        }
+        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embs: Vec<Option<Vec<f32>>> = if let Some(b) = self.batch_embedder() {
+            b(&refs)
+        } else if let Some(e) = self.embedder() {
+            refs.iter().map(|t| e(t)).collect()
+        } else {
+            vec![None; texts.len()]
+        };
+        let ts = now_ms();
+        let mut buf = String::new();
+        for (text, emb) in texts.into_iter().zip(embs.into_iter()) {
+            let f = Fact { ts, text, origin, emb };
+            if let Ok(line) = serde_json::to_string(&f) {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        }
+        if let Ok(mut file) =
+            std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("archival.jsonl"))
+        {
+            let _ = file.write_all(buf.as_bytes());
         }
     }
 
@@ -314,6 +360,40 @@ mod tests {
         // untrusted flag surfaces in recall
         remember.run(json!({"text": "scraped claim X", "untrusted": true}));
         assert!(recall.run(json!({"query": "scraped claim"})).output.contains("untrusted-origin"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn batch_append_embeds_in_order() {
+        let dir = tmp();
+        let m = MemoryStore::open(dir.clone());
+        // Batch embedder must receive ALL texts at once and return vectors aligned to input order.
+        // Encode each text's length as a 1-dim vector so we can verify per-fact alignment.
+        m.set_batch_embedder(Arc::new(|texts: &[&str]| {
+            texts.iter().map(|t| Some(vec![t.len() as f32])).collect()
+        }));
+        let facts = vec!["aa".to_string(), "bbbb".to_string(), "cccccc".to_string()];
+        m.append_facts(facts, Origin::Untrusted);
+        let stored = m.all_facts();
+        assert_eq!(stored.len(), 3);
+        // Each fact carries the embedding for ITS OWN text (alignment preserved through the batch).
+        for f in &stored {
+            assert_eq!(f.emb.as_ref().unwrap()[0], f.text.len() as f32);
+            assert_eq!(f.origin, Origin::Untrusted);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn batch_append_falls_back_to_single_embedder() {
+        let dir = tmp();
+        let m = MemoryStore::open(dir.clone());
+        // No batch embedder installed → append_facts must use the per-text embedder.
+        m.set_embedder(Arc::new(|t: &str| Some(vec![t.len() as f32])));
+        m.append_facts(vec!["hello".to_string()], Origin::Trusted);
+        let stored = m.all_facts();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].emb.as_ref().unwrap()[0], 5.0);
         std::fs::remove_dir_all(&dir).ok();
     }
 

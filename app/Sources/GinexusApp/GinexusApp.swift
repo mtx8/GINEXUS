@@ -15,3 +15,4 @@ struct GinexusApp: App {
         .windowResizability(.contentMinSize)
     }
 }
+
