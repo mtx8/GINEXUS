@@ -69,6 +69,18 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
               scheme == "http" || scheme == "https", u.host != nil else { return false }
         return ollamaBase.hasSuffix("/v1")
     }
+
+    /// Host-level SSRF guard for the model endpoint: loopback and ordinary LAN hosts are allowed (a
+    /// user may run Ollama on another Mac), but cloud-metadata / link-local / wildcard targets are
+    /// refused so a typo or a bad value can't turn the core into an SSRF pivot. Only loopback/allowed
+    /// hosts are ever injected as GINEXUS_OLLAMA_BASE.
+    public var ollamaBaseHostAllowed: Bool {
+        guard let host = URL(string: ollamaBase)?.host else { return false }
+        if host == "0.0.0.0" || host == "::" { return false }
+        if host.hasPrefix("169.254.") { return false }   // link-local incl. 169.254.169.254 metadata
+        if host == "metadata" || host.hasSuffix(".internal") { return false }
+        return true
+    }
 }
 
 /// Pure-Foundation disk access for settings.json. Nonisolated so SpineController.boot() can read
@@ -96,5 +108,7 @@ public enum SettingsFile {
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try enc.encode(settings)
         try data.write(to: u, options: .atomic)
+        // Owner-only: stores the vault path + endpoint (not secrets, but keep it off other local users).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: u.path)
     }
 }

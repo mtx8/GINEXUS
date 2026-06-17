@@ -148,7 +148,10 @@ async fn main() {
     // (GINEXUS_OBSIDIAN_VAULT). list/search/read are autonomous; write/append are HITL-gated.
     if let Ok(vault) = std::env::var("GINEXUS_OBSIDIAN_VAULT") {
         let vp = std::path::PathBuf::from(&vault);
-        if !vault.is_empty() && vp.is_dir() {
+        if !vault.is_empty() && ginexus_agent::obsidian::is_icloud_vault(&vp) {
+            // HARD RULE #1: never touch iCloud — refuse a vault whose canonical root is in iCloud.
+            eprintln!("GINEXUS_OBSIDIAN_VAULT resolves into iCloud — refusing to register vault tools: {vault}");
+        } else if !vault.is_empty() && vp.is_dir() {
             for t in ginexus_agent::obsidian::obsidian_tools(vp) {
                 registry.register(t);
             }

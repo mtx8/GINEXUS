@@ -106,6 +106,15 @@ final class PersistenceTests: XCTestCase {
         XCTAssertFalse(s.ollamaBaseIsLoopback)
     }
 
+    func testOllamaBaseHostAllowedBlocksMetadataAndWildcard() {
+        var s = GinexusSettings()
+        s.ollamaBase = "http://169.254.169.254/v1"; XCTAssertFalse(s.ollamaBaseHostAllowed)  // cloud metadata
+        s.ollamaBase = "http://0.0.0.0:11434/v1";   XCTAssertFalse(s.ollamaBaseHostAllowed)  // wildcard
+        s.ollamaBase = "http://svc.internal/v1";    XCTAssertFalse(s.ollamaBaseHostAllowed)  // internal
+        s.ollamaBase = "http://127.0.0.1:11434/v1"; XCTAssertTrue(s.ollamaBaseHostAllowed)   // loopback
+        s.ollamaBase = "http://192.168.1.50:11434/v1"; XCTAssertTrue(s.ollamaBaseHostAllowed) // LAN Ollama allowed
+    }
+
     func testSettingsPartialJSONDecodesWithDefaults() throws {
         // An older/partial settings.json missing most fields must decode with defaulted values.
         let json = #"{"defaultMode":"autonomous"}"#.data(using: .utf8)!

@@ -21,6 +21,13 @@ pub mod media;
 
 const OLLAMA_BASE: &str = "http://127.0.0.1:11434/v1";
 
+/// The OpenAI-compatible Ollama base. Defaults to local loopback; the app can override it for ALL
+/// tiers (and, via ollama_root, model management) by setting `GINEXUS_OLLAMA_BASE` at boot — the
+/// "env injected at boot + respawn" path the Settings screen uses. Empty/unset → the default.
+fn ollama_base() -> String {
+    std::env::var("GINEXUS_OLLAMA_BASE").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| OLLAMA_BASE.to_string())
+}
+
 #[derive(Clone, Debug)]
 pub struct Endpoint {
     pub model: String,
@@ -59,12 +66,13 @@ impl Gateway {
     /// Default local stack: "fast" → Ollama qwen3:1.7b (quick), "smart" → Qwen3-30B-A3B
     /// (production chat/agent). The SBPL/egress profile pins traffic to Ollama at :11434.
     pub fn default_local() -> Self {
+        let base = ollama_base();
         let mut m = HashMap::new();
         m.insert(
             "fast".to_string(),
             Endpoint {
                 model: "qwen3:1.7b".into(),
-                api_base: OLLAMA_BASE.into(),
+                api_base: base.clone(),
                 api_key: "ollama".into(),
                 label: "Fast · Qwen3 1.7B".into(),
             },
@@ -73,7 +81,7 @@ impl Gateway {
             "smart".to_string(),
             Endpoint {
                 model: "qwen3:30b-a3b-instruct-2507-q4_K_M".into(),
-                api_base: OLLAMA_BASE.into(),
+                api_base: base.clone(),
                 api_key: "ollama".into(),
                 label: "Smart · Qwen3 30B-A3B".into(),
             },
@@ -82,7 +90,7 @@ impl Gateway {
             "embed".to_string(),
             Endpoint {
                 model: "nomic-embed-text".into(),
-                api_base: OLLAMA_BASE.into(),
+                api_base: base.clone(),
                 api_key: "ollama".into(),
                 label: "Embed · nomic-embed-text".into(),
             },
@@ -99,8 +107,11 @@ impl Gateway {
         if let Some(obj) = v.get("models").and_then(|x| x.as_object()) {
             for (k, ep) in obj {
                 let model = ep.get("model").and_then(|x| x.as_str()).unwrap_or(k).to_string();
-                let api_base =
-                    ep.get("api_base").and_then(|x| x.as_str()).unwrap_or(OLLAMA_BASE).to_string();
+                let api_base = ep
+                    .get("api_base")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(ollama_base);
                 let api_key =
                     ep.get("api_key").and_then(|x| x.as_str()).unwrap_or("ollama").to_string();
                 let label = ep.get("label").and_then(|x| x.as_str()).unwrap_or(&model).to_string();
@@ -176,7 +187,10 @@ impl Gateway {
     pub fn resolve(&self, name: &str) -> Endpoint {
         self.models.get(name).cloned().unwrap_or_else(|| Endpoint {
             model: name.to_string(),
-            api_base: OLLAMA_BASE.into(),
+            // Honor the GINEXUS_OLLAMA_BASE override for passthrough literals (a picker-added
+            // installed model) and for ollama_root when no "smart" tier exists — so tiers and model
+            // management always point at the same host.
+            api_base: ollama_base(),
             api_key: "ollama".into(),
             label: name.to_string(),
         })

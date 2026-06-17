@@ -4,6 +4,7 @@
 // keychain dependency, and no ~/Desktop access (the binary is in the bundle, so Desktop-TCC is moot).
 import Foundation
 import Security
+import GinexusCore
 
 @MainActor
 final class SpineController {
@@ -54,6 +55,9 @@ final class SpineController {
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let logHandle = try? FileHandle(forWritingTo: logURL)
 
+        // Settings own core-config defaults; read the file directly (no View needed at boot time).
+        let settings = SettingsFile.load()
+
         let tok = randomHex(32)
         let approval = randomHex(32)
         token = tok
@@ -66,10 +70,10 @@ final class SpineController {
         host.start()
         appHost = host
 
-        // SP6: best-effort launch the media sidecar (dev: from the project dir via uv). If it's
-        // already running (or can't be launched), the core still points at the base URL and the
-        // image_generate tool simply errors until a sidecar answers.
-        startMediaSidecar()
+        // SP6: best-effort launch the media sidecar (dev: from the project dir via uv). Gated by the
+        // "Local image generation" setting; if it's already running (or can't be launched), the core
+        // still points at the base URL and the image_generate tool simply errors until one answers.
+        if settings.mediaSidecarEnabled { startMediaSidecar() }
 
         let p = Process()
         p.executableURL = embeddedBinary
@@ -80,10 +84,22 @@ final class SpineController {
         env["GINEXUS_APPROVAL_KEY"] = approval
         env["GINEXUS_APP_HOST_SOCK"] = appHostSocketPath
         env["GINEXUS_APP_HOST_TOKEN"] = appHostToken
-        env["GINEXUS_MEDIA_BASE"] = "http://127.0.0.1:\(mediaPort)"
-        // Obsidian: auto-detect the operator's open vault so the core's vault tools light up with no
-        // config. Skipped if the vault lives in iCloud (hard rule: never touch ~/Library/Mobile Documents).
-        if let vault = Self.detectObsidianVault() {
+        // Image generation: only advertise the media base (which registers the tool) when enabled.
+        if settings.mediaSidecarEnabled {
+            env["GINEXUS_MEDIA_BASE"] = "http://127.0.0.1:\(mediaPort)"
+        } else {
+            env.removeValue(forKey: "GINEXUS_MEDIA_BASE")
+        }
+        // Ollama endpoint override: only inject when the user set a non-default, valid, host-allowed
+        // base (every tier + model management derive from it). Loopback default OR a blocked host
+        // (metadata/link-local/wildcard) → leave unset so the core uses the safe loopback default.
+        if settings.ollamaBase != GinexusSettings.defaultOllamaBase,
+           settings.ollamaBaseIsValid, settings.ollamaBaseHostAllowed {
+            env["GINEXUS_OLLAMA_BASE"] = settings.ollamaBase
+        }
+        // Obsidian: explicit setting wins (rejecting iCloud); else auto-detect the open vault. Skipped
+        // entirely if it lands in iCloud (hard rule: never touch ~/Library/Mobile Documents).
+        if let vault = Self.resolveVault(settings.obsidianVaultPath) {
             env["GINEXUS_OBSIDIAN_VAULT"] = vault
         }
         p.environment = env
@@ -122,6 +138,32 @@ final class SpineController {
 
     func shutdown() { process?.terminate(); appHost?.stop(); mediaProcess?.terminate() }
 
+    /// Resolve the vault to inject: a user-chosen path (canonicalized, so a symlink into iCloud can't
+    /// sneak past the check) if it's a real directory and NOT in iCloud, else fall back to auto-detect.
+    static func resolveVault(_ chosen: String?) -> String? {
+        if let path = chosen, !path.isEmpty {
+            let real = canonical(path)
+            var isDir: ObjCBool = false
+            if !isICloudPath(real),
+               FileManager.default.fileExists(atPath: real, isDirectory: &isDir), isDir.boolValue {
+                return real
+            }
+        }
+        return detectObsidianVault()
+    }
+
+    /// Resolve symlinks so an iCloud target can't hide behind a non-iCloud path string.
+    static func canonical(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+    }
+
+    /// True if a (preferably canonicalized) path lives under iCloud (hard rule #1: never touch
+    /// ~/Library/Mobile Documents). Callers should pass a symlink-resolved path.
+    static func isICloudPath(_ path: String) -> Bool {
+        let p = canonical(path)
+        return p.contains("Mobile Documents") || p.contains("com~apple~CloudDocs")
+    }
+
     /// Best-effort discovery of the operator's Obsidian vault from Obsidian's own registry
     /// (~/Library/Application Support/obsidian/obsidian.json). Prefers the currently-open vault, else
     /// the most-recently-used. Returns nil if none, the dir is missing, or it lives in iCloud
@@ -139,8 +181,9 @@ final class SpineController {
             return ((a["ts"] as? Double) ?? 0) > ((b["ts"] as? Double) ?? 0)
         }
         for v in sorted {
-            guard let path = v["path"] as? String else { continue }
-            if path.contains("Mobile Documents") || path.contains("com~apple~CloudDocs") { continue } // iCloud → skip
+            guard let raw = v["path"] as? String else { continue }
+            let path = canonical(raw)
+            if isICloudPath(path) { continue }   // iCloud → skip (symlink-resolved)
             var isDir: ObjCBool = false
             if FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
                 return path

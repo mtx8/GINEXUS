@@ -18,6 +18,16 @@ const MAX_SCAN_FILES: usize = 5000;
 const MAX_RESULTS: usize = 20;
 const MAX_FILE_BYTES: u64 = 1_000_000;
 
+/// Defense-in-depth for global HARD RULE #1: never touch iCloud (~/Library/Mobile Documents).
+/// The Swift app already canonicalizes + rejects iCloud before injecting the vault, but the core
+/// refuses too — a vault whose CANONICAL root lands in iCloud must not have its tools registered,
+/// so a symlinked root can never make the agent read/write inside iCloud.
+pub fn is_icloud_vault(vault: &Path) -> bool {
+    let p = vault.canonicalize().unwrap_or_else(|_| vault.to_path_buf());
+    let s = p.to_string_lossy();
+    s.contains("Mobile Documents") || s.contains("com~apple~CloudDocs")
+}
+
 /// Resolve a vault-relative note path safely. `.md` is appended if missing. `must_exist` gates reads.
 fn safe_vault_path(vault: &Path, rel: &str, must_exist: bool) -> Result<PathBuf, String> {
     let rel = rel.trim().trim_start_matches('/');
@@ -270,6 +280,18 @@ mod tests {
     }
     fn tool<'a>(tools: &'a [Tool], name: &str) -> &'a Tool {
         tools.iter().find(|t| t.name == name).unwrap()
+    }
+
+    #[test]
+    fn is_icloud_vault_flags_icloud_roots() {
+        // Non-existent paths: canonicalize falls back to the raw path, so the substring check applies.
+        assert!(is_icloud_vault(Path::new(
+            "/Users/x/Library/Mobile Documents/iCloud~md~obsidian/Vault"
+        )));
+        assert!(is_icloud_vault(Path::new(
+            "/Users/x/Library/Mobile Documents/com~apple~CloudDocs/Notes"
+        )));
+        assert!(!is_icloud_vault(Path::new("/Users/x/Desktop/AGENTS")));
     }
 
     #[test]

@@ -73,6 +73,7 @@ struct ContentView: View {
         .sheet(item: $model.pending) { p in approvalSheet(p) }
         .sheet(isPresented: $model.memoryOpen) { memorySheet }
         .sheet(isPresented: $model.modelsOpen) { modelsSheet }
+        .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model, store: model.settings) }
     }
 
     // MARK: conversation sidebar
@@ -407,6 +408,12 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .help("Download models from the registry or Hugging Face (GGUF)")
             .disabled(!model.connected)
+            Button(action: { model.openSettings() }) {
+                Text("SETTINGS").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
+                    .foregroundStyle(Brand.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Defaults, paths, and core runtime configuration")
             autonomyToggle
             modelPicker
         }
