@@ -130,6 +130,7 @@ async fn main() {
     let memory = Arc::new(MemoryStore::open(sd.join("memory")));
     let mut registry = ginexus_agent::tools::notes_registry(sd.join("notes"));
     registry.register(ginexus_gateway::web::web_fetch_tool()); // SP4: read-only web research
+    registry.register(ginexus_agent::documents::write_document_tool(sd.join("documents"))); // PDF/Word (HITL)
     // SP6: local image generation — registered only when the app launched the media sidecar and
     // injected its base URL. Generation is autonomous (writes only into the media dir).
     if let Ok(base) = std::env::var("GINEXUS_MEDIA_BASE") {

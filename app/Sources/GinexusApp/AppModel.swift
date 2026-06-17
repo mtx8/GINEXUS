@@ -984,10 +984,14 @@ final class AppModel: ObservableObject {
                 let didGenerate = trace.contains {
                     ($0.first as? String) == "image_generate" && ($0.count > 1 ? (($0[1] as? Bool) ?? false) : false)
                 }
+                let didDoc = trace.contains {
+                    ($0.first as? String) == "write_document" && ($0.count > 1 ? (($0[1] as? Bool) ?? false) : false)
+                }
                 var img = Self.extractImagePath(answer)
                 if img == nil, didGenerate { img = Self.newestMediaImage() }
                 if !answer.isEmpty { chat[i].text = answer }      // authoritative (think-stripped/trimmed)
                 chat[i].imagePath = img
+                if didDoc { chat[i].docPath = Self.newestDocument() }   // Final Output card
                 chat[i].steps = trace.compactMap { $0.first as? String }   // agent-flow Action cards
                 chat[i].streaming = false
                 dbg("agent stream done; status=\(st)")
@@ -1009,6 +1013,19 @@ final class AppModel: ObservableObject {
         let rest = text[start.lowerBound...]
         guard let png = rest.range(of: ".png") else { return nil }
         return String(rest[..<png.upperBound])
+    }
+
+    /// Newest generated document (PDF/Word) — surfaced as a Final Output card after write_document.
+    static func newestDocument() -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dir = "\(home)/Library/Application Support/GINEXUS/documents"
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
+        let docs = files.filter { $0.hasSuffix(".pdf") || $0.hasSuffix(".docx") }.map { "\(dir)/\($0)" }
+        return docs.max { a, b in
+            let da = (try? FileManager.default.attributesOfItem(atPath: a))?[.modificationDate] as? Date
+            let db = (try? FileManager.default.attributesOfItem(atPath: b))?[.modificationDate] as? Date
+            return (da ?? .distantPast) < (db ?? .distantPast)
+        }
     }
 
     /// Newest PNG in the media dir — fallback when the model didn't echo the exact path.
