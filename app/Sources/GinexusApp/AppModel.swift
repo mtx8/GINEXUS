@@ -129,10 +129,17 @@ final class AppModel: ObservableObject {
     }
     /// The core's current boot id (binds approval tokens to this server launch). Fetched on connect.
     private var bootId = ""
+    /// During a core restart, the pre-restart boot id; pollHealth must not re-latch CONNECTED until it
+    /// sees a DIFFERENT (freshly-booted) id, so we never bind to the dying old core.
+    private var restartPreviousBootId: String?
+
+    /// Settings screen (defaults, paths, runtime). Backed by SettingsStore (settings.json).
+    @Published var settingsOpen = false
 
     private let spine = SpineController()
     private var pollTimer: Timer?
     private var autoDemoSent = false
+    private var didRestoreSession = false   // transcript/settings restore runs once per launch, not per reconnect
 
     private func dbg(_ s: String) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -179,6 +186,8 @@ final class AppModel: ObservableObject {
     /// most-recent transcript (when persistence is on). Runs BEFORE the auto-demo so a restored chat
     /// suppresses it. When persistence is off, nothing is read and the chat stays in-memory only.
     private func restoreSession() async {
+        guard !didRestoreSession else { return }   // once per launch; a core restart must not reset the view
+        didRestoreSession = true
         selectedModel = settings.settings.defaultModel
         autonomous = (settings.settings.defaultMode == "autonomous")
         guard settings.settings.persistTranscript else { return }
@@ -308,10 +317,15 @@ final class AppModel: ObservableObject {
         let res = await Task.detached { UDSClient.request(socketPath: sock, path: "/healthz") }.value
         guard case .success(let r) = res, r.status == 200 else { return }
         if !connected {
+            await fetchBootId()
+            // During a restart, only latch onto a core whose boot id is NEW — never the dying old one.
+            if let prev = restartPreviousBootId {
+                guard !bootId.isEmpty, bootId != prev else { return }
+                restartPreviousBootId = nil
+            }
             connected = true
             spineStatus = "CONNECTED · live spine over UDS"
             await fetchModels()
-            await fetchBootId()
             await restoreSession()   // settings defaults + saved conversations (BEFORE the auto-demo)
             renderSnapshot()
             // Auto-demo once: prove the app gets a real model answer through the spine. Skipped when a
@@ -389,7 +403,7 @@ final class AppModel: ObservableObject {
         let tok = currentToken()
         let body = try? JSONSerialization.data(withJSONObject: [
             "data": String(data: data, encoding: .utf8) ?? "",
-            "include_assistant": false,
+            "include_assistant": settings.settings.importIncludeAssistant,
         ])
         chat.append(ChatMsg(role: "user", text: "Import \(url.lastPathComponent) into memory"))
         persistActive()   // save the user turn at append time (matches send())
@@ -488,6 +502,39 @@ final class AppModel: ObservableObject {
     }
     /// Refresh button: re-fetch picker + installed list.
     func refreshModels() { Task { await fetchModels() } }
+
+    // MARK: settings
+    func openSettings() { settingsOpen = true }
+
+    /// Apply core-config settings (Ollama endpoint / vault / image generation) by respawning the
+    /// embedded core — these are read once in the core's env at boot. Live settings (default model /
+    /// mode) need no restart. Approval tokens are bound to the core's boot id, so any in-flight
+    /// pending approval is invalidated here (it can't be replayed against the new boot).
+    func restartCore() {
+        guard !sending else {   // don't tear down the core mid-reply (matches every other mutator)
+            spineStatus = "finish or stop the current reply before restarting the core"
+            return
+        }
+        pending = nil            // approval tokens are bootId-bound; invalidate any in-flight grant
+        connected = false
+        restartPreviousBootId = bootId   // require a DIFFERENT bootId before re-latching CONNECTED
+        bootId = ""
+        spineStatus = "restarting core…"
+        let sock = spine.socketPath
+        spine.shutdown()
+        // Remove the stale socket so the fresh core binds cleanly (it unlinks on bind, not on exit).
+        try? FileManager.default.removeItem(atPath: sock)
+        spine.boot()
+        // Watchdog: the new core's first token differs from the old, so the dying core rejects it and
+        // pollHealth won't latch onto it. If nothing healthy answers in time, surface an actionable error.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            guard let self, !self.connected else { return }
+            self.spineStatus = "core didn't start — check the Ollama endpoint in Settings, then restart"
+        }
+        // pollHealth() re-fetches roster + boot id and re-latches CONNECTED once a NEW core answers
+        // (didRestoreSession keeps the transcript/view from resetting).
+    }
 
     /// Fully uninstall a model and its artifacts (Ollama DELETE /api/delete), then refresh.
     func deleteModel(_ name: String) {
