@@ -213,8 +213,10 @@ struct ContentView: View {
         .padding(.top, 44)
     }
 
-    /// One conversation turn (Gemini-style): your message as a right-aligned soft bubble; GINEXUS's
-    /// reply as bare full-width prose led by the brand glyph — no card, no button chrome.
+    /// One conversation turn. Your message → a right-aligned soft bubble. GINEXUS's reply → the
+    /// agent FLOW: an "Action" card per tool the agent used (the execution blocks from your reference),
+    /// then the answer as clean bare prose led by the brand glyph. Plain chats (no tools) show no
+    /// cards — just the prose — so it stays clean, not gimmicky.
     @ViewBuilder private func streamBlock(_ msg: ChatMsg) -> some View {
         if msg.role == "user" {
             HStack(alignment: .top, spacing: 0) {
@@ -224,30 +226,45 @@ struct ContentView: View {
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     if let path = msg.imagePath { StreamImage(path: path) }
                 }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Brand.ink700)
+                .padding(.horizontal, 15).padding(.vertical, 11)
+                .background(Brand.ink600)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
             }
         } else {
-            HStack(alignment: .top, spacing: 12) {
-                GlyphMark(size: 22)
-                VStack(alignment: .leading, spacing: 10) {
-                    if msg.streaming {
-                        if let s = msg.status {
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.mini)
-                                Text(s).font(Brand.mono(11, weight: .medium)).foregroundStyle(Brand.ember300)
-                            }
+            VStack(alignment: .leading, spacing: 10) {
+                // Completed agent actions (tools used this turn) → clean Action cards.
+                ForEach(Array(msg.steps.enumerated()), id: \.offset) { _, step in
+                    BlockCard(label: "Action · \(step)", icon: "bolt.fill", accent: Brand.ember300) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Brand.success)
+                            Text("Completed").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
                         }
-                        StreamingText(text: msg.text)
-                    } else {
-                        MarkdownReply(text: msg.text)
-                        if let path = msg.imagePath { StreamImage(path: path) }
-                        assistantActions(msg)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Spacer(minLength: 0)
+                // Live action card while a tool runs.
+                if msg.streaming, let s = msg.status {
+                    BlockCard(label: s, icon: "bolt.fill", accent: Brand.ember300, active: true) {
+                        HStack(spacing: 7) {
+                            ProgressView().controlSize(.mini)
+                            Text("Running…").font(Brand.mono(11)).foregroundStyle(Brand.ember300)
+                        }
+                    }
+                }
+                // The answer — bare, readable prose led by the brand glyph (Gemini-clean).
+                HStack(alignment: .top, spacing: 12) {
+                    GlyphMark(size: 22)
+                    VStack(alignment: .leading, spacing: 10) {
+                        if msg.streaming {
+                            StreamingText(text: msg.text)
+                        } else {
+                            MarkdownReply(text: msg.text)
+                            if let path = msg.imagePath { StreamImage(path: path) }
+                            assistantActions(msg)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Spacer(minLength: 0)
+                }
             }
         }
     }
@@ -316,15 +333,11 @@ struct ContentView: View {
                 .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
                 Button(action: { model.send(model.chatInput) }) {
-                    HStack(spacing: 7) {
-                        Text("EXECUTE").font(Brand.mono(11, weight: .bold)).kerning(1.2)
-                        Image(systemName: "arrow.up").font(.system(size: 10, weight: .bold))
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 13)
-                    .foregroundStyle(canSend ? Brand.ink900 : Brand.bone400)
-                    .background(canSend ? Brand.ember500 : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(canSend ? Color.clear : Brand.line2, lineWidth: 1))
+                    Text("SEND").font(Brand.mono(12, weight: .bold)).kerning(1.6)
+                        .padding(.horizontal, 24).padding(.vertical, 14)
+                        .foregroundStyle(canSend ? Brand.ink900 : Brand.bone400)
+                        .background(canSend ? Brand.ember500 : Brand.ink600)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain).disabled(!canSend)
             }
