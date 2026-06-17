@@ -258,12 +258,22 @@ pub fn embed_batch_with(
     if data.len() != texts.len() {
         return Err(format!("embedding count mismatch: got {}, want {}", data.len(), texts.len()));
     }
-    // OpenAI spec allows out-of-order data; sort by `index` to realign with the input order.
-    let mut indexed: Vec<(usize, Vec<f32>)> = data
+    Ok(realign_embeddings(data, texts.len()))
+}
+
+/// Realign embedding `data` entries to the input order. OpenAI permits out-of-order responses, so we
+/// honor the per-entry `index` — but ONLY when the indices form a valid permutation of `0..n`
+/// (every index in range, no duplicates). If the server returns an out-of-range, duplicate, or
+/// missing index, we fall back to the response's positional order (both Ollama and OpenAI emit in
+/// input order) rather than letting `sort` silently MISALIGN embeddings — a misalignment would pair
+/// each fact with the wrong vector and permanently poison semantic recall. Caller guarantees
+/// `data.len() == n`.
+fn realign_embeddings(data: &[Value], n: usize) -> Vec<Vec<f32>> {
+    let mut items: Vec<(usize, Vec<f32>)> = data
         .iter()
         .enumerate()
         .map(|(i, d)| {
-            let idx = d.get("index").and_then(|x| x.as_u64()).map(|n| n as usize).unwrap_or(i);
+            let idx = d.get("index").and_then(|x| x.as_u64()).map(|v| v as usize).unwrap_or(i);
             let emb = d["embedding"]
                 .as_array()
                 .map(|a| a.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect())
@@ -271,8 +281,14 @@ pub fn embed_batch_with(
             (idx, emb)
         })
         .collect();
-    indexed.sort_by_key(|(i, _)| *i);
-    Ok(indexed.into_iter().map(|(_, e)| e).collect())
+    // Valid permutation ⇔ exactly n entries, each index < n and seen at most once.
+    let mut seen = vec![false; n];
+    let is_perm = items.len() == n
+        && items.iter().all(|(idx, _)| *idx < n && !std::mem::replace(&mut seen[*idx], true));
+    if is_perm {
+        items.sort_by_key(|(idx, _)| *idx);
+    }
+    items.into_iter().map(|(_, e)| e).collect()
 }
 
 /// Embed many texts reusing ONE client, one round-trip per `chunk` texts. Returns one
@@ -364,6 +380,51 @@ mod tests {
         );
         let gw = Gateway::new(m);
         assert_eq!(gw.select(None, "chat", "normal", false), "fast");
+    }
+
+    // Encode each embedding as a 1-dim vector tagging its SOURCE position, so a realignment bug is
+    // observable as a value out of place.
+    fn datum(index: i64, tag: f32) -> Value {
+        json!({"index": index, "embedding": [tag]})
+    }
+
+    #[test]
+    fn realign_in_order_is_identity() {
+        let data = vec![datum(0, 10.0), datum(1, 11.0), datum(2, 12.0)];
+        let out = realign_embeddings(&data, 3);
+        assert_eq!(out, vec![vec![10.0], vec![11.0], vec![12.0]]);
+    }
+
+    #[test]
+    fn realign_valid_permutation_is_sorted_to_input_order() {
+        // Server returned them shuffled but with correct indices → must be restored to input order.
+        let data = vec![datum(2, 12.0), datum(0, 10.0), datum(1, 11.0)];
+        let out = realign_embeddings(&data, 3);
+        assert_eq!(out, vec![vec![10.0], vec![11.0], vec![12.0]]);
+    }
+
+    #[test]
+    fn realign_duplicate_index_falls_back_to_response_order() {
+        // [0,0,1] is NOT a permutation → trusting it would misalign. Keep response order instead.
+        let data = vec![datum(0, 10.0), datum(0, 99.0), datum(1, 11.0)];
+        let out = realign_embeddings(&data, 3);
+        assert_eq!(out, vec![vec![10.0], vec![99.0], vec![11.0]]);
+    }
+
+    #[test]
+    fn realign_out_of_range_index_falls_back_to_response_order() {
+        // index 5 for n=3 → out of range → fall back, no panic, no misalignment.
+        let data = vec![datum(0, 10.0), datum(1, 11.0), datum(5, 12.0)];
+        let out = realign_embeddings(&data, 3);
+        assert_eq!(out, vec![vec![10.0], vec![11.0], vec![12.0]]);
+    }
+
+    #[test]
+    fn realign_missing_index_uses_response_order() {
+        // No `index` field → enumerate fallback yields 0,1,2 (a valid perm) → identity.
+        let data = vec![json!({"embedding": [10.0]}), json!({"embedding": [11.0]})];
+        let out = realign_embeddings(&data, 2);
+        assert_eq!(out, vec![vec![10.0], vec![11.0]]);
     }
 
     #[test]
