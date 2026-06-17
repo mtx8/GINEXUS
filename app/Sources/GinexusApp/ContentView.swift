@@ -150,14 +150,9 @@ struct ContentView: View {
 
     private var autonomyToggle: some View {
         Button(action: { model.autonomous.toggle() }) {
-            HStack(spacing: 5) {
-                Image(systemName: model.autonomous ? "bolt.fill" : "hand.raised.fill").font(.system(size: 10))
-                Text(model.autonomous ? "AUTO" : "HITL").font(Brand.display(11, weight: .bold)).kerning(1)
-            }
-            .foregroundStyle(model.autonomous ? Brand.ember500 : Brand.bone300)
-            .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(model.autonomous ? Brand.ember600 : Brand.line2, lineWidth: 1))
+            TacticalLabel(text: model.autonomous ? "Auto" : "HITL",
+                          icon: model.autonomous ? "bolt.fill" : "hand.raised.fill",
+                          filled: false, tint: model.autonomous ? Brand.ember500 : Brand.bone300)
         }
         .buttonStyle(.plain).disabled(!model.connected)
         .help(model.autonomous
@@ -174,14 +169,14 @@ struct ContentView: View {
             }
         } label: {
             HStack(spacing: 7) {
-                Image(systemName: "cpu").font(.system(size: 11))
-                Text(model.activeModelLabel).font(Brand.mono(12, weight: .medium)).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                Image(systemName: "cpu").font(.system(size: 10, weight: .semibold))
+                Text(model.activeModelLabel).font(Brand.mono(10.5, weight: .bold)).kerning(0.6).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
             }
-            .foregroundStyle(Brand.bone100)
+            .foregroundStyle(Brand.bone200)
             .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line2, lineWidth: 1))
+            .background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Brand.line2, lineWidth: 1))
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .frame(maxWidth: 260).disabled(!model.connected)
@@ -322,13 +317,14 @@ struct ContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
                 Button(action: { model.send(model.chatInput) }) {
                     HStack(spacing: 7) {
-                        Text("EXECUTE").font(Brand.display(13, weight: .bold)).kerning(1.2)
-                        Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
+                        Text("EXECUTE").font(Brand.mono(11, weight: .bold)).kerning(1.2)
+                        Image(systemName: "arrow.up").font(.system(size: 10, weight: .bold))
                     }
-                    .padding(.horizontal, 18).padding(.vertical, 13)
+                    .padding(.horizontal, 16).padding(.vertical, 13)
                     .foregroundStyle(canSend ? Brand.ink900 : Brand.bone400)
-                    .background(canSend ? Brand.ember500 : Brand.ink700)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .background(canSend ? Brand.ember500 : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(canSend ? Color.clear : Brand.line2, lineWidth: 1))
                 }
                 .buttonStyle(.plain).disabled(!canSend)
             }
@@ -413,16 +409,16 @@ struct ContentView: View {
     }
     private func statRow(_ label: String, _ value: String, dot: Color?) -> some View {
         HStack(spacing: 8) {
-            Text(label).font(Brand.body(12)).foregroundStyle(Brand.bone300)
+            Text(label.uppercased()).font(Brand.mono(10)).foregroundStyle(Brand.bone300)
             Spacer(minLength: 8)
             if let dot { StatusDot(color: dot, size: 6) }
-            Text(value).font(Brand.mono(12, weight: .medium)).foregroundStyle(Brand.bone100)
+            Text(value).font(Brand.mono(11, weight: .medium)).foregroundStyle(Brand.bone100)
                 .lineLimit(1).truncationMode(.middle)
         }
     }
 
     private var currentContextPanel: some View {
-        Panel(title: "Current Context") {
+        Panel(title: "Current File Context") {
             if let att = model.attachment {
                 HStack(spacing: 10) {
                     if att.kind == "image", let t = model.attachmentThumb {
@@ -450,7 +446,7 @@ struct ContentView: View {
     }
 
     private var capabilitiesPanel: some View {
-        Panel(title: "Capabilities") {
+        Panel(title: "Enabled Tools") {
             capRow("globe", "Web research", on: true)
             capRow("terminal", "Terminal", on: true)
             capRow("brain", "Memory", on: true)
@@ -464,23 +460,22 @@ struct ContentView: View {
 
     private func capRow(_ icon: String, _ label: String, on: Bool, warn: Bool = false,
                         note: String = "", config: (() -> Void)? = nil) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: icon).font(.system(size: 12))
-                .foregroundStyle(on ? Brand.ember500.opacity(0.9) : Brand.bone400).frame(width: 16)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(Brand.body(12)).foregroundStyle(on ? Brand.bone100 : Brand.bone300)
-                if warn, !note.isEmpty {
-                    Text(note).font(Brand.mono(8, weight: .bold)).foregroundStyle(Brand.bone400).lineLimit(1)
-                }
-            }
+        let statusColor = on ? Brand.success : (warn ? Brand.warning : Brand.bone400)
+        return HStack(spacing: 9) {
+            Image(systemName: icon).font(.system(size: 11))
+                .foregroundStyle(on ? Brand.ember500.opacity(0.9) : Brand.bone400).frame(width: 14)
+            Text(label).font(Brand.body(12)).foregroundStyle(on ? Brand.bone100 : Brand.bone300).lineLimit(1)
             Spacer(minLength: 6)
             if let config {
                 Button(action: config) {
                     Image(systemName: "slider.horizontal.3").font(.system(size: 10)).foregroundStyle(Brand.bone400)
-                }.buttonStyle(.plain).help("Configure")
+                }.buttonStyle(.plain).help(note.isEmpty ? "Configure" : note)
             }
-            StatusDot(color: on ? Brand.success : (warn ? Brand.warning : Brand.bone400), size: 6)
+            Text(on ? "CONNECTED" : (warn ? "UPDATE" : "OFFLINE"))
+                .font(Brand.mono(8.5, weight: .bold)).foregroundStyle(statusColor)
+            StatusDot(color: statusColor, size: 5)
         }
+        .help(note.isEmpty ? "" : note)
     }
 
     // MARK: ── sheets (memory / models) ────────────────────────────────────────
