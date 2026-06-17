@@ -37,6 +37,14 @@ struct MemFact: Identifiable, Sendable {
     let origin: String   // "trusted" | "untrusted"
 }
 
+/// A model actually installed in the local runtime (from Ollama /api/tags).
+struct InstalledModel: Identifiable, Sendable {
+    let id: String      // model name (e.g. "qwen3-vl:30b-a3b-instruct")
+    let size: Int       // bytes on disk
+    let detail: String  // "8B · Q4_K_M" (params · quant), may be empty
+    var name: String { id }
+}
+
 /// A Hugging Face model repo surfaced by type-ahead search (GGUF, pullable via Ollama hf.co).
 struct HFModel: Identifiable, Sendable {
     let id: String        // "<org>/<repo>"
@@ -97,7 +105,7 @@ final class AppModel: ObservableObject {
 
     /// Model manager ("download models from Hugging Face / Ollama"): installed list, version, pull.
     @Published var modelsOpen = false
-    @Published var installedModels: [String] = []
+    @Published var installed: [InstalledModel] = []
     @Published var ollamaVersion = ""
     @Published var pullInput = ""
     @Published var pullStatus = ""
@@ -180,21 +188,48 @@ final class AppModel: ObservableObject {
     }
 
     /// Populate the picker from the core's roster: "auto" first, then each tier (id + label).
+    /// Refresh BOTH the top-right picker and the MODELS-manager installed list. The picker shows
+    /// "auto" + the curated roster tiers + every installed model (so a freshly-pulled model is
+    /// selectable immediately); the manager shows installed models with size/quant for uninstall.
     func fetchModels() async {
-        let sock = spine.socketPath
-        let tok = currentToken()
-        let res = await Task.detached {
+        let sock = spine.socketPath, tok = currentToken()
+        async let rosterT = Task.detached {
             UDSClient.request(socketPath: sock, method: "GET", path: "/v1/models", token: tok, jsonBody: nil)
         }.value
-        guard case .success(let r) = res, r.status == 200,
-              let data = r.body.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let arr = obj["models"] as? [[String: Any]] else { return }
+        async let instT = Task.detached {
+            UDSClient.request(socketPath: sock, method: "GET", path: "/v1/models/installed", token: tok, jsonBody: nil)
+        }.value
+        let (rosterRes, instRes) = await (rosterT, instT)
+
+        func base(_ s: String) -> String { s.hasSuffix(":latest") ? String(s.dropLast(7)) : s }
         var opts = [ModelOption(id: "auto", label: "Auto (smart by default)")]
-        for m in arr {
-            if let id = m["id"] as? String {
+        var rosterUnderlying = Set<String>()
+        if case .success(let r) = rosterRes, let d = r.body.data(using: .utf8),
+           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+           let arr = o["models"] as? [[String: Any]] {
+            for m in arr {
+                guard let id = m["id"] as? String else { continue }
                 opts.append(ModelOption(id: id, label: (m["label"] as? String) ?? id))
+                if let u = m["model"] as? String { rosterUnderlying.insert(base(u)) }
             }
+        }
+        if case .success(let r) = instRes, let d = r.body.data(using: .utf8),
+           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+           let arr = o["models"] as? [[String: Any]] {
+            var inst: [InstalledModel] = []
+            for m in arr {
+                guard let name = m["name"] as? String else { continue }
+                let det = m["details"] as? [String: Any]
+                let param = (det?["parameter_size"] as? String) ?? ""
+                let quant = (det?["quantization_level"] as? String) ?? ""
+                inst.append(InstalledModel(id: name, size: (m["size"] as? Int) ?? 0,
+                                           detail: [param, quant].filter { !$0.isEmpty }.joined(separator: " · ")))
+                // Add raw installed models to the picker unless a roster tier already wraps them.
+                if !rosterUnderlying.contains(base(name)) && !opts.contains(where: { $0.id == name }) {
+                    opts.append(ModelOption(id: name, label: name))
+                }
+            }
+            installed = inst.sorted { $0.name < $1.name }
         }
         models = opts
         dbg("models: \(opts.map { $0.id })")
@@ -294,7 +329,7 @@ final class AppModel: ObservableObject {
     // MARK: model manager (download from Ollama registry / Hugging Face GGUF)
     func openModels() {
         modelsOpen = true
-        refreshInstalled()
+        Task { await fetchModels() }
         let sock = spine.socketPath, tok = currentToken()
         Task {
             let res = await Task.detached {
@@ -306,16 +341,20 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    func refreshInstalled() {
+    /// Refresh button: re-fetch picker + installed list.
+    func refreshModels() { Task { await fetchModels() } }
+
+    /// Fully uninstall a model and its artifacts (Ollama DELETE /api/delete), then refresh.
+    func deleteModel(_ name: String) {
+        let m = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !m.isEmpty else { return }
         let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["model": m])
         Task {
-            let res = await Task.detached {
-                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/models/installed", token: tok, jsonBody: nil)
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/models/delete", token: tok, jsonBody: body)
             }.value
-            guard case .success(let r) = res, let d = r.body.data(using: .utf8),
-                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
-            let arr = (o["models"] as? [[String: Any]]) ?? []
-            installedModels = arr.compactMap { $0["name"] as? String }.sorted()
+            await fetchModels()
         }
     }
     /// Stream a pull (Ollama /api/pull — registry tag OR hf.co/<repo>:<quant>) with live progress.
@@ -353,7 +392,7 @@ final class AppModel: ObservableObject {
                 }
             }
             pulling = false
-            refreshInstalled()
+            await fetchModels()   // refresh installed list + add the new model to the picker
         }
     }
     private func versionLess(_ a: String, _ b: String) -> Bool {

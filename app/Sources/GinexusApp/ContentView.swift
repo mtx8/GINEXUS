@@ -46,6 +46,7 @@ struct SnapshotView: View {
 
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
+    @State private var pendingDelete: String?   // model name awaiting uninstall confirmation
 
     var body: some View {
         ZStack {
@@ -98,15 +99,31 @@ struct ContentView: View {
                     pickChip("Mistral-Small 3.2", "mistral-small3.2")
                     Spacer()
                 }
-                Text("INSTALLED").font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
-                    .foregroundStyle(Brand.muted)
+                HStack {
+                    Text("INSTALLED").font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
+                        .foregroundStyle(Brand.muted)
+                    if !model.installed.isEmpty {
+                        Text("· \(model.installed.count) · \(sizeFmt(model.installed.reduce(0) { $0 + $1.size }))")
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(Brand.muted)
+                    }
+                    Spacer()
+                    Button(action: { model.refreshModels() }) {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Brand.muted)
+                    }.buttonStyle(.plain).help("Refresh the installed list")
+                }
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(model.installedModels, id: \.self) { name in
-                            Text(name).font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.bone50)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if model.installed.isEmpty {
+                            Text("No models installed yet.").font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(Brand.muted)
+                        }
+                        ForEach(model.installed) { m in
+                            ModelRow(m: m, sizeText: sizeFmt(m.size)) { pendingDelete = m.name }
                         }
                     }
+                    .padding(.vertical, 2)
+                    .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.25), value: model.installed.count)
                 }
                 if model.pulling || model.pullProgress > 0 {
                     VStack(alignment: .leading, spacing: 4) {
@@ -161,6 +178,22 @@ struct ContentView: View {
         }
         .frame(width: 640, height: 620)
         .preferredColorScheme(.dark)
+        .confirmationDialog(
+            "Uninstall \(pendingDelete ?? "")?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            presenting: pendingDelete
+        ) { name in
+            Button("Uninstall · free disk", role: .destructive) { model.deleteModel(name); pendingDelete = nil }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { name in
+            Text("Removes \(name) and its layers from disk. You can re-download it anytime.")
+        }
+    }
+
+    private func sizeFmt(_ bytes: Int) -> String {
+        let gb = Double(bytes) / 1_073_741_824
+        if gb >= 1 { return String(format: "%.1f GB", gb) }
+        return String(format: "%.0f MB", Double(bytes) / 1_048_576)
     }
 
     private func pickChip(_ title: String, _ ref: String) -> some View {
@@ -524,5 +557,38 @@ private struct StreamingText: View {
         cursor.font = .system(size: 14)
         cursor.foregroundColor = on ? Brand.ember500 : .clear
         return s + cursor
+    }
+}
+
+/// A modern card for one installed model — name + params/quant/size + uninstall. Semi-transparent ink
+/// surface that lightens on hover with the brand easing (cubic-bezier 0.22,1,0.36,1). Not glassmorphism.
+private struct ModelRow: View {
+    let m: InstalledModel
+    let sizeText: String
+    let onDelete: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "shippingbox.fill").font(.system(size: 13))
+                .foregroundStyle(Brand.ember500.opacity(0.85))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(m.name).font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Brand.bone50).lineLimit(1)
+                Text([m.detail, sizeText].filter { !$0.isEmpty }.joined(separator: "  ·  "))
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(Brand.muted)
+            }
+            Spacer()
+            Button(action: onDelete) {
+                Image(systemName: "trash").font(.system(size: 12))
+                    .foregroundStyle(hover ? Brand.bone50 : Brand.muted)
+            }
+            .buttonStyle(.plain).help("Uninstall and free disk")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(Color.white.opacity(hover ? 0.07 : 0.035))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(hover ? 0.13 : 0.06), lineWidth: 1))
+        .onHover { h in withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.2)) { hover = h } }
     }
 }

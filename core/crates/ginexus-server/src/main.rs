@@ -541,6 +541,27 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             };
             tokio::join!(runner, drain);
         }
+        ("POST", "/v1/models/delete") => {
+            // Fully uninstall a model: Ollama DELETE /api/delete removes the manifest AND any layers/
+            // blobs not shared with another model — i.e. all of this model's artifacts. Irreversible
+            // (re-pullable); the app confirms before calling. Audited.
+            let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("").trim().to_string();
+            if model.is_empty() {
+                err(&mut stream, 400, "Bad Request", "missing 'model'").await;
+                return Ok(());
+            }
+            let _ = state.audit.record("model_delete", json!({"model": model.clone()}));
+            let url = format!("{}/api/delete", state.gateway.ollama_root());
+            // send both "model" (current) and "name" (older API) keys for compatibility.
+            match state.gateway.http_client().delete(&url)
+                .json(&json!({"model": model, "name": model})).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    json_ok(&mut stream, json!({"ok": true, "model": model})).await;
+                }
+                Ok(resp) => err(&mut stream, 502, "Bad Gateway", &format!("ollama HTTP {}", resp.status())).await,
+                Err(e) => err(&mut stream, 502, "Bad Gateway", &format!("ollama: {e}")).await,
+            }
+        }
         ("POST", "/v1/hf/search") => {
             // Type-ahead over Hugging Face's public model search. Filtered to GGUF repos — those are
             // the ones Ollama can pull directly via hf.co/<org>/<repo>[:QUANT]. Sorted by downloads.
