@@ -191,14 +191,23 @@ struct ContentView: View {
             Text(isUser ? "YOU" : "GINEXUS")
                 .font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
                 .foregroundStyle(isUser ? Brand.ember500 : Brand.muted)
-            Text(msg.text)
-                .font(.system(size: 14, design: .monospaced))
-                .foregroundStyle(Brand.bone50)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .background(isUser ? Brand.ink800 : Color.white.opacity(0.03))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Group {
+                if isUser {
+                    // The user's own input — show verbatim (monospace), no Markdown rendering.
+                    Text(msg.text)
+                        .font(.system(size: 14, design: .monospaced))
+                        .foregroundStyle(Brand.bone50)
+                        .textSelection(.enabled)
+                } else {
+                    // Assistant reply — content-aware rich rendering (text/code/images/video/…).
+                    MarkdownReply(text: msg.text)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(isUser ? Brand.ink800 : Color.white.opacity(0.03))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            // Explicit generated image (from the image_generate tool) attached to the message.
             if let path = msg.imagePath, let img = NSImage(contentsOfFile: path) {
                 Image(nsImage: img).resizable().scaledToFit()
                     .frame(maxWidth: 360, maxHeight: 360)
