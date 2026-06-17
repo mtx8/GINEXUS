@@ -54,7 +54,6 @@ struct ContentView: View {
                 header
                 statusStrip
                 transcript
-                capabilityBar
                 inputRow
             }
             .padding(24)
@@ -65,32 +64,50 @@ struct ContentView: View {
         .sheet(isPresented: $model.memoryOpen) { memorySheet }
     }
 
-    /// One-tap capability actions. Council / Research / Image wrap the current input and invoke the
-    /// matching tool; Profile distills long-term memory into the always-in-context self-model.
-    private var capabilityBar: some View {
-        HStack(spacing: 8) {
-            capChip("PERSPECTIVES", help: "Answer your message from several expert viewpoints, then give a balanced take.",
-                    enabled: model.canQuickAction) { model.runCouncil() }
-            capChip("RESEARCH", help: "Investigate your message in depth across multiple angles, then return a written, sourced answer.",
-                    enabled: model.canQuickAction) { model.runResearch() }
-            capChip("CREATE IMAGE", help: "Generate an image from your message.",
-                    enabled: model.canQuickAction) { model.runImage() }
-            Spacer()
+    /// The "+" menu inside the input row: capabilities that act on your message, plus attachments
+    /// (file / image / import). The modern chat-input pattern — one discoverable entry point.
+    private var plusMenu: some View {
+        Menu {
+            Section("Do with your message") {
+                Button("Perspectives", action: model.runCouncil).disabled(!model.canQuickAction)
+                Button("Research", action: model.runResearch).disabled(!model.canQuickAction)
+                Button("Create image", action: model.runImage).disabled(!model.canQuickAction)
+            }
+            Section("Attach") {
+                Button("Attach file…", action: model.attachFile)
+                Button("Attach image…", action: model.attachImage)
+                Button("Import AI data…", action: model.importExport)
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Brand.bone50)
+                .frame(width: 42, height: 42)
+                .background(Brand.ink800)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(!model.connected)
+        .help("Capabilities + attach a file, image, or AI data export")
     }
 
-    private func capChip(_ title: String, help: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
-                .foregroundStyle(enabled ? Brand.ember500 : Brand.muted)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .overlay(RoundedRectangle(cornerRadius: 6)
-                    .stroke((enabled ? Brand.ember500 : Brand.muted).opacity(0.4), lineWidth: 1))
+    /// Chip shown above the input when a file/image is attached to the next message.
+    @ViewBuilder private var attachmentChip: some View {
+        if let att = model.attachment {
+            HStack(spacing: 6) {
+                Image(systemName: att.kind == "image" ? "photo" : "doc.text")
+                    .font(.system(size: 11)).foregroundStyle(Brand.ember500)
+                Text(att.name).font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Brand.bone50).lineLimit(1)
+                Button(action: { model.clearAttachment() }) {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Brand.muted)
+                }.buttonStyle(.plain)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Brand.ink800).clipShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .help(help)
     }
 
     /// HITL: GINEXUS pauses an irreversible/OS action here until you approve with Touch ID.
@@ -156,13 +173,6 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .help("Browse what GINEXUS knows — core profile + searchable long-term memory")
-            .disabled(!model.connected)
-            Button(action: { model.importExport() }) {
-                Text("⤓ IMPORT").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
-                    .foregroundStyle(Brand.muted)
-            }
-            .buttonStyle(.plain)
-            .help("Import a sanitized ChatGPT/Claude export into memory")
             .disabled(!model.connected)
             autonomyToggle
             modelPicker
@@ -338,23 +348,28 @@ struct ContentView: View {
     }
 
     private var inputRow: some View {
-        HStack(spacing: 10) {
-            TextField("Message GINEXUS…", text: $model.chatInput)
-                .textFieldStyle(.plain)
-                .font(.system(size: 14, design: .monospaced))
-                .foregroundStyle(Brand.bone50)
-                .padding(12)
-                .background(Brand.ink800)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .onSubmit { model.send(model.chatInput) }
-            Button(action: { model.send(model.chatInput) }) {
-                Text("SEND").font(.system(size: 12, weight: .bold, design: .monospaced)).kerning(1.5)
-                    .padding(.horizontal, 18).padding(.vertical, 12)
-                    .foregroundStyle(Brand.ink900).background(Brand.ember500)
+        VStack(alignment: .leading, spacing: 8) {
+            attachmentChip
+            HStack(spacing: 10) {
+                plusMenu
+                TextField("Message GINEXUS…", text: $model.chatInput)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14, design: .monospaced))
+                    .foregroundStyle(Brand.bone50)
+                    .padding(12)
+                    .background(Brand.ink800)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .onSubmit { model.send(model.chatInput) }
+                Button(action: { model.send(model.chatInput) }) {
+                    Text("SEND").font(.system(size: 12, weight: .bold, design: .monospaced)).kerning(1.5)
+                        .padding(.horizontal, 18).padding(.vertical, 12)
+                        .foregroundStyle(Brand.ink900).background(Brand.ember500)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled((model.sending || !model.connected)
+                          || (model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.attachment == nil))
             }
-            .buttonStyle(.plain)
-            .disabled(model.sending || !model.connected)
         }
     }
 }
