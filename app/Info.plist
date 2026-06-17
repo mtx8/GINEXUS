@@ -8,6 +8,10 @@
     <string>GINEXUS</string>
     <key>CFBundleExecutable</key>
     <string>GinexusApp</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.macktrax.ginexus</string>
     <key>CFBundlePackageType</key>

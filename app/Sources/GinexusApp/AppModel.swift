@@ -83,6 +83,10 @@ final class AppModel: ObservableObject {
             } else if attachOnly {
                 spineStatus = "attach-only: waiting for an external spine…"
             } else if spine.available {
+                // No live spine answered. A previous run that wasn't cleanly quit leaves a STALE
+                // socket file behind (the core unlinks on bind, not on exit), which otherwise breaks
+                // the next launch — so remove it before spawning a fresh core that binds cleanly.
+                try? FileManager.default.removeItem(atPath: sock)
                 spine.boot(); spineStatus = "spawned sidecar; waiting…"
             } else {
                 spineStatus = "no spine (boot it / grant Desktop access / embed in bundle)"
