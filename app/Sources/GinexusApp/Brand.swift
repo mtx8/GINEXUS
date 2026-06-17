@@ -198,10 +198,36 @@ struct Panel<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(padding)
-        .background(Brand.ink850)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.line2, lineWidth: 1))
-        .overlay(CornerAccents())   // tactical HUD corner ticks
+        .background(Brand.ink700)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line1, lineWidth: 1))
+        .shadow(color: .black.opacity(0.22), radius: 14, x: 0, y: 6)   // soft luxe depth, not gimmicky
+    }
+}
+
+/// A clean, luxurious execution-stream card — a labeled block (User Input / Agent Thought / Action /
+/// Final Output). Soft fill, hairline border, gentle depth; an ember left-tab marks the active block.
+struct BlockCard<Content: View>: View {
+    let label: String
+    var icon: String? = nil
+    var accent: Color = Brand.bone300
+    var active: Bool = false
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 7) {
+                if let icon { Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(accent) }
+                Text(label.uppercased()).font(Brand.mono(10, weight: .semibold)).kerning(1.4).foregroundStyle(accent)
+                Spacer(minLength: 0)
+            }
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 18).padding(.vertical, 15)
+        .background(Brand.ink700)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(active ? Brand.ember500.opacity(0.45) : Brand.line1, lineWidth: 1))
+        .shadow(color: .black.opacity(0.28), radius: 16, x: 0, y: 7)
     }
 }
 

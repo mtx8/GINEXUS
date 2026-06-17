@@ -959,8 +959,8 @@ final class AppModel: ObservableObject {
                let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
                 let name = (o["name"] as? String) ?? "tool"
                 if (o["phase"] as? String) == "start" {
-                    chat[i].status = "\(name) · running…"
-                    chat[i].text = ""   // the final answer streams AFTER the tool; drop any preamble
+                    chat[i].status = name   // the live "Action · <tool>" card shows "Running…"
+                    chat[i].text = ""        // the final answer streams AFTER the tool; drop any preamble
                 }
             }
         case "done", "message":
@@ -988,6 +988,7 @@ final class AppModel: ObservableObject {
                 if img == nil, didGenerate { img = Self.newestMediaImage() }
                 if !answer.isEmpty { chat[i].text = answer }      // authoritative (think-stripped/trimmed)
                 chat[i].imagePath = img
+                chat[i].steps = trace.compactMap { $0.first as? String }   // agent-flow Action cards
                 chat[i].streaming = false
                 dbg("agent stream done; status=\(st)")
             }
