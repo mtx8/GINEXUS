@@ -87,14 +87,62 @@ enum Brand {
 
 // MARK: - reusable brand UI
 
-/// An all-caps tracked-out section label (the brand "eyebrow").
+/// An all-caps tracked-out section label (the tactical "eyebrow") — monospace, like a HUD readout.
+/// `tick: true` prepends a small ember bar (the OMNISCIENT "┃ DATA LAYERS" treatment).
 struct Eyebrow: View {
     let text: String
     var color: Color = Brand.bone300
+    var tick: Bool = false
     var body: some View {
-        Text(text.uppercased())
-            .font(Brand.display(11, weight: .bold)).kerning(1.6)
-            .foregroundStyle(color)
+        HStack(spacing: 6) {
+            if tick { Rectangle().fill(Brand.ember500).frame(width: 2, height: 11) }
+            Text(text.uppercased())
+                .font(Brand.mono(10.5, weight: .bold)).kerning(1.4)
+                .foregroundStyle(color)
+        }
+    }
+}
+
+/// HUD corner-accent ticks (L-shaped marks at the four corners) — the tactical panel signature.
+struct CornerAccents: View {
+    var color: Color = Brand.line2
+    var len: CGFloat = 9
+    var inset: CGFloat = 3
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            Path { p in
+                // top-left
+                p.move(to: .init(x: inset, y: inset + len)); p.addLine(to: .init(x: inset, y: inset)); p.addLine(to: .init(x: inset + len, y: inset))
+                // top-right
+                p.move(to: .init(x: w - inset - len, y: inset)); p.addLine(to: .init(x: w - inset, y: inset)); p.addLine(to: .init(x: w - inset, y: inset + len))
+                // bottom-left
+                p.move(to: .init(x: inset, y: h - inset - len)); p.addLine(to: .init(x: inset, y: h - inset)); p.addLine(to: .init(x: inset + len, y: h - inset))
+                // bottom-right
+                p.move(to: .init(x: w - inset - len, y: h - inset)); p.addLine(to: .init(x: w - inset, y: h - inset)); p.addLine(to: .init(x: w - inset, y: h - inset - len))
+            }
+            .stroke(color, lineWidth: 1)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// A tactical button label style — thin outline, monospace caps, small radius. `filled` = ember CTA.
+struct TacticalLabel: View {
+    let text: String
+    var icon: String? = nil
+    var filled: Bool = false
+    var tint: Color = Brand.bone200
+    var body: some View {
+        HStack(spacing: 6) {
+            if let icon { Image(systemName: icon).font(.system(size: 10, weight: .semibold)) }
+            Text(text.uppercased()).font(Brand.mono(10.5, weight: .bold)).kerning(1.2)
+        }
+        .foregroundStyle(filled ? Brand.ink900 : tint)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(filled ? Brand.ember500 : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(filled ? Color.clear : Brand.line2, lineWidth: 1))
     }
 }
 
@@ -150,14 +198,10 @@ struct Panel<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(padding)
-        .background(Brand.ink600)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Brand.line2, lineWidth: 1))
-        .overlay(alignment: .top) {   // inset top highlight
-            Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
-                .padding(.horizontal, 6)
-        }
-        .shadow(color: .black.opacity(0.35), radius: 10, x: 0, y: 4)
+        .background(Brand.ink850)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.line2, lineWidth: 1))
+        .overlay(CornerAccents())   // tactical HUD corner ticks
     }
 }
 
