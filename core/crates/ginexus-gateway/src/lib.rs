@@ -153,6 +153,26 @@ impl Gateway {
         }
     }
 
+    /// Ollama's NATIVE API root (strip the OpenAI-compat `/v1` off the default endpoint), e.g.
+    /// http://127.0.0.1:11434 — used for model management (/api/tags, /api/version, /api/pull).
+    pub fn ollama_root(&self) -> String {
+        let base = self.resolve("smart").api_base; // typically http://127.0.0.1:11434/v1
+        base.trim_end_matches("/v1").trim_end_matches('/').to_string()
+    }
+    /// Shared async HTTP client (Arc inside reqwest) — lets the server stream /api/pull itself.
+    pub fn http_client(&self) -> reqwest::Client {
+        self.client.clone()
+    }
+    /// GET a JSON document from Ollama's native API (e.g. "/api/tags", "/api/version").
+    pub async fn ollama_get(&self, path: &str) -> Result<Value, String> {
+        let url = format!("{}{}", self.ollama_root(), path);
+        let resp = self.client.get(url).send().await.map_err(|e| format!("ollama unreachable: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("ollama HTTP {}", resp.status()));
+        }
+        resp.json().await.map_err(|e| format!("ollama parse: {e}"))
+    }
+
     pub fn resolve(&self, name: &str) -> Endpoint {
         self.models.get(name).cloned().unwrap_or_else(|| Endpoint {
             model: name.to_string(),

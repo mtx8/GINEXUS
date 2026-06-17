@@ -87,6 +87,19 @@ final class AppModel: ObservableObject {
 
     /// File/image attached to the next message via the "+" menu (nil when none).
     @Published var attachment: Attachment?
+
+    /// Model manager ("download models from Hugging Face / Ollama"): installed list, version, pull.
+    @Published var modelsOpen = false
+    @Published var installedModels: [String] = []
+    @Published var ollamaVersion = ""
+    @Published var pullInput = ""
+    @Published var pullStatus = ""
+    @Published var pullProgress: Double = 0
+    @Published var pulling = false
+    /// qwen3-vl (vision) needs Ollama ≥ 0.12.7; surface an upgrade prompt when older.
+    var ollamaNeedsUpgradeForVision: Bool {
+        !ollamaVersion.isEmpty && versionLess(ollamaVersion, "0.12.7")
+    }
     /// The core's current boot id (binds approval tokens to this server launch). Fetched on connect.
     private var bootId = ""
 
@@ -266,6 +279,82 @@ final class AppModel: ObservableObject {
         if let last = msgs.indices.last { msgs[last]["content"] = sendText }
         let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "mode": modeString])
         Task { await postAgent(body: body, contextMessages: msgs) }
+    }
+
+    // MARK: model manager (download from Ollama registry / Hugging Face GGUF)
+    func openModels() {
+        modelsOpen = true
+        refreshInstalled()
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/ollama/version", token: tok, jsonBody: nil)
+            }.value
+            if case .success(let r) = res, let d = r.body.data(using: .utf8),
+               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                ollamaVersion = (o["version"] as? String) ?? ""
+            }
+        }
+    }
+    func refreshInstalled() {
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/models/installed", token: tok, jsonBody: nil)
+            }.value
+            guard case .success(let r) = res, let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+            let arr = (o["models"] as? [[String: Any]]) ?? []
+            installedModels = arr.compactMap { $0["name"] as? String }.sorted()
+        }
+    }
+    /// Stream a pull (Ollama /api/pull — registry tag OR hf.co/<repo>:<quant>) with live progress.
+    func pullModel(_ name: String) {
+        let m = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !m.isEmpty, !pulling else { return }
+        pulling = true; pullProgress = 0; pullStatus = "starting \(m)…"
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["model": m])
+        let events = AsyncStream<(String, String)> { cont in
+            let task = Task.detached {
+                _ = UDSClient.stream(socketPath: sock, path: "/v1/models/pull", token: tok, jsonBody: body) { ev, data in
+                    cont.yield((ev, data))
+                }
+                cont.finish()
+            }
+            cont.onTermination = { _ in task.cancel() }
+        }
+        Task {
+            for await (ev, data) in events {
+                switch ev {
+                case "progress":
+                    if let d = data.data(using: .utf8),
+                       let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                        pullStatus = (o["status"] as? String) ?? pullStatus
+                        if let total = o["total"] as? Double, let done = o["completed"] as? Double, total > 0 {
+                            pullProgress = done / total
+                        }
+                    }
+                case "done":
+                    pullStatus = "installed \(m)"; pullProgress = 1
+                case "error":
+                    pullStatus = "failed: \(data)"
+                default: break
+                }
+            }
+            pulling = false
+            refreshInstalled()
+        }
+    }
+    private func versionLess(_ a: String, _ b: String) -> Bool {
+        let pa = a.split(separator: ".").compactMap { Int($0) }
+        let pb = b.split(separator: ".").compactMap { Int($0) }
+        for i in 0..<max(pa.count, pb.count) {
+            let x = i < pa.count ? pa[i] : 0
+            let y = i < pb.count ? pb[i] : 0
+            if x != y { return x < y }
+        }
+        return false
     }
 
     // MARK: attachments (via the + menu)

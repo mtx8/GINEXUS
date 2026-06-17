@@ -62,6 +62,88 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .sheet(item: $model.pending) { p in approvalSheet(p) }
         .sheet(isPresented: $model.memoryOpen) { memorySheet }
+        .sheet(isPresented: $model.modelsOpen) { modelsSheet }
+    }
+
+    /// Model manager — download models into the local runtime (Ollama registry tags or Hugging Face
+    /// GGUF, e.g. hf.co/<org>/<repo>:<QUANT>), with live progress. Suggested picks are commercial-clean.
+    private var modelsSheet: some View {
+        ZStack {
+            Brand.ink900.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("MODELS").font(.system(size: 14, weight: .bold, design: .monospaced)).kerning(2)
+                        .foregroundStyle(Brand.bone50)
+                    if !model.ollamaVersion.isEmpty {
+                        Text("Ollama \(model.ollamaVersion)").font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(Brand.muted)
+                    }
+                    Spacer()
+                    Button("DONE") { model.modelsOpen = false }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Brand.ember500)
+                }
+                if model.ollamaNeedsUpgradeForVision {
+                    Text("Vision models (e.g. Qwen3-VL) need Ollama ≥ 0.12.7 — upgrade Ollama to enable image understanding. Text models still pull fine.")
+                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.ember500)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Brand.ember500.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                Text("SUGGESTED (Apache-2.0)").font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
+                    .foregroundStyle(Brand.muted)
+                HStack(spacing: 8) {
+                    pickChip("Qwen3-VL 30B", "qwen3-vl:30b-a3b-instruct")
+                    pickChip("Qwen3-VL 8B", "qwen3-vl:8b")
+                    pickChip("Mistral-Small 3.2", "mistral-small3.2")
+                    Spacer()
+                }
+                Text("INSTALLED").font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
+                    .foregroundStyle(Brand.muted)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(model.installedModels, id: \.self) { name in
+                            Text(name).font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.bone50)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                if model.pulling || model.pullProgress > 0 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.pullStatus).font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.ember500)
+                        ProgressView(value: model.pullProgress).tint(Brand.ember500)
+                    }
+                }
+                HStack(spacing: 8) {
+                    TextField("model name or hf.co/<org>/<repo>:<QUANT>", text: $model.pullInput)
+                        .textFieldStyle(.plain).font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Brand.bone50).padding(10).background(Brand.ink800)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .onSubmit { model.pullModel(model.pullInput) }
+                    Button(action: { model.pullModel(model.pullInput) }) {
+                        Text("PULL").font(.system(size: 11, weight: .bold, design: .monospaced)).kerning(1)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .foregroundStyle(Brand.ink900).background(Brand.ember500)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }.buttonStyle(.plain).disabled(model.pulling)
+                }
+            }
+            .padding(24)
+        }
+        .frame(width: 640, height: 620)
+        .preferredColorScheme(.dark)
+    }
+
+    private func pickChip(_ title: String, _ ref: String) -> some View {
+        Button(action: { model.pullModel(ref) }) {
+            Text(title)
+                .font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(0.5)
+                .foregroundStyle(Brand.ember500)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember500.opacity(0.4), lineWidth: 1))
+        }
+        .buttonStyle(.plain).disabled(model.pulling)
+        .help("Pull \(ref)")
     }
 
     /// The "+" menu inside the input row: capabilities that act on your message, plus attachments
@@ -171,6 +253,13 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .help("Browse what GINEXUS knows — core profile + searchable long-term memory")
+            .disabled(!model.connected)
+            Button(action: { model.openModels() }) {
+                Text("MODELS").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
+                    .foregroundStyle(Brand.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Download models from the registry or Hugging Face (GGUF)")
             .disabled(!model.connected)
             autonomyToggle
             modelPicker

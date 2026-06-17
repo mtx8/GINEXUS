@@ -454,6 +454,93 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 .collect();
             json_ok(&mut stream, json!({"default": "auto", "models": models})).await;
         }
+        ("GET", "/v1/models/installed") => {
+            // Models actually present in the local runtime (Ollama /api/tags).
+            match state.gateway.ollama_get("/api/tags").await {
+                Ok(v) => json_ok(&mut stream, v).await,
+                Err(e) => err(&mut stream, 502, "Bad Gateway", &e).await,
+            }
+        }
+        ("GET", "/v1/ollama/version") => {
+            // Preflight: some models (e.g. qwen3-vl vision) need a newer Ollama; the app warns.
+            match state.gateway.ollama_get("/api/version").await {
+                Ok(v) => json_ok(&mut stream, v).await,
+                Err(e) => err(&mut stream, 502, "Bad Gateway", &e).await,
+            }
+        }
+        ("POST", "/v1/models/pull") => {
+            // Download a model into the local runtime via Ollama's /api/pull (handles curated
+            // registry tags AND Hugging Face GGUF: "hf.co/<org>/<repo>:<QUANT>"). We don't reimplement
+            // HF downloading — we proxy Ollama's resumable pull and re-emit its NDJSON progress as SSE.
+            let model = body.get("model").and_then(|m| m.as_str()).unwrap_or("").trim().to_string();
+            if model.is_empty() {
+                err(&mut stream, 400, "Bad Request", "missing 'model'").await;
+                return Ok(());
+            }
+            let _ = state.audit.record("model_pull", json!({"model": model.clone()}));
+            let hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+            if stream.write_all(hdr.as_bytes()).await.is_err() {
+                return Ok(());
+            }
+            let client = state.gateway.http_client();
+            let url = format!("{}/api/pull", state.gateway.ollama_root());
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let runner = async {
+                use futures_util::StreamExt;
+                let req = client
+                    .post(&url)
+                    .json(&json!({"model": model.clone(), "stream": true}))
+                    .send()
+                    .await;
+                match req {
+                    Ok(resp) if resp.status().is_success() => {
+                        let mut bs = resp.bytes_stream();
+                        let mut buf = String::new();
+                        let mut ok = false;
+                        while let Some(chunk) = bs.next().await {
+                            let c = match chunk {
+                                Ok(c) => c,
+                                Err(_) => break,
+                            };
+                            buf.push_str(&String::from_utf8_lossy(&c));
+                            while let Some(nl) = buf.find('\n') {
+                                let line = buf[..nl].trim().to_string();
+                                buf.drain(..=nl);
+                                if line.is_empty() {
+                                    continue;
+                                }
+                                // Each NDJSON line is {status, digest?, total?, completed?}.
+                                let _ = tx.send(format!("event: progress\ndata: {line}\n\n"));
+                                if line.contains("\"status\":\"success\"") {
+                                    ok = true;
+                                }
+                            }
+                        }
+                        let _ = tx.send(format!("event: done\ndata: {}\n\n", json!({"ok": ok, "model": model.clone()})));
+                    }
+                    Ok(resp) => {
+                        let _ = tx.send(format!("event: error\ndata: {}\n\n",
+                            json!({"error": format!("ollama HTTP {}", resp.status())})));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(format!("event: error\ndata: {}\n\n", json!({"error": e.to_string()})));
+                    }
+                }
+            };
+            let drain = async {
+                while let Some(frame) = rx.recv().await {
+                    let end = frame.starts_with("event: done") || frame.starts_with("event: error");
+                    if stream.write_all(frame.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    if end {
+                        break;
+                    }
+                }
+                let _ = stream.write_all(b"data: [DONE]\n\n").await;
+            };
+            tokio::join!(runner, drain);
+        }
         ("POST", "/v1/chat") => {
             let blocked = state.killswitch.lock().unwrap().guard().err();
             if let Some(e) = blocked {
