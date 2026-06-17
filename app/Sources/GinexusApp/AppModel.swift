@@ -36,6 +36,15 @@ struct MemFact: Identifiable, Sendable {
     let origin: String   // "trusted" | "untrusted"
 }
 
+/// A file or image attached to the NEXT message via the "+" menu.
+struct Attachment: Identifiable, Sendable {
+    let id = UUID()
+    let kind: String        // "file" | "image"
+    let name: String
+    let text: String?       // file content (capped) — kind == "file"
+    let imagePath: String?  // local path — kind == "image"
+}
+
 /// An irreversible/OS action the agent paused on, awaiting biometric approval before it runs.
 struct PendingAction: Identifiable {
     let id = UUID()
@@ -74,6 +83,9 @@ final class AppModel: ObservableObject {
     @Published var memResults: [MemFact] = []
     @Published var memQuery = ""
     @Published var memLoading = false
+
+    /// File/image attached to the next message via the "+" menu (nil when none).
+    @Published var attachment: Attachment?
     /// The core's current boot id (binds approval tokens to this server launch). Fetched on connect.
     private var bootId = ""
 
@@ -219,14 +231,64 @@ final class AppModel: ObservableObject {
     // MARK: chat
     func send(_ prompt: String) {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !sending else { return }
+        let att = attachment
+        guard (!text.isEmpty || att != nil), !sending else { return }
         sending = true
-        chat.append(ChatMsg(role: "user", text: text))
+
+        // An attachment is shown cleanly in the bubble but its full content (file text, or an
+        // image note) is what the model receives for that turn.
+        var displayText = text
+        var sendText = text
+        var userImage: String?
+        if let att {
+            switch att.kind {
+            case "file":
+                let body = att.text ?? ""
+                sendText = "[Attached file: \(att.name)]\n\(body)\n\n---\n\n"
+                    + (text.isEmpty ? "Please review the attached file." : text)
+                displayText = (text.isEmpty ? "" : text + "\n\n") + "(attached: \(att.name))"
+            case "image":
+                userImage = att.imagePath
+                sendText = (text.isEmpty ? "Take a look at this image." : text)
+                    + "\n\n[The user attached an image: \(att.name). If you don't have a vision model active, briefly say you can't view images yet.]"
+                displayText = text
+            default: break
+            }
+        }
+
+        chat.append(ChatMsg(role: "user", text: displayText, imagePath: userImage))
         chatInput = ""
+        attachment = nil
         renderSnapshot()
-        let msgs = chat.map { ["role": $0.role, "content": $0.text] }
+        // Send the full content for the LAST user turn; earlier turns keep their displayed text.
+        var msgs = chat.map { ["role": $0.role, "content": $0.text] }
+        if let last = msgs.indices.last { msgs[last]["content"] = sendText }
         let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "mode": modeString])
         Task { await postAgent(body: body, contextMessages: msgs) }
+    }
+
+    // MARK: attachments (via the + menu)
+    func clearAttachment() { attachment = nil }
+
+    func attachFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.plainText, .text, .sourceCode, .json, .commaSeparatedText]
+        panel.allowsMultipleSelection = false
+        panel.message = "Attach a text or code file as context for your next message"
+        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
+        var t = String(data: data, encoding: .utf8) ?? ""
+        if t.isEmpty { t = "(could not read this file as text)" }
+        if t.count > 12000 { t = String(t.prefix(12000)) + "\n…[truncated]" }
+        attachment = Attachment(kind: "file", name: url.lastPathComponent, text: t, imagePath: nil)
+    }
+
+    func attachImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .heic, .image]
+        panel.allowsMultipleSelection = false
+        panel.message = "Attach an image"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        attachment = Attachment(kind: "image", name: url.lastPathComponent, text: nil, imagePath: url.path)
     }
 
     // MARK: capability quick-actions (wrap the current input → invoke a specific capability)
