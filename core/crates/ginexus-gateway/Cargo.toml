@@ -10,5 +10,6 @@ serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
+futures-util.workspace = true
 reqwest.workspace = true
 ginexus-agent.workspace = true
