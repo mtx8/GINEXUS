@@ -156,20 +156,18 @@ struct Wordmark: View {
     }
 }
 
-/// The abstract ember nexus app glyph (no text/name — per the no-name-on-logo rule). Clean + thin:
-/// a hairline ember-outlined square holding a fine 6-point nexus starburst. No thick gradient ring.
+/// The abstract ember nexus app glyph (no text/name, NO box). A clean 8-point ember starburst —
+/// the GINEXUS mark, used bigger in the rail.
 struct GlyphMark: View {
     var size: CGFloat = 26
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
-                .stroke(Brand.ember500.opacity(0.5), lineWidth: 1)
-            ForEach(0..<6, id: \.self) { i in
+            ForEach(0..<8, id: \.self) { i in
                 Capsule().fill(Brand.ember500)
-                    .frame(width: 1.2, height: size * 0.38)
-                    .rotationEffect(.degrees(Double(i) * 60))
+                    .frame(width: size * 0.055, height: size * 0.92)
+                    .rotationEffect(.degrees(Double(i) * 45))
             }
-            Circle().fill(Brand.ember300).frame(width: size * 0.13, height: size * 0.13)
+            Circle().fill(Brand.ember300).frame(width: size * 0.2, height: size * 0.2)
         }
         .frame(width: size, height: size)
     }

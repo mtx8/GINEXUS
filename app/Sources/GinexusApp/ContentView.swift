@@ -11,14 +11,22 @@ struct ContentView: View {
     @State private var renamingID: UUID?                      // conversation being inline-renamed
     @State private var renameText = ""
     @State private var pendingDeleteConversation: ConversationMeta?
+    @State private var sidebarShown = true                    // collapse the conversations panel
+    @State private var contextShown = true                    // collapse the Context & Tools panel
 
     var body: some View {
         HStack(spacing: 0) {
             iconRail
-            conversationSidebar
+            if sidebarShown {
+                conversationSidebar.transition(.move(edge: .leading).combined(with: .opacity))
+            }
             centerColumn
-            contextRail
+            if contextShown {
+                contextRail.transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
+        .animation(Brand.ease(0.28), value: sidebarShown)
+        .animation(Brand.ease(0.28), value: contextShown)
         .background(ZStack { Brand.ink900; Brand.canvasGlow }.ignoresSafeArea())
         .frame(minWidth: 1180, minHeight: 680)
         .preferredColorScheme(.dark)
@@ -30,7 +38,8 @@ struct ContentView: View {
     // MARK: ── far-left icon rail ───────────────────────────────────────────────
     private var iconRail: some View {
         VStack(spacing: 6) {
-            GlyphMark(size: 30).padding(.top, 14).padding(.bottom, 10)
+            GlyphMark(size: 38).padding(.top, 16).padding(.bottom, 12)
+            railIcon(sidebarShown ? "sidebar.left" : "sidebar.leading", "Show / hide conversations") { sidebarShown.toggle() }
             railIcon("square.and.pencil", "New conversation", enabled: model.connected && !model.sending) { model.newChat() }
             railIcon("brain", "Memory — what GINEXUS knows", enabled: model.connected) { model.openMemory() }
             railIcon("cube.box", "Models — download / manage", enabled: model.connected) { model.openModels() }
@@ -60,13 +69,16 @@ struct ContentView: View {
     // MARK: ── conversation sidebar ─────────────────────────────────────────────
     private var conversationSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 10) {
                 Eyebrow(text: "Conversations")
                 Spacer()
                 Button(action: { model.newChat() }) {
                     Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.ember500)
                 }
                 .buttonStyle(.plain).help("New conversation").disabled(!model.connected || model.sending)
+                Button(action: { sidebarShown = false }) {
+                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone400)
+                }.buttonStyle(.plain).help("Hide conversations")
             }
             .padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 10)
             Divider().overlay(Brand.line1)
@@ -138,13 +150,18 @@ struct ContentView: View {
     }
 
     private var streamHeader: some View {
-        HStack(spacing: 14) {
-            Wordmark(size: 16)
-            Rectangle().fill(Brand.line2).frame(width: 1, height: 18)
-            Text("Execution Stream").font(Brand.display(24, weight: .bold)).foregroundStyle(Brand.bone50)
+        HStack(spacing: 12) {
+            Wordmark(size: 30)
+            Rectangle().fill(Brand.line2).frame(width: 1, height: 22).padding(.horizontal, 2)
+            Text("Execution Stream").font(Brand.body(14, weight: .medium)).foregroundStyle(Brand.bone300)
             Spacer()
             autonomyToggle
             modelSelector
+            Button(action: { contextShown.toggle() }) {
+                Image(systemName: contextShown ? "sidebar.right" : "sidebar.trailing")
+                    .font(.system(size: 15)).foregroundStyle(Brand.bone300)
+            }
+            .buttonStyle(.plain).help("Show / hide Context & Tools")
         }
     }
 
@@ -418,7 +435,14 @@ struct ContentView: View {
     private var contextRail: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Eyebrow(text: "Context & Tools").padding(.bottom, 2)
+                HStack {
+                    Eyebrow(text: "Context & Tools")
+                    Spacer()
+                    Button(action: { contextShown = false }) {
+                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone400)
+                    }.buttonStyle(.plain).help("Hide Context & Tools")
+                }
+                .padding(.bottom, 2)
                 sessionPanel
                 currentContextPanel
                 capabilitiesPanel
