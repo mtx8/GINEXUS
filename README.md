@@ -15,7 +15,7 @@ shell) · `ai-export-sanitizer` (ingest) · `Hermes` (always-on body, later).
 ## Status
 **v1 daily-driver works end-to-end** (acceptance: *researched X → wrote it to a file → recalled it
 the next session*). The core engine is **Rust** (`core/` — crates: security, agent, gateway, mcp,
-memory, skills, sanitize, server; 93 tests green). Python is the reference impl only, retired from
+memory, skills, sanitize, server; 97 tests green). Python is the reference impl only, retired from
 the runtime path (ADR 0003).
 
 Shipped: SP0 security spine · SP1 model router · SP1.5 notarized self-contained app (Rust core
@@ -26,7 +26,8 @@ hot-loadable **skills** · **subagents** (concurrent fan-out) · **Council/Group
 persona deliberation → synthesis) · **deep research** (decompose → parallel research → cited report) ·
 **scheduler/heartbeat** · **autonomy modes** (HITL default + fully-autonomous + non-overridable hard
 gate, toggled from the UI) · **self-model consolidation** (`/v1/consolidate` distills long-term
-memory into a durable always-in-context profile). The operator's **real ChatGPT export (3,779
+memory into a durable always-in-context profile) · **Obsidian vault** read/search/write tools
+(auto-detected; write-gated; vault-confined). The operator's **real ChatGPT export (3,779
 user-message facts** across 11 shards) is sanitized + embedded into quarantined memory in a measured
 25s (batched embeddings); consolidation distilled it into an accurate operator profile in 7.6s.
 
