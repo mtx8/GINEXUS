@@ -25,8 +25,10 @@ embeddings) · SP5 macOS integration (Shortcuts/EventKit + Touch-ID approval) ·
 hot-loadable **skills** · **subagents** (concurrent fan-out) · **Council/Group mode** (parallel
 persona deliberation → synthesis) · **deep research** (decompose → parallel research → cited report) ·
 **scheduler/heartbeat** · **autonomy modes** (HITL default + fully-autonomous + non-overridable hard
-gate, toggled from the UI). The operator's **real ChatGPT export (3,779 user-message facts** across
-11 shards) is sanitized + embedded into quarantined memory in a measured 25s (batched embeddings).
+gate, toggled from the UI) · **self-model consolidation** (`/v1/consolidate` distills long-term
+memory into a durable always-in-context profile). The operator's **real ChatGPT export (3,779
+user-message facts** across 11 shards) is sanitized + embedded into quarantined memory in a measured
+25s (batched embeddings); consolidation distilled it into an accurate operator profile in 7.6s.
 
 Remaining: SP7 Home Assistant IoT · SP8 self-improvement loop · SP9 Hermes always-on
 body + iPhone/Watch. See the master design:
