@@ -68,6 +68,11 @@ fn tool_msg(call_id: &str, output: &str) -> Value {
 pub const MAX_DELEGATE_DEPTH: usize = 1;
 /// Max sub-tasks per delegate call (caps fan-out).
 const MAX_SUBTASKS: usize = 4;
+/// Per-RUN budget for EXPENSIVE synthetic tools (delegate / council / deep_research). Each of these
+/// fans out into many model calls (e.g. deep_research ≈ 1 + N workers×iters + 1), so without a cap a
+/// single turn emitting several of them could multiply into hundreds of model calls. The internal
+/// caps (MAX_SUBTASKS, MAX_COUNCIL) bound each CALL; this bounds the COUNT of calls across the run.
+const MAX_SYNTHETIC_CALLS: usize = 3;
 
 /// Autonomy mode (per request/agent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +215,8 @@ impl<'a> AgentLoop<'a> {
     ) -> AgentResult {
         let mut msgs = messages;
         let mut trace: Vec<(String, bool)> = Vec::new();
+        // Per-run budget consumed by delegate / council / deep_research (the multiplicative tools).
+        let mut synthetic_used: usize = 0;
 
         // Subagent delegation: advertise + handle `delegate` only below the depth ceiling. Workers
         // get a READ-ONLY registry (they can never perform an irreversible/HITL action on their own).
@@ -250,28 +257,37 @@ impl<'a> AgentLoop<'a> {
                              "tool_calls": tcs}));
 
             for tc in &turn.tool_calls {
-                // Delegation is handled by the loop itself (spawns a sub-agent), not the registry.
-                if can_delegate && tc.name == "delegate" {
-                    let out = self
-                        .run_delegate(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms)
-                        .await;
-                    trace.push(("delegate".to_string(), true));
-                    msgs.push(tool_msg(&tc.id, &out));
-                    continue;
-                }
-                // Deep research is handled by the loop (decompose → concurrent workers → synthesize).
-                if can_delegate && tc.name == "deep_research" {
-                    let out = self
-                        .run_deep_research(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms)
-                        .await;
-                    trace.push(("deep_research".to_string(), true));
-                    msgs.push(tool_msg(&tc.id, &out));
-                    continue;
-                }
-                // Council is handled by the loop too (panel of personas on the bound model).
-                if can_council && tc.name == "council" {
-                    let out = self.run_council(&tc.arguments).await;
-                    trace.push(("council".to_string(), true));
+                // Synthetic tools (delegate / deep_research / council) are handled by the loop itself,
+                // not the registry. Each fans out into many model calls, so they share a per-run
+                // budget: once exhausted, further such calls are refused (the loop keeps going and the
+                // model must answer from what it has) — bounds total cost against a runaway turn.
+                let is_synthetic = (can_delegate && (tc.name == "delegate" || tc.name == "deep_research"))
+                    || (can_council && tc.name == "council");
+                if is_synthetic {
+                    if synthetic_used >= MAX_SYNTHETIC_CALLS {
+                        trace.push((tc.name.clone(), false));
+                        msgs.push(tool_msg(
+                            &tc.id,
+                            &format!(
+                                "error: this run's budget of {MAX_SYNTHETIC_CALLS} delegate/council/\
+                                 deep_research calls is exhausted — answer using the results already \
+                                 gathered, or use a single regular tool."
+                            ),
+                        ));
+                        continue;
+                    }
+                    synthetic_used += 1;
+                    let out = match tc.name.as_str() {
+                        "delegate" => {
+                            self.run_delegate(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms).await
+                        }
+                        "deep_research" => {
+                            self.run_deep_research(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms)
+                                .await
+                        }
+                        _ => self.run_council(&tc.arguments).await, // "council"
+                    };
+                    trace.push((tc.name.clone(), true));
                     msgs.push(tool_msg(&tc.id, &out));
                     continue;
                 }
@@ -866,6 +882,30 @@ mod tests {
         // Over-cap is truncated.
         let many: Vec<Value> = (0..10).map(|i| json!(format!("p{i}"))).collect();
         assert_eq!(select_personas(Some(&many)).len(), MAX_COUNCIL);
+    }
+
+    #[tokio::test]
+    async fn synthetic_tool_budget_caps_runaway_calls() {
+        let dir = tmp_dir();
+        let reg = notes_registry(dir);
+        // One turn emitting 6 delegate calls (empty args → no nested model calls, deterministic),
+        // then a final. Only MAX_SYNTHETIC_CALLS may execute; the rest are refused by the budget.
+        let burst = AssistantTurn {
+            content: None,
+            tool_calls: (0..6)
+                .map(|i| ToolCall { id: format!("c{i}"), name: "delegate".into(), arguments: json!({}) })
+                .collect(),
+        };
+        let model = Mock::new(vec![burst, final_turn("done")]);
+        let hitl = HitlPolicy::new();
+        let loop_ =
+            AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
+        let res = loop_.run(vec![], &[], None, NOW).await;
+        assert_eq!(res.status, AgentStatus::Final);
+        let executed = res.trace.iter().filter(|(n, ok)| n == "delegate" && *ok).count();
+        let refused = res.trace.iter().filter(|(n, ok)| n == "delegate" && !ok).count();
+        assert_eq!(executed, MAX_SYNTHETIC_CALLS, "budget should cap executions");
+        assert_eq!(refused, 6 - MAX_SYNTHETIC_CALLS, "over-budget calls must be refused, not run");
     }
 
     #[tokio::test]
