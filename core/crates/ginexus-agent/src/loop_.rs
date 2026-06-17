@@ -90,6 +90,70 @@ pub struct AgentLoop<'a> {
     pub mode: Mode,
 }
 
+/// Max council members per convening (caps cost: N opinions + 1 synthesis model calls).
+const MAX_COUNCIL: usize = 5;
+
+/// Default council — deliberately DIVERGENT lenses so the members disagree productively. Diversity
+/// comes from the system prompt (deterministic even at temperature 0: each member sees a different
+/// prompt → a different answer).
+fn default_personas() -> Vec<(String, String)> {
+    vec![
+        ("Analyst".into(),
+         "You are a rigorous analyst. Reason step by step, make your assumptions explicit, and \
+          prioritize correctness, evidence, and precision.".into()),
+        ("Strategist".into(),
+         "You are a creative strategist. Explore non-obvious angles, alternatives, trade-offs, and \
+          second-order effects that others overlook.".into()),
+        ("Skeptic".into(),
+         "You are a hard skeptic. Stress-test the question: surface risks, failure modes, hidden \
+          assumptions, and the strongest counter-arguments.".into()),
+    ]
+}
+
+/// Resolve the council roster: custom persona names (known ones get their rich prompt; unknown ones
+/// a generic expert frame), else the default trio. Capped at MAX_COUNCIL.
+fn select_personas(custom: Option<&Vec<Value>>) -> Vec<(String, String)> {
+    match custom {
+        Some(arr) if arr.iter().any(|v| v.is_string()) => {
+            let known = default_personas();
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .take(MAX_COUNCIL)
+                .map(|name| {
+                    let lname = name.to_lowercase();
+                    known
+                        .iter()
+                        .find(|(n, _)| n.to_lowercase() == lname)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            (name.to_string(),
+                             format!("You are {name}. Give your sharpest, most distinctive expert \
+                                      perspective on the question."))
+                        })
+                })
+                .collect()
+        }
+        _ => default_personas(),
+    }
+}
+
+/// The synthetic `council` tool: convene a panel of personas to deliberate a hard question in
+/// parallel, then synthesize. Handled by the loop (uses the bound model directly), like `delegate`.
+fn council_def() -> Value {
+    json!({"type": "function", "function": {
+        "name": "council",
+        "description": "Convene a council of expert personas (Analyst, Strategist, Skeptic by \
+                        default) to deliberate a hard question IN PARALLEL, then synthesize their \
+                        best combined answer. Use for high-stakes, ambiguous, or multi-faceted \
+                        questions where one perspective is risky. Pass 'question' and optionally \
+                        'personas' (array of role names).",
+        "parameters": {"type": "object", "properties": {
+            "question": {"type": "string"},
+            "personas": {"type": "array", "items": {"type": "string"}}},
+            "required": ["question"]}
+    }})
+}
+
 /// The synthetic `delegate` tool the loop advertises (handled by the loop itself, not the registry).
 fn delegate_def() -> Value {
     json!({"type": "function", "function": {
@@ -118,10 +182,15 @@ impl<'a> AgentLoop<'a> {
         // Subagent delegation: advertise + handle `delegate` only below the depth ceiling. Workers
         // get a READ-ONLY registry (they can never perform an irreversible/HITL action on their own).
         let can_delegate = self.depth < MAX_DELEGATE_DEPTH;
+        // Council is top-level only: a worker never convenes its own council (bounds total cost).
+        let can_council = self.depth == 0;
         let sub_registry = if can_delegate { Some(self.registry.readonly()) } else { None };
         let mut defs = self.registry.definitions();
         if can_delegate {
             defs.push(delegate_def());
+        }
+        if can_council {
+            defs.push(council_def());
         }
 
         for _ in 0..self.max_iters {
@@ -154,6 +223,13 @@ impl<'a> AgentLoop<'a> {
                         .run_delegate(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms)
                         .await;
                     trace.push(("delegate".to_string(), true));
+                    msgs.push(tool_msg(&tc.id, &out));
+                    continue;
+                }
+                // Council is handled by the loop too (panel of personas on the bound model).
+                if can_council && tc.name == "council" {
+                    let out = self.run_council(&tc.arguments).await;
+                    trace.push(("council".to_string(), true));
                     msgs.push(tool_msg(&tc.id, &out));
                     continue;
                 }
@@ -270,6 +346,48 @@ impl<'a> AgentLoop<'a> {
         let parts = futures_util::future::join_all(futs).await;
         parts.concat().trim_end().to_string()
     }
+
+    /// Convene a council: gather N persona-diverse opinions CONCURRENTLY on the bound model, then
+    /// synthesize the single best answer. Pure reasoning (no tools) → read-only/autonomous. Members
+    /// run in parallel (`join_all`), so wall-clock is ~2 calls (opinions phase + synthesis), not N+1.
+    async fn run_council(&self, args: &Value) -> String {
+        let question = args.get("question").and_then(|q| q.as_str()).unwrap_or("").trim();
+        if question.is_empty() {
+            return "error: council requires 'question' (string)".into();
+        }
+        let personas = select_personas(args.get("personas").and_then(|p| p.as_array()));
+
+        // Phase 1 — gather independent opinions concurrently (each member sees only its persona).
+        let futs: Vec<_> = personas
+            .iter()
+            .map(|(name, sys)| {
+                let msgs = vec![
+                    json!({"role": "system", "content": sys}),
+                    json!({"role": "user", "content": question}),
+                ];
+                Box::pin(async move {
+                    let turn = self.model.call(&msgs, &[]).await;
+                    (name.clone(), turn.content.unwrap_or_default())
+                })
+            })
+            .collect();
+        let opinions = futures_util::future::join_all(futs).await;
+
+        // Phase 2 — synthesize. The chair sees the question + every member's opinion.
+        let mut prompt = format!(
+            "You are the chair of an expert council deliberating this question:\n\n{question}\n\n\
+             The members gave independent opinions:\n"
+        );
+        for (name, op) in &opinions {
+            prompt.push_str(&format!("\n## {name}\n{}\n", op.trim()));
+        }
+        prompt.push_str(
+            "\nSynthesize the single best answer to the question. Reconcile disagreements, combine \
+             the strongest reasoning, and briefly note any critical dissent. Answer directly.",
+        );
+        let synth = self.model.call(&[json!({"role": "user", "content": prompt})], &[]).await;
+        synth.content.unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +477,43 @@ mod tests {
                 final_turn("OK")
             } else {
                 call_turn(tc("delegate", json!({"tasks": ["slow1", "slow2", "slow3"]})))
+            }
+        }
+    }
+
+    /// Concurrency-safe council mock: routes purely by message shape. Each persona returns a tagged
+    /// opinion; the synthesis call (chair) counts how many opinions it received; the parent's
+    /// post-council turn echoes the council result.
+    struct CouncilMock;
+    #[async_trait]
+    impl ModelCall for CouncilMock {
+        async fn call(&self, m: &[Value], _t: &[Value]) -> AssistantTurn {
+            let sys: String =
+                m.iter().filter(|x| x["role"] == "system").filter_map(|x| x["content"].as_str()).collect();
+            let usr: String =
+                m.iter().filter(|x| x["role"] == "user").filter_map(|x| x["content"].as_str()).collect();
+            let has_tool = m.iter().any(|x| x["role"] == "tool");
+            if has_tool {
+                // Parent's turn after the council returns: echo the synthesized result.
+                let tool_out: String = m
+                    .iter()
+                    .filter(|x| x["role"] == "tool")
+                    .filter_map(|x| x["content"].as_str())
+                    .collect();
+                final_turn(&format!("FINAL[{}]", tool_out))
+            } else if usr.contains("chair of an expert council") {
+                // Synthesis: prove every member's opinion arrived (count the _VIEW tags).
+                let n = usr.matches("_VIEW").count();
+                final_turn(&format!("SYNTHESIS(views={n})"))
+            } else if sys.contains("rigorous analyst") {
+                final_turn("ANALYST_VIEW")
+            } else if sys.contains("creative strategist") {
+                final_turn("STRATEGIST_VIEW")
+            } else if sys.contains("hard skeptic") {
+                final_turn("SKEPTIC_VIEW")
+            } else {
+                // Top-level: convene a council on the user's question.
+                call_turn(tc("council", json!({"question": usr})))
             }
         }
     }
@@ -516,6 +671,58 @@ mod tests {
         ]);
         let hitl = HitlPolicy::new();
         let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: MAX_DELEGATE_DEPTH, mode: Mode::Hitl };
+        let res = loop_.run(vec![], &[], None, NOW).await;
+        assert_eq!(res.status, AgentStatus::Final);
+        assert_eq!(res.answer, "recovered");
+        assert!(res.trace.contains(&("unknown_tool".to_string(), false)));
+    }
+
+    #[tokio::test]
+    async fn council_deliberates_and_synthesizes_all_personas() {
+        let dir = tmp_dir();
+        let reg = notes_registry(dir);
+        let model = CouncilMock;
+        let hitl = HitlPolicy::new();
+        let loop_ =
+            AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
+        let res = loop_
+            .run(vec![json!({"role": "user", "content": "Should we ship Friday?"})], &[], None, NOW)
+            .await;
+        assert_eq!(res.status, AgentStatus::Final);
+        assert!(res.trace.iter().any(|(n, _)| n == "council"));
+        // The default trio (Analyst/Strategist/Skeptic) all reached synthesis → views=3.
+        assert!(res.answer.contains("views=3"), "synthesis did not see all 3 opinions: {}", res.answer);
+    }
+
+    #[tokio::test]
+    async fn council_persona_selection() {
+        // Custom names: a known persona keeps its rich prompt; unknown gets a generic frame. Capped.
+        let custom = vec![json!("Skeptic"), json!("Economist"), json!("Analyst")];
+        let chosen = select_personas(Some(&custom));
+        assert_eq!(chosen.len(), 3);
+        assert_eq!(chosen[0].0, "Skeptic");
+        assert!(chosen[0].1.contains("hard skeptic")); // known → rich prompt
+        assert_eq!(chosen[1].0, "Economist");
+        assert!(chosen[1].1.contains("You are Economist")); // unknown → generic frame
+        // No personas → default trio.
+        assert_eq!(select_personas(None).len(), 3);
+        // Over-cap is truncated.
+        let many: Vec<Value> = (0..10).map(|i| json!(format!("p{i}"))).collect();
+        assert_eq!(select_personas(Some(&many)).len(), MAX_COUNCIL);
+    }
+
+    #[tokio::test]
+    async fn worker_cannot_convene_council() {
+        let dir = tmp_dir();
+        let reg = notes_registry(dir);
+        // At depth>0 (a worker), `council` is neither advertised nor handled → unknown tool, recover.
+        let model = Mock::new(vec![
+            call_turn(tc("council", json!({"question": "x"}))),
+            final_turn("recovered"),
+        ]);
+        let hitl = HitlPolicy::new();
+        let loop_ =
+            AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 1, mode: Mode::Hitl };
         let res = loop_.run(vec![], &[], None, NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert_eq!(res.answer, "recovered");
