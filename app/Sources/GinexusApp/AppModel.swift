@@ -8,14 +8,7 @@ import LocalAuthentication
 import PDFKit
 import GinexusCore
 
-struct ChatMsg: Identifiable, Sendable {
-    let id = UUID()
-    let role: String   // "user" | "assistant"
-    var text: String                 // mutable: assistant text grows as tokens stream in
-    var imagePath: String? = nil      // a generated image under the media dir, rendered inline
-    var streaming: Bool = false       // true while tokens are still arriving (render plain + cursor)
-    var status: String? = nil         // transient activity line (e.g., "deep_research · running…")
-}
+// ChatMsg now lives in GinexusCore (testable; the persisted unit inside a Conversation).
 
 /// A selectable model: "auto" (policy-routed) plus each roster tier from GET /v1/models.
 struct ModelOption: Identifiable, Sendable, Hashable {
@@ -79,15 +72,31 @@ final class AppModel: ObservableObject {
     @Published var chat: [ChatMsg] = []
     @Published var chatInput = ""
     @Published var sending = false
+
+    /// Conversation history (persisted app-side; see ConversationStore). The sidebar lists `conversations`;
+    /// `chat` holds the active transcript. activeConversationID + the active createdAt/title are the bits
+    /// needed to rebuild a Conversation on save.
+    @Published var conversations: [ConversationMeta] = []
+    @Published var activeConversationID: UUID?
+    @Published var sidebarColumn: NavigationSplitViewVisibility = .all
+    private var activeCreatedAt = Date()
+    private var activeTitle = "New chat"
+    private let convStore: ConversationStoring = DiskConversationStore()
+    let settings = SettingsStore.shared
+
     /// Model picker: "auto" + the roster from GET /v1/models. Default "auto" → the 30B for chat/agent.
     @Published var models: [ModelOption] = [ModelOption(id: "auto", label: "Auto (smart by default)")]
-    @Published var selectedModel = "auto"
+    @Published var selectedModel = "auto" {
+        didSet { if selectedModel != oldValue { settings.update { $0.defaultModel = selectedModel } } }
+    }
 
     /// Autonomy mode. false = human-in-the-loop (every irreversible action asks for Touch ID).
     /// true = autonomous: irreversible tools run unattended EXCEPT hard-gated ones (money / external
     /// comms / legal / irreversible delete / arbitrary execution), which ALWAYS require approval —
     /// the non-overridable hard gate. Sent to /v1/agent as `mode`.
-    @Published var autonomous = false
+    @Published var autonomous = false {
+        didSet { if autonomous != oldValue { settings.update { $0.defaultMode = autonomous ? "autonomous" : "hitl" } } }
+    }
     private var modeString: String { autonomous ? "autonomous" : "hitl" }
     /// HITL: when set, an irreversible/OS action is waiting on the biometric approval sheet.
     @Published var pending: PendingAction?
@@ -164,6 +173,136 @@ final class AppModel: ObservableObject {
 
     func stop() { pollTimer?.invalidate(); spine.shutdown() }
 
+    // MARK: conversation history (app-side persistence + sidebar)
+
+    /// On first connect: seed picker/mode from saved settings, then load saved conversations and the
+    /// most-recent transcript (when persistence is on). Runs BEFORE the auto-demo so a restored chat
+    /// suppresses it. When persistence is off, nothing is read and the chat stays in-memory only.
+    private func restoreSession() async {
+        selectedModel = settings.settings.defaultModel
+        autonomous = (settings.settings.defaultMode == "autonomous")
+        guard settings.settings.persistTranscript else { return }
+        let store = convStore
+        let index = await Task.detached { store.loadIndex() }.value
+        conversations = index.sorted { $0.updatedAt > $1.updatedAt }
+        if let recent = conversations.first,
+           let conv = await Task.detached(operation: { store.load(id: recent.id) }).value {
+            adopt(conv)
+        } else {
+            newChat()   // fresh active conversation so the first turn persists
+        }
+    }
+
+    /// Make `conv` the active transcript (no disk read).
+    private func adopt(_ conv: Conversation) {
+        activeConversationID = conv.id
+        activeCreatedAt = conv.createdAt
+        activeTitle = conv.title
+        chat = conv.messages
+        attachment = nil
+        pending = nil
+    }
+
+    /// Start a fresh chat. Blocked mid-stream so the streaming bubble lookup can't be orphaned.
+    func newChat() {
+        guard !sending else { return }
+        activeConversationID = UUID()
+        activeCreatedAt = Date()
+        activeTitle = "New chat"
+        chat = []
+        attachment = nil
+        pending = nil
+        chatInput = ""
+        renderSnapshot()
+    }
+
+    /// Switch to a saved conversation. Blocked mid-stream (postAgent finds its bubble by id in `chat`;
+    /// swapping `chat` underneath it would drop the streamed reply into the wrong conversation).
+    func selectConversation(_ id: UUID) {
+        guard !sending, id != activeConversationID else { return }
+        let store = convStore
+        Task {
+            let conv = await Task.detached(operation: { store.load(id: id) }).value
+            // Re-validate after the disk read: if a turn started meanwhile, don't clobber it.
+            guard !sending else { return }
+            guard let conv else { newChat(); return }   // corrupt/missing → don't strand the UI
+            adopt(conv)
+            renderSnapshot()
+        }
+    }
+
+    func renameConversation(_ id: UUID, to newTitle: String) {
+        let t = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        if let i = conversations.firstIndex(where: { $0.id == id }) { conversations[i].title = t }
+        if id == activeConversationID {
+            // The live in-memory `chat` is authoritative for the active conversation — write it
+            // (with the new title) rather than round-tripping a possibly-stale disk copy.
+            activeTitle = t
+            persistActive()
+            return
+        }
+        // Inactive: load → retitle → save, handing the store the current authoritative index.
+        let store = convStore
+        let snapshot = conversations
+        Task {
+            guard var conv = await Task.detached(operation: { store.load(id: id) }).value else { return }
+            conv.title = t
+            conv.updatedAt = Date()
+            let saved = conv
+            store.save(saved, index: snapshot)
+        }
+    }
+
+    func deleteConversation(_ id: UUID) {
+        guard !sending else { return }
+        conversations.removeAll { $0.id == id }
+        convStore.delete(id: id, index: conversations)   // verbatim index, already pruned
+        guard id == activeConversationID else { return }
+        if let next = conversations.first {
+            activeConversationID = nil   // clear so selectConversation's guard doesn't no-op
+            chat = []                    // don't leave the deleted transcript on screen if load fails
+            selectConversation(next.id)
+        } else {
+            newChat()
+        }
+    }
+
+    /// Persist the active transcript. No-op when persistence is off or the chat is empty. Called at
+    /// the user-append point and again at each turn's finalization (the only "text is final" moments).
+    /// The in-memory `conversations` array is the single source of truth for the index: we update it
+    /// here on the main actor, then hand the store the full snapshot to write verbatim (no read-modify-
+    /// write on disk → no lost updates, and the serial store preserves call order).
+    private func persistActive() {
+        guard settings.settings.persistTranscript, !chat.isEmpty else { return }
+        if activeConversationID == nil {   // ensure an active conversation exists
+            activeConversationID = UUID(); activeCreatedAt = Date(); activeTitle = "New chat"
+        }
+        guard let id = activeConversationID else { return }
+        // Fallback title for assistant-initiated chats (import / build-profile) that never went
+        // through send()'s auto-title — use the first message so the sidebar isn't all "New chat".
+        if activeTitle == "New chat", let first = chat.first?.text {
+            let line = first.split(separator: "\n").first.map(String.init) ?? first
+            let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { activeTitle = String(t.prefix(48)) }
+        }
+        let conv = Conversation(id: id, title: activeTitle, createdAt: activeCreatedAt,
+                                updatedAt: Date(), messages: chat)
+        let meta = conv.meta
+        if let i = conversations.firstIndex(where: { $0.id == id }) { conversations[i] = meta }
+        else { conversations.insert(meta, at: 0) }
+        conversations.sort { $0.updatedAt > $1.updatedAt }
+        convStore.save(conv, index: conversations)
+    }
+
+    /// Set the conversation title from the first user message (truncated, single line).
+    private func autoTitleIfNeeded(_ firstUserText: String) {
+        guard activeTitle == "New chat" else { return }
+        let line = firstUserText.split(separator: "\n").first.map(String.init) ?? firstUserText
+        let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { activeTitle = String(t.prefix(48)) }
+    }
+
     private func pollHealth() async {
         let sock = spine.socketPath
         let res = await Task.detached { UDSClient.request(socketPath: sock, path: "/healthz") }.value
@@ -173,16 +312,18 @@ final class AppModel: ObservableObject {
             spineStatus = "CONNECTED · live spine over UDS"
             await fetchModels()
             await fetchBootId()
+            await restoreSession()   // settings defaults + saved conversations (BEFORE the auto-demo)
             renderSnapshot()
-            // Auto-demo once: prove the app gets a real model answer through the spine.
+            // Auto-demo once: prove the app gets a real model answer through the spine. Skipped when a
+            // transcript was restored (chat non-empty) so a saved conversation isn't polluted.
             let tok = currentToken()
             dbg("connected; keychainToken len=\(tok?.count ?? -1)")
-            if !autoDemoSent, tok != nil {
+            if !autoDemoSent, tok != nil, chat.isEmpty {
                 autoDemoSent = true
                 dbg("auto-demo: sending")
                 send("Use the system_status tool to report this Mac's macOS version and uptime in one short line.")
             } else {
-                dbg("auto-demo SKIPPED (token nil=\(tok == nil), alreadySent=\(autoDemoSent))")
+                dbg("auto-demo SKIPPED (token nil=\(tok == nil), alreadySent=\(autoDemoSent), chatEmpty=\(chat.isEmpty))")
             }
         }
     }
@@ -251,6 +392,7 @@ final class AppModel: ObservableObject {
             "include_assistant": false,
         ])
         chat.append(ChatMsg(role: "user", text: "Import \(url.lastPathComponent) into memory"))
+        persistActive()   // save the user turn at append time (matches send())
         renderSnapshot()
         Task {
             let res = await Task.detached {
@@ -269,6 +411,7 @@ final class AppModel: ObservableObject {
             case .failure(let e):
                 chat.append(ChatMsg(role: "assistant", text: "import failed: \(e)"))
             }
+            persistActive()
             renderSnapshot()
         }
     }
@@ -318,6 +461,8 @@ final class AppModel: ObservableObject {
         chat.append(ChatMsg(role: "user", text: displayText, imagePath: userImage))
         chatInput = ""
         attachment = nil
+        autoTitleIfNeeded(displayText)
+        persistActive()   // never lose a user turn even if streaming is interrupted
         renderSnapshot()
         // Send the full content for the LAST user turn; earlier turns keep their displayed text.
         var msgs = chat.map { ["role": $0.role, "content": $0.text] }
@@ -529,6 +674,7 @@ final class AppModel: ObservableObject {
                 chat[i].status = nil
             }
             sending = false
+            persistActive()
             renderSnapshot()
             if memoryOpen { openMemory() }
         }
@@ -601,6 +747,7 @@ final class AppModel: ObservableObject {
             chat[i].status = nil
         }
         sending = false
+        persistActive()   // the only safe "message is final" point (text is authoritative now)
         renderSnapshot()
     }
 
@@ -699,14 +846,14 @@ final class AppModel: ObservableObject {
                     if ok { self.mintAndRun() }
                     else {
                         self.chat.append(ChatMsg(role: "assistant", text: "Approval cancelled."))
-                        self.pending = nil; self.renderSnapshot()
+                        self.pending = nil; self.persistActive(); self.renderSnapshot()
                     }
                 }
             }
         } else {
             // No biometrics/password policy available on this Mac — fail safe: do NOT auto-approve.
             chat.append(ChatMsg(role: "assistant", text: "Cannot authenticate on this Mac — action not run."))
-            pending = nil; renderSnapshot()
+            pending = nil; persistActive(); renderSnapshot()
         }
     }
 
@@ -738,6 +885,7 @@ final class AppModel: ObservableObject {
     func deny() {
         if let p = pending { chat.append(ChatMsg(role: "assistant", text: "Denied: \(p.tool).")) }
         pending = nil
+        persistActive()
         renderSnapshot()
     }
 

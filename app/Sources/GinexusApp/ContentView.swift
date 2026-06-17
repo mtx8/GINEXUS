@@ -1,5 +1,6 @@
 // ContentView.swift (SP2) — chat-forward UI over the live hardened spine. Brand spine tokens.
 import SwiftUI
+import GinexusCore
 
 /// Headless-render-safe view (no ScrollView/TextField, which ImageRenderer won't draw) used
 /// only to capture a PNG of the live conversation for verification.
@@ -47,24 +48,101 @@ struct SnapshotView: View {
 struct ContentView: View {
     @EnvironmentObject var model: AppModel
     @State private var pendingDelete: String?   // model name awaiting uninstall confirmation
+    @State private var renamingID: UUID?        // conversation being inline-renamed
+    @State private var renameText = ""
+    @State private var pendingDeleteConversation: ConversationMeta?
 
     var body: some View {
-        ZStack {
-            Brand.ink900.ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                statusStrip
-                transcript
-                inputRow
+        NavigationSplitView(columnVisibility: $model.sidebarColumn) {
+            conversationSidebar
+                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
+        } detail: {
+            ZStack {
+                Brand.ink900.ignoresSafeArea()
+                VStack(alignment: .leading, spacing: 16) {
+                    header
+                    statusStrip
+                    transcript
+                    inputRow
+                }
+                .padding(24)
             }
-            .padding(24)
         }
-        .frame(minWidth: 560, minHeight: 460)
+        .frame(minWidth: 820, minHeight: 480)
         .preferredColorScheme(.dark)
         .sheet(item: $model.pending) { p in approvalSheet(p) }
         .sheet(isPresented: $model.memoryOpen) { memorySheet }
         .sheet(isPresented: $model.modelsOpen) { modelsSheet }
     }
+
+    // MARK: conversation sidebar
+
+    /// Left rail of saved conversations: NEW CHAT, select, inline rename, delete. Brand tokens only;
+    /// selection reads as the ink-800 card fill + an ember title (no accent border-stripe). Switching
+    /// is blocked while a reply streams (the streaming bubble is found by id in the active `chat`).
+    private var conversationSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("CHATS").font(.system(size: 11, weight: .bold, design: .monospaced)).kerning(1.5)
+                    .foregroundStyle(Brand.muted)
+                Spacer()
+                Button(action: { model.newChat() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                        Text("NEW").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
+                    }
+                    .foregroundStyle(Brand.ember500)
+                }
+                .buttonStyle(.plain)
+                .help("Start a new conversation")
+                .disabled(!model.connected || model.sending)
+            }
+            .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 10)
+
+            Divider().overlay(Color.white.opacity(0.08))
+
+            if model.conversations.isEmpty {
+                Text("No conversations yet")
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.muted)
+                    .padding(.horizontal, 14).padding(.top, 12)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(model.conversations) { c in
+                            ConversationRow(
+                                c: c,
+                                selected: c.id == model.activeConversationID,
+                                disabled: model.sending && c.id != model.activeConversationID,
+                                renamingID: $renamingID,
+                                renameText: $renameText,
+                                onSelect: { renamingID = nil; model.selectConversation(c.id) },
+                                onCommitRename: { model.renameConversation(c.id, to: renameText); renamingID = nil },
+                                onRequestRename: { renameText = c.title; renamingID = c.id },
+                                onRequestDelete: { pendingDeleteConversation = c }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 8)
+                    .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.2), value: model.conversations)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Brand.ink900)
+        .confirmationDialog(
+            "Delete this conversation?",
+            isPresented: Binding(get: { pendingDeleteConversation != nil },
+                                 set: { if !$0 { pendingDeleteConversation = nil } }),
+            presenting: pendingDeleteConversation
+        ) { c in
+            Button("Delete", role: .destructive) { model.deleteConversation(c.id); pendingDeleteConversation = nil }
+            Button("Cancel", role: .cancel) { pendingDeleteConversation = nil }
+        } message: { c in
+            Text("\"\(c.title)\" will be permanently removed. This cannot be undone.")
+        }
+    }
+
 
     /// Model manager — download models into the local runtime (Ollama registry tags or Hugging Face
     /// GGUF, e.g. hf.co/<org>/<repo>:<QUANT>), with live progress. Suggested picks are commercial-clean.
@@ -558,6 +636,63 @@ private struct StreamingText: View {
         cursor.foregroundColor = on ? Brand.ember500 : .clear
         return s + cursor
     }
+}
+
+/// One conversation in the sidebar. Selection reads as the ink-800 card fill + an ember title (no
+/// accent border-stripe); unselected rows lighten faintly on hover with the brand easing — matching
+/// ModelRow, the app's established clickable-card affordance. Inline rename commits on Return,
+/// cancels on Escape, and is dismissed when the user navigates away (onSelect clears renamingID).
+private struct ConversationRow: View {
+    let c: ConversationMeta
+    let selected: Bool
+    let disabled: Bool
+    @Binding var renamingID: UUID?
+    @Binding var renameText: String
+    let onSelect: () -> Void
+    let onCommitRename: () -> Void
+    let onRequestRename: () -> Void
+    let onRequestDelete: () -> Void
+    @State private var hover = false
+    private var isRenaming: Bool { renamingID == c.id }
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 2) {
+                if isRenaming {
+                    TextField("Title", text: $renameText)
+                        .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced))
+                        .foregroundStyle(Brand.bone50).tint(Brand.ember500)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 6))
+                        .onSubmit(onCommitRename)
+                        .onExitCommand { renamingID = nil }
+                } else {
+                    Text(c.title).font(.system(size: 13, design: .monospaced))
+                        .foregroundStyle(selected ? Brand.ember500 : Brand.bone50).lineLimit(1)
+                }
+                Text("\(relativeTime(c.updatedAt)) · \(c.messageCount)")
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(Brand.muted)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? Brand.ink800 : Color.white.opacity(hover ? 0.04 : 0))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .onHover { h in withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.2)) { hover = h } }
+        .contextMenu {
+            Button("Rename", action: onRequestRename)
+            Button("Delete", role: .destructive, action: onRequestDelete)
+        }
+    }
+}
+
+private func relativeTime(_ d: Date) -> String {
+    let f = RelativeDateTimeFormatter()
+    f.unitsStyle = .short
+    return f.localizedString(for: d, relativeTo: Date())
 }
 
 /// A modern card for one installed model — name + params/quant/size + uninstall. Semi-transparent ink
