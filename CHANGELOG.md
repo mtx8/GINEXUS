@@ -10,13 +10,37 @@ running history.
 
 - **v1 acceptance test PASSES** end-to-end on the Rust core: research (web_fetch) → write-to-file
   (HITL approval) → remember (persistent memory), with cross-language (Swift↔Rust) approval-token parity.
-- **8 Rust crates** — security, agent, gateway, mcp, memory, skills, sanitize, server. **97 Rust tests.**
+- **8 Rust crates** — security, agent, gateway, mcp, memory, skills, sanitize, server. **100 Rust tests + 14 Swift tests.**
 - **App**: self-contained signed `GINEXUS.app` (embeds the Rust core), token-streaming chat with
-  content-aware rendering, capability menu, smart attachments, in-app model manager, memory browser.
+  content-aware rendering, **conversation history sidebar**, **settings screen**, capability menu,
+  smart attachments + **vision wiring**, in-app model manager, memory browser.
 - **Live memory**: the operator's full ChatGPT history — 3,779 sanitized facts with 768-dim embeddings.
-- **Default model**: Qwen3-30B-A3B-Instruct-2507 (Apache-2.0) via Ollama.
+- **Default model**: Qwen3-30B-A3B-Instruct-2507 (Apache-2.0) via Ollama. Vision tier ready (Qwen3-VL-30B-A3B, pull when Ollama ≥ 0.12.7).
 
 ---
+
+## 2026-06-17 — Functional-UI completion (history, settings, vision)
+
+The "make-it-right" UI phase, each feature designed by a multi-agent workflow and hardened by an
+adversarial review (25 confirmed findings fixed across the three) before merge.
+
+- **#21 — Vision / image-understanding wiring (graceful degradation).** Attach an image → it's sent
+  to a vision model when one is available, else degrades to a clear text note. Core: a `vlm` tier
+  (Qwen3-VL-30B-A3B), `has_image()` detection, vision routing that **fails loud** (never answers
+  blind from a text model — an image always forces the vision tier), and a 24MB request-body guard.
+  App: OpenAI multimodal content array, deterministic ImageIO downscaling (1536px, EXIF-stripped,
+  12MB cap), a capability gate (`visionAvailable` = Ollama ≥ 0.12.7 + a VLM installed), "Attach
+  image…", a thumbnail chip (decoded once) + degradation copy.
+- **#20 — Settings screen.** A SETTINGS sheet over `SettingsStore`/`GinexusSettings` (sole owner of
+  settings.json): live defaults (model, HITL/AUTO mode), and core-config via env + APPLY & RESTART
+  CORE (Ollama endpoint, Obsidian vault, image generation) — restart is `!sending`-guarded,
+  boot-id-validated, and watchdog'd. Security: the iCloud hard-rule check canonicalizes (symlink-proof,
+  app + core), the Ollama base is host-checked (loopback/LAN ok; metadata/link-local blocked), and
+  settings.json is written 0600.
+- **#19 — Conversation history & persistence + sidebar.** Transcripts persist app-side; a
+  NavigationSplitView sidebar with NEW / select / inline rename / delete, auto-titled, most-recent
+  restored on launch. A serial-queue store with the in-memory index as the single authority (no
+  lost-updates / no resurrection of a deleted chat); switching is blocked mid-stream.
 
 ## 2026-06-17 — UI functional pass + model management
 
