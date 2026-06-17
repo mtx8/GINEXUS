@@ -244,8 +244,17 @@ async fn main() {
     {
         let ep = gateway.resolve("embed");
         let (base, key, model) = (ep.api_base.clone(), ep.api_key.clone(), ep.model.clone());
-        memory.set_embedder(std::sync::Arc::new(move |t: &str| {
-            ginexus_gateway::embed_text(&base, &key, &model, t).ok()
+        // Single-query embedder (recall path).
+        {
+            let (base, key, model) = (base.clone(), key.clone(), model.clone());
+            memory.set_embedder(std::sync::Arc::new(move |t: &str| {
+                ginexus_gateway::embed_text(&base, &key, &model, t).ok()
+            }));
+        }
+        // Batch embedder (bulk import): one round-trip per 64 texts, reusing a single client —
+        // turns N sequential embed calls into ⌈N/64⌉ batched calls (the import-perf fix).
+        memory.set_batch_embedder(std::sync::Arc::new(move |texts: &[&str]| {
+            ginexus_gateway::embed_many(&base, &key, &model, texts, 64)
         }));
     }
 
