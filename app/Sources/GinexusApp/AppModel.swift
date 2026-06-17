@@ -5,6 +5,7 @@ import SwiftUI
 import AppKit
 import EventKit
 import LocalAuthentication
+import PDFKit
 import GinexusCore
 
 struct ChatMsg: Identifiable, Sendable {
@@ -270,25 +271,52 @@ final class AppModel: ObservableObject {
     // MARK: attachments (via the + menu)
     func clearAttachment() { attachment = nil }
 
-    func attachFile() {
+    /// Smart attach: accept ANY file, detect its type, and extract content the model can work with —
+    /// PDFs (PDFKit) and Word/RTF/HTML docs (NSAttributedString) become text; text/code is read as
+    /// UTF-8; images go to the vision path; video is noted (needs vision+audio models). No cloud, no
+    /// extra models for documents — all extraction is on-device.
+    func attachAny() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.plainText, .text, .sourceCode, .json, .commaSeparatedText]
         panel.allowsMultipleSelection = false
-        panel.message = "Attach a text or code file as context for your next message"
-        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) else { return }
-        var t = String(data: data, encoding: .utf8) ?? ""
-        if t.isEmpty { t = "(could not read this file as text)" }
-        if t.count > 12000 { t = String(t.prefix(12000)) + "\n…[truncated]" }
-        attachment = Attachment(kind: "file", name: url.lastPathComponent, text: t, imagePath: nil)
-    }
-
-    func attachImage() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png, .jpeg, .gif, .heic, .image]
-        panel.allowsMultipleSelection = false
-        panel.message = "Attach an image"
+        panel.allowsOtherFileTypes = true
+        panel.message = "Attach a file — PDF, document, spreadsheet, text/code, or image"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        attachment = Attachment(kind: "image", name: url.lastPathComponent, text: nil, imagePath: url.path)
+        let ext = url.pathExtension.lowercased()
+        let name = url.lastPathComponent
+
+        let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "heic", "heif", "webp", "bmp", "tiff", "tif"]
+        let videoExts: Set<String> = ["mp4", "mov", "m4v", "webm", "avi", "mkv"]
+        let docExts: Set<String> = ["doc", "docx", "rtf", "rtfd", "html", "htm", "odt", "pages"]
+
+        if imageExts.contains(ext) {
+            attachment = Attachment(kind: "image", name: name, text: nil, imagePath: url.path)
+            return
+        }
+        if videoExts.contains(ext) {
+            attachment = Attachment(kind: "file", name: name,
+                text: "(The user attached a video: \(name). Video understanding needs a vision + audio model, which isn't installed yet — say so briefly.)",
+                imagePath: nil)
+            return
+        }
+
+        var text = ""
+        if ext == "pdf" {
+            text = PDFDocument(url: url)?.string ?? ""
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                text = "(This PDF has no extractable text — it may be scanned images.)"
+            }
+        } else if docExts.contains(ext) {
+            text = (try? NSAttributedString(url: url, options: [:], documentAttributes: nil))?.string ?? ""
+            if text.isEmpty { text = "(Could not extract text from \(name).)" }
+        } else if let data = try? Data(contentsOf: url), let s = String(data: data, encoding: .utf8), !s.isEmpty {
+            text = s   // txt / md / json / csv / code / etc.
+        } else {
+            // last resort: macOS rich-text reader handles many formats; else mark unsupported.
+            text = (try? NSAttributedString(url: url, options: [:], documentAttributes: nil))?.string
+                ?? "(Couldn't read \(name) as text — unsupported binary file.)"
+        }
+        if text.count > 16000 { text = String(text.prefix(16000)) + "\n…[truncated]" }
+        attachment = Attachment(kind: "file", name: name, text: text, imagePath: nil)
     }
 
     // MARK: capability quick-actions (wrap the current input → invoke a specific capability)

@@ -74,8 +74,7 @@ struct ContentView: View {
                 Button("Create image", action: model.runImage).disabled(!model.canQuickAction)
             }
             Section("Attach") {
-                Button("Attach file…", action: model.attachFile)
-                Button("Attach image…", action: model.attachImage)
+                Button("Attach file…", action: model.attachAny)   // PDF / doc / text / code / image / video
                 Button("Import AI data…", action: model.importExport)
             }
         } label: {
