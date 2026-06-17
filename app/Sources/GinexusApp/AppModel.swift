@@ -84,6 +84,9 @@ final class AppModel: ObservableObject {
     private var activeTitle = "New chat"
     private let convStore: ConversationStoring = DiskConversationStore()
     let settings = SettingsStore.shared
+    /// Conversations shown in the sidebar but not yet written to disk (empty "New chat" tiles). They
+    /// appear immediately on ＋ but are excluded from the persisted index until they have content.
+    private var unsavedIDs: Set<UUID> = []
 
     /// Model picker: "auto" + the roster from GET /v1/models. Default "auto" → the 30B for chat/agent.
     @Published var models: [ModelOption] = [ModelOption(id: "auto", label: "Auto (smart by default)")]
@@ -232,22 +235,39 @@ final class AppModel: ObservableObject {
     }
 
     /// Start a fresh chat. Blocked mid-stream so the streaming bubble lookup can't be orphaned.
+    /// Drops a "New chat" tile into the sidebar IMMEDIATELY (before the first message); the tile is
+    /// tracked as unsaved so it isn't written to disk until it has content.
     func newChat() {
         guard !sending else { return }
-        activeConversationID = UUID()
+        // Already on a fresh, empty, unsaved chat → stay put (don't spawn duplicate empty tiles).
+        if let id = activeConversationID, chat.isEmpty, unsavedIDs.contains(id) { return }
+        let id = UUID()
+        activeConversationID = id
         activeCreatedAt = Date()
         activeTitle = "New chat"
         chat = []
         attachment = nil
+        attachmentThumb = nil
         pending = nil
         chatInput = ""
+        unsavedIDs.insert(id)
+        conversations.insert(ConversationMeta(id: id, title: "New chat", updatedAt: Date(), messageCount: 0), at: 0)
         renderSnapshot()
+    }
+
+    /// Remove the active conversation's sidebar tile if it's an unsaved, empty "New chat" — so
+    /// navigating away (or deleting) doesn't leave empty tiles behind.
+    private func dropActiveIfEmpty() {
+        guard let id = activeConversationID, chat.isEmpty, unsavedIDs.contains(id) else { return }
+        unsavedIDs.remove(id)
+        conversations.removeAll { $0.id == id }
     }
 
     /// Switch to a saved conversation. Blocked mid-stream (postAgent finds its bubble by id in `chat`;
     /// swapping `chat` underneath it would drop the streamed reply into the wrong conversation).
     func selectConversation(_ id: UUID) {
         guard !sending, id != activeConversationID else { return }
+        dropActiveIfEmpty()   // clean up the empty "New chat" tile we're leaving
         let store = convStore
         Task {
             let conv = await Task.detached(operation: { store.load(id: id) }).value
@@ -284,8 +304,9 @@ final class AppModel: ObservableObject {
 
     func deleteConversation(_ id: UUID) {
         guard !sending else { return }
+        unsavedIDs.remove(id)
         conversations.removeAll { $0.id == id }
-        convStore.delete(id: id, index: conversations)   // verbatim index, already pruned
+        convStore.delete(id: id, index: conversations.filter { !unsavedIDs.contains($0.id) })
         guard id == activeConversationID else { return }
         if let next = conversations.first {
             activeConversationID = nil   // clear so selectConversation's guard doesn't no-op
@@ -317,10 +338,12 @@ final class AppModel: ObservableObject {
         let conv = Conversation(id: id, title: activeTitle, createdAt: activeCreatedAt,
                                 updatedAt: Date(), messages: chat)
         let meta = conv.meta
+        unsavedIDs.remove(id)   // it now has content → a real, persisted conversation
         if let i = conversations.firstIndex(where: { $0.id == id }) { conversations[i] = meta }
         else { conversations.insert(meta, at: 0) }
         conversations.sort { $0.updatedAt > $1.updatedAt }
-        convStore.save(conv, index: conversations)
+        // Persist only conversations with real content (empty "New chat" tiles stay session-only).
+        convStore.save(conv, index: conversations.filter { !unsavedIDs.contains($0.id) })
     }
 
     /// Set the conversation title from the first user message (truncated, single line).
