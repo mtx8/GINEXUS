@@ -54,6 +54,7 @@ struct ContentView: View {
                 header
                 statusStrip
                 transcript
+                capabilityBar
                 inputRow
             }
             .padding(24)
@@ -61,6 +62,37 @@ struct ContentView: View {
         .frame(minWidth: 560, minHeight: 460)
         .preferredColorScheme(.dark)
         .sheet(item: $model.pending) { p in approvalSheet(p) }
+        .sheet(isPresented: $model.memoryOpen) { memorySheet }
+    }
+
+    /// One-tap capability actions. Council / Research / Image wrap the current input and invoke the
+    /// matching tool; Profile distills long-term memory into the always-in-context self-model.
+    private var capabilityBar: some View {
+        HStack(spacing: 8) {
+            capChip("COUNCIL", help: "Deliberate the message with a panel of expert personas, then synthesize",
+                    enabled: model.canQuickAction) { model.runCouncil() }
+            capChip("RESEARCH", help: "Decompose the message → research in parallel → cited report",
+                    enabled: model.canQuickAction) { model.runResearch() }
+            capChip("IMAGE", help: "Generate an image from the message",
+                    enabled: model.canQuickAction) { model.runImage() }
+            capChip("PROFILE", help: "Distill long-term memory into a durable self-model",
+                    enabled: model.connected && !model.sending) { model.buildProfile() }
+            Spacer()
+        }
+    }
+
+    private func capChip(_ title: String, help: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
+                .foregroundStyle(enabled ? Brand.ember500 : Brand.muted)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .stroke((enabled ? Brand.ember500 : Brand.muted).opacity(0.4), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help(help)
     }
 
     /// HITL: GINEXUS pauses an irreversible/OS action here until you approve with Touch ID.
@@ -120,6 +152,13 @@ struct ContentView: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(model.connected ? Brand.ok : Brand.muted)
             Spacer()
+            Button(action: { model.openMemory() }) {
+                Text("MEMORY").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
+                    .foregroundStyle(Brand.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Browse what GINEXUS knows — core profile + searchable long-term memory")
+            .disabled(!model.connected)
             Button(action: { model.importExport() }) {
                 Text("⤓ IMPORT").font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1)
                     .foregroundStyle(Brand.muted)
@@ -130,6 +169,71 @@ struct ContentView: View {
             autonomyToggle
             modelPicker
         }
+    }
+
+    /// Memory browser — core blocks (incl. the consolidated profile) + searchable archival facts.
+    private var memorySheet: some View {
+        ZStack {
+            Brand.ink900.ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("MEMORY").font(.system(size: 14, weight: .bold, design: .monospaced)).kerning(2)
+                        .foregroundStyle(Brand.bone50)
+                    Text("\(model.memFactsCount) facts").font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Brand.muted)
+                    Spacer()
+                    if model.memLoading { ProgressView().controlSize(.small) }
+                    Button("DONE") { model.memoryOpen = false }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Brand.ember500)
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if model.memBlocks.isEmpty {
+                            Text("No core blocks yet. Tap PROFILE to build a self-model from memory.")
+                                .font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.muted)
+                        }
+                        ForEach(model.memBlocks) { b in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(b.name.uppercased())
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced)).kerning(1.5)
+                                    .foregroundStyle(Brand.ember500)
+                                Text(b.value).font(.system(size: 13)).foregroundStyle(Brand.bone50)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                            .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        Divider().overlay(Color.white.opacity(0.08))
+                        ForEach(model.memResults) { f in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(f.origin == "untrusted" ? "DATA" : "·")
+                                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(Brand.muted).frame(width: 34, alignment: .leading)
+                                Text(f.text).font(.system(size: 12)).foregroundStyle(Brand.bone50.opacity(0.9))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+                HStack(spacing: 8) {
+                    TextField("Search memory…", text: $model.memQuery)
+                        .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced))
+                        .foregroundStyle(Brand.bone50).padding(10).background(Brand.ink800)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .onSubmit { model.searchMemory() }
+                    Button(action: { model.searchMemory() }) {
+                        Text("SEARCH").font(.system(size: 11, weight: .bold, design: .monospaced)).kerning(1)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .foregroundStyle(Brand.ink900).background(Brand.ember500)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }.buttonStyle(.plain)
+                }
+            }
+            .padding(24)
+        }
+        .frame(width: 620, height: 640)
+        .preferredColorScheme(.dark)
     }
 
     /// HITL ⇄ Autonomous toggle. The hard gate (money / external comms / legal / delete / exec) still
