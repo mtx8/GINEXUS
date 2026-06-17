@@ -239,6 +239,7 @@ impl Gateway {
         }
 
         let mut content = String::new();
+        let mut emitted_len = 0usize; // bytes of displayable (think-stripped) content already forwarded
         // tool-call accumulators keyed by index: (id, name, arguments-so-far)
         let mut tcs: std::collections::BTreeMap<usize, (String, String, String)> = Default::default();
         let mut stream = resp.bytes_stream();
@@ -265,7 +266,13 @@ impl Gateway {
                 if let Some(tok) = delta.get("content").and_then(|c| c.as_str()) {
                     if !tok.is_empty() {
                         content.push_str(tok);
-                        on_token(tok);
+                        // Forward only the DISPLAYABLE suffix (a thinking model's <think>…</think>
+                        // chain-of-thought is suppressed; instruct models stream from the start).
+                        let vis = visible_content(&content);
+                        if vis.len() > emitted_len {
+                            on_token(&vis[emitted_len..]);
+                            emitted_len = vis.len();
+                        }
                     }
                 }
                 if let Some(arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
@@ -298,8 +305,27 @@ impl Gateway {
                 ToolCall { id, name, arguments }
             })
             .collect();
-        Ok(AssistantTurn { content: if content.is_empty() { None } else { Some(content) }, tool_calls })
+        // Return the think-stripped, trimmed answer (matches what was streamed + clean history).
+        let answer = visible_content(&content).trim();
+        Ok(AssistantTurn {
+            content: if answer.is_empty() { None } else { Some(answer.to_string()) },
+            tool_calls,
+        })
     }
+}
+
+/// The displayable portion of (possibly partial) streamed content: everything after a closing
+/// `</think>` (a thinking model's chain-of-thought is hidden), `""` while still inside an unclosed
+/// `<think>`, or the whole string when there are no think tags (instruct models stream from start).
+fn visible_content(content: &str) -> &str {
+    const CLOSE: &str = "</think>";
+    if let Some(i) = content.rfind(CLOSE) {
+        return &content[i + CLOSE.len()..];
+    }
+    if content.contains("<think>") {
+        return "";
+    }
+    content
 }
 
 /// Build the shared blocking embed client once (connection pool + TLS config reused across calls).
@@ -417,6 +443,15 @@ impl ModelCall for BoundModel<'_> {
     async fn call(&self, messages: &[Value], tools: &[Value]) -> AssistantTurn {
         self.gateway
             .complete_with_tools(&self.model, messages, tools)
+            .await
+            .unwrap_or_else(|e| AssistantTurn { content: Some(format!("model error: {e}")), tool_calls: vec![] })
+    }
+
+    async fn call_streaming(
+        &self, messages: &[Value], tools: &[Value], on_token: &(dyn Fn(String) + Send + Sync),
+    ) -> AssistantTurn {
+        self.gateway
+            .complete_with_tools_streaming(&self.model, messages, tools, |t| on_token(t.to_string()))
             .await
             .unwrap_or_else(|e| AssistantTurn { content: Some(format!("model error: {e}")), tool_calls: vec![] })
     }

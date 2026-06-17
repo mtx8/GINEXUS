@@ -86,6 +86,93 @@ public enum UDSClient {
         return parse(resp)
     }
 
+    /// Streaming POST: connect, send the request, then parse the Server-Sent-Events body, invoking
+    /// `onEvent(event, data)` for each frame as it arrives (blocks until the server closes). Runs
+    /// synchronously — callers run it off the main thread and hop back to update UI per event.
+    public static func stream(
+        socketPath: String, path: String, token: String? = nil, jsonBody: Data? = nil,
+        onEvent: @escaping (_ event: String, _ data: String) -> Void
+    ) -> Result<Void, UDSError> {
+        let cap = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
+        if socketPath.utf8.count >= cap { return .failure(.connect("socket path too long")) }
+
+        var fd: Int32 = -1
+        var lastErr = "connect failed"
+        for _ in 0..<8 {
+            let s = socket(AF_UNIX, SOCK_STREAM, 0)
+            if s < 0 { return .failure(.socket(String(cString: strerror(errno)))) }
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            _ = withUnsafeMutablePointer(to: &addr.sun_path) { tp in
+                tp.withMemoryRebound(to: CChar.self, capacity: cap) { dst in
+                    socketPath.withCString { strncpy(dst, $0, cap - 1) }
+                }
+            }
+            let len = socklen_t(MemoryLayout<sockaddr_un>.size)
+            let cr = withUnsafePointer(to: &addr) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(s, $0, len) }
+            }
+            if cr == 0 { fd = s; break }
+            lastErr = String(cString: strerror(errno))
+            close(s); usleep(200_000)
+        }
+        if fd < 0 { return .failure(.connect(lastErr)) }
+        defer { close(fd) }
+
+        var head = "POST \(path) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
+        if let token { head += "Authorization: Bearer \(token)\r\n" }
+        if let jsonBody { head += "Content-Type: application/json\r\nContent-Length: \(jsonBody.count)\r\n" }
+        head += "\r\n"
+        var out = Data(head.utf8)
+        if let jsonBody { out.append(jsonBody) }
+        let wrote = out.withUnsafeBytes { raw -> Int in
+            var sent = 0
+            while sent < raw.count {
+                let n = write(fd, raw.baseAddress!.advanced(by: sent), raw.count - sent)
+                if n <= 0 { return -1 }
+                sent += n
+            }
+            return sent
+        }
+        if wrote < 0 { return .failure(.io("write failed")) }
+
+        // Read + parse SSE: skip HTTP headers (to \r\n\r\n), then dispatch frames on blank lines.
+        var raw = Data(), pending = Data()
+        var headersDone = false
+        var curEvent = "message", curData = ""
+        var rbuf = [UInt8](repeating: 0, count: 8192)
+        while true {
+            let n = read(fd, &rbuf, rbuf.count)
+            if n < 0 { return .failure(.io("read failed")) }
+            if n == 0 { break }
+            if !headersDone {
+                raw.append(rbuf, count: n)
+                if let r = raw.range(of: Data("\r\n\r\n".utf8)) {
+                    headersDone = true
+                    pending.append(raw.subdata(in: r.upperBound..<raw.endIndex))
+                }
+                continue
+            }
+            pending.append(rbuf, count: n)
+            while let nl = pending.firstIndex(of: 0x0A) {
+                let lineData = pending.subdata(in: pending.startIndex..<nl)
+                pending.removeSubrange(pending.startIndex...nl)
+                var line = String(data: lineData, encoding: .utf8) ?? ""
+                if line.hasSuffix("\r") { line.removeLast() }
+                if line.isEmpty {
+                    if !curData.isEmpty || curEvent != "message" { onEvent(curEvent, curData) }
+                    curEvent = "message"; curData = ""
+                } else if line.hasPrefix("event:") {
+                    curEvent = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                } else if line.hasPrefix("data:") {
+                    let d = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                    curData = curData.isEmpty ? d : curData + "\n" + d
+                }
+            }
+        }
+        return .success(())
+    }
+
     private static func parse(_ data: Data) -> Result<UDSResponse, UDSError> {
         guard let sep = data.range(of: Data("\r\n\r\n".utf8)) else { return .failure(.parse) }
         let headerData = data.subdata(in: data.startIndex..<sep.lowerBound)
