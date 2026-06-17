@@ -198,8 +198,28 @@ struct ContentView: View {
                         .font(.system(size: 14, design: .monospaced))
                         .foregroundStyle(Brand.bone50)
                         .textSelection(.enabled)
+                } else if msg.streaming {
+                    // Live: plain text + cursor (cheap to update per token); a status line shows
+                    // tool/council/research activity. Switches to rich rendering once finalized.
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let status = msg.status {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text(status).font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(Brand.ember500)
+                            }
+                        }
+                        if !msg.text.isEmpty {
+                            Text(msg.text + "▌")
+                                .font(.system(size: 14)).foregroundStyle(Brand.bone50)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if msg.status == nil {
+                            Text("▌").font(.system(size: 14)).foregroundStyle(Brand.muted)
+                        }
+                    }
                 } else {
-                    // Assistant reply — content-aware rich rendering (text/code/images/video/…).
+                    // Finalized assistant reply — content-aware rich rendering (text/code/images/…).
                     MarkdownReply(text: msg.text)
                 }
             }

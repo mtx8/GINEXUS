@@ -10,8 +10,10 @@ import GinexusCore
 struct ChatMsg: Identifiable, Sendable {
     let id = UUID()
     let role: String   // "user" | "assistant"
-    let text: String
-    var imagePath: String? = nil   // a generated image under the media dir, rendered inline
+    var text: String                 // mutable: assistant text grows as tokens stream in
+    var imagePath: String? = nil      // a generated image under the media dir, rendered inline
+    var streaming: Bool = false       // true while tokens are still arriving (render plain + cursor)
+    var status: String? = nil         // transient activity line (e.g., "deep_research · running…")
 }
 
 /// A selectable model: "auto" (policy-routed) plus each roster tier from GET /v1/models.
@@ -205,51 +207,92 @@ final class AppModel: ObservableObject {
         Task { await postAgent(body: body, contextMessages: msgs) }
     }
 
-    /// One /v1/agent round-trip. Read-only tools → final answer; an irreversible tool with no
-    /// matching grant → pending_approval, which raises the biometric sheet. After approval the
-    /// SAME messages re-run carrying the grant (temperature 0 reproduces the identical tool call).
-    /// `body` is pre-serialized (Sendable) so no `[String: Any]` crosses the Task boundary.
+    /// Streaming /v1/agent/stream round-trip. A placeholder assistant bubble is appended and grows
+    /// token-by-token; tool/council/research activity shows a status line; an irreversible tool with
+    /// no grant ends in pending_approval → the biometric sheet (re-run carries the grant). The SSE
+    /// reader runs on a detached task and only Sendable values cross the boundary (an AsyncStream
+    /// continuation), so tokens apply IN ORDER on the main actor.
     private func postAgent(body: Data?, contextMessages: [[String: String]]) async {
         let sock = spine.socketPath, tok = currentToken()
-        let res = await Task.detached {
-            UDSClient.request(socketPath: sock, method: "POST", path: "/v1/agent", token: tok, jsonBody: body)
-        }.value
-        sending = false
-        switch res {
-        case .success(let r):
-            guard let d = r.body.data(using: .utf8),
-                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
-                chat.append(ChatMsg(role: "assistant", text: "(no content · HTTP \(r.status))"))
-                renderSnapshot(); return
+        let placeholder = ChatMsg(role: "assistant", text: "", streaming: true)
+        let msgId = placeholder.id
+        chat.append(placeholder)
+
+        let events = AsyncStream<(String, String)> { continuation in
+            let task = Task.detached {
+                let res = UDSClient.stream(socketPath: sock, path: "/v1/agent/stream", token: tok, jsonBody: body) { ev, data in
+                    continuation.yield((ev, data))
+                }
+                if case .failure(let e) = res { continuation.yield(("error", "\(e)")) }
+                continuation.finish()
             }
-            let st = (o["status"] as? String) ?? "?"
+            continuation.onTermination = { _ in task.cancel() }
+        }
+        for await (event, data) in events {
+            handleSSE(event: event, data: data, msgId: msgId, context: contextMessages)
+        }
+        // Stream closed: make sure the bubble is finalized + input re-enabled.
+        if let i = chat.firstIndex(where: { $0.id == msgId }) {
+            chat[i].streaming = false
+            chat[i].status = nil
+        }
+        sending = false
+        renderSnapshot()
+    }
+
+    /// Apply one SSE frame to the streaming assistant bubble (runs on the main actor, in order).
+    private func handleSSE(event: String, data: String, msgId: UUID, context: [[String: String]]) {
+        guard let i = chat.firstIndex(where: { $0.id == msgId }) else { return }
+        switch event {
+        case "token":
+            // data is a JSON-encoded string (handles newlines/escapes).
+            if let tok = try? JSONDecoder().decode(String.self, from: Data(data.utf8)) {
+                if chat[i].status != nil { chat[i].status = nil }
+                chat[i].text += tok
+            }
+        case "tool":
+            if let d = data.data(using: .utf8),
+               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                let name = (o["name"] as? String) ?? "tool"
+                if (o["phase"] as? String) == "start" {
+                    chat[i].status = "\(name) · running…"
+                    chat[i].text = ""   // the final answer streams AFTER the tool; drop any preamble
+                }
+            }
+        case "done", "message":
+            if data == "[DONE]" { return }
+            guard let d = data.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+            chat[i].status = nil
+            let st = (o["status"] as? String) ?? "final"
             if st == "pending_approval", let p = o["pending"] as? [String: Any] {
+                chat.remove(at: i)   // drop the empty placeholder; the approval sheet drives the re-run
                 let tool = (p["tool"] as? String) ?? "?"
                 let args = (p["arguments"] as? [String: Any]) ?? [:]
                 pending = PendingAction(
                     tool: tool, args: args,
                     target: (p["target"] as? String) ?? Approval.target(forTool: tool, args: args),
-                    preview: (p["preview"] as? String) ?? tool,
-                    messages: contextMessages)
+                    preview: (p["preview"] as? String) ?? tool, messages: context)
                 dbg("pending approval: \(pending?.preview ?? "")")
             } else {
                 let answer = (o["answer"] as? String) ?? ""
-                dbg("agent HTTP \(r.status); status=\(st)")
-                // SP6: if the agent generated an image, render it inline. Prefer the path echoed in
-                // the answer; fall back to the newest media PNG when the trace shows a generation.
                 let trace = (o["trace"] as? [[Any]]) ?? []
                 let didGenerate = trace.contains {
                     ($0.first as? String) == "image_generate" && ($0.count > 1 ? (($0[1] as? Bool) ?? false) : false)
                 }
                 var img = Self.extractImagePath(answer)
                 if img == nil, didGenerate { img = Self.newestMediaImage() }
-                chat.append(ChatMsg(role: "assistant", text: answer.isEmpty ? "(\(st))" : answer, imagePath: img))
+                if !answer.isEmpty { chat[i].text = answer }      // authoritative (think-stripped/trimmed)
+                chat[i].imagePath = img
+                chat[i].streaming = false
+                dbg("agent stream done; status=\(st)")
             }
-        case .failure(let e):
-            dbg("agent failure: \(e)")
-            chat.append(ChatMsg(role: "assistant", text: "error: \(e)"))
+        case "error":
+            chat[i].text = "error: \(data)"
+            chat[i].streaming = false
+        default:
+            break
         }
-        renderSnapshot()
     }
 
     /// Pull a generated image path (…/GINEXUS/media/*.png) out of the assistant's reply. The media

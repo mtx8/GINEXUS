@@ -25,6 +25,20 @@ pub struct AssistantTurn {
 #[async_trait]
 pub trait ModelCall: Send + Sync {
     async fn call(&self, messages: &[Value], tools: &[Value]) -> AssistantTurn;
+    /// Streaming variant: forward each content delta to `on_token` as it arrives, returning the
+    /// assembled turn. Default just calls `call` then emits the whole content once — so mocks and
+    /// the non-streaming path work unchanged; real model bindings override this to truly stream.
+    async fn call_streaming(
+        &self, messages: &[Value], tools: &[Value], on_token: &(dyn Fn(String) + Send + Sync),
+    ) -> AssistantTurn {
+        let turn = self.call(messages, tools).await;
+        if let Some(c) = &turn.content {
+            if !c.is_empty() {
+                on_token(c.clone());
+            }
+        }
+        turn
+    }
 }
 
 pub struct ApprovalGrant {
@@ -206,12 +220,32 @@ fn delegate_def() -> Value {
 }
 
 impl<'a> AgentLoop<'a> {
+    /// Non-streaming entry point — a thin wrapper over `run_streaming` with no-op callbacks, so the
+    /// whole agent loop lives in ONE place (and all existing callers/tests are unchanged).
     pub async fn run(
         &self,
         messages: Vec<Value>,
         grants: &[ApprovalGrant],
         approvals: Option<&ApprovalVerifier>,
         now_ms: i64,
+    ) -> AgentResult {
+        self.run_streaming(messages, grants, approvals, now_ms, &|_| {}, &|_, _| {}).await
+    }
+
+    /// Streaming entry point: identical agent logic, but forwards content tokens to `on_token` as
+    /// the model emits them, and reports tool activity via `on_event(tool_name, phase)` where phase
+    /// is "start" or "done". Content from a tool-calling turn streams too (model "thinking"); the
+    /// client resets its buffer on a tool event so only the final answer remains. `run` passes
+    /// no-op callbacks. Sub-agents (workers) go through `run` → no-op, so only the TOP loop streams.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_streaming(
+        &self,
+        messages: Vec<Value>,
+        grants: &[ApprovalGrant],
+        approvals: Option<&ApprovalVerifier>,
+        now_ms: i64,
+        on_token: &(dyn Fn(String) + Send + Sync),
+        on_event: &(dyn Fn(String, String) + Send + Sync),
     ) -> AgentResult {
         let mut msgs = messages;
         let mut trace: Vec<(String, bool)> = Vec::new();
@@ -234,7 +268,7 @@ impl<'a> AgentLoop<'a> {
         }
 
         for _ in 0..self.max_iters {
-            let turn = self.model.call(&msgs, &defs).await;
+            let turn = self.model.call_streaming(&msgs, &defs, on_token).await;
             if turn.tool_calls.is_empty() {
                 return AgentResult {
                     status: AgentStatus::Final,
@@ -277,6 +311,7 @@ impl<'a> AgentLoop<'a> {
                         continue;
                     }
                     synthetic_used += 1;
+                    on_event(tc.name.clone(), "start".into());
                     let out = match tc.name.as_str() {
                         "delegate" => {
                             self.run_delegate(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms).await
@@ -287,6 +322,7 @@ impl<'a> AgentLoop<'a> {
                         }
                         _ => self.run_council(&tc.arguments).await, // "council"
                     };
+                    on_event(tc.name.clone(), "done".into());
                     trace.push((tc.name.clone(), true));
                     msgs.push(tool_msg(&tc.id, &out));
                     continue;
@@ -331,11 +367,13 @@ impl<'a> AgentLoop<'a> {
                     }
                 }
                 // Run the tool on the blocking pool — file/network tools must not block the loop.
+                on_event(tc.name.clone(), "start".into());
                 let runner = tool.runner();
                 let args = tc.arguments.clone();
                 let res = tokio::task::spawn_blocking(move || runner(args))
                     .await
                     .unwrap_or_else(|_| crate::tools::ToolResult::err("tool execution failed"));
+                on_event(tc.name.clone(), "done".into());
                 trace.push((tc.name.clone(), res.ok));
                 msgs.push(tool_msg(&tc.id, &res.output));
             }

@@ -507,6 +507,71 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             json_ok(&mut stream, json!({"status": status, "answer": res.answer, "pending": res.pending,
                                         "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()})).await;
         }
+        ("POST", "/v1/agent/stream") => {
+            // Streaming agent: same loop as /v1/agent, but emits Server-Sent Events as work happens —
+            //   event: token  data: "<text delta>"            (final-answer tokens, as generated)
+            //   event: tool   data: {"name":…, "phase":…}     (tool/council/research start|done)
+            //   event: done   data: {status, answer, pending, trace}
+            // The loop runs concurrently with a drain task that writes frames to the socket: on_token /
+            // on_event push pre-formatted frames into an unbounded channel; the drain forwards them.
+            let blocked = state.killswitch.lock().unwrap().guard().err();
+            if let Some(e) = blocked {
+                err(&mut stream, 503, "Service Unavailable", &e.to_string()).await;
+                return Ok(());
+            }
+            let requested = body.get("model").and_then(|m| m.as_str());
+            let difficulty = body.get("difficulty").and_then(|d| d.as_str()).unwrap_or("normal");
+            let model = state.gateway.select(requested, "reason", difficulty, false);
+            let messages = with_memory(&state.memory,
+                body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
+            let grants = parse_grants(&body);
+            let mode = match body.get("mode").and_then(|m| m.as_str()) {
+                Some("autonomous") => ginexus_agent::Mode::Autonomous,
+                _ => ginexus_agent::Mode::Hitl,
+            };
+            let bound = BoundModel { gateway: &state.gateway, model };
+            let agent = AgentLoop { model: &bound, registry: &state.registry, hitl: &state.hitl,
+                                    max_iters: 6, depth: 0, mode };
+
+            let hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+            if stream.write_all(hdr.as_bytes()).await.is_err() {
+                return Ok(());
+            }
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let tok_tx = tx.clone();
+            let ev_tx = tx.clone();
+            let on_token = move |t: String| {
+                let _ = tok_tx.send(format!("event: token\ndata: {}\n\n",
+                                            serde_json::to_string(&t).unwrap_or_default()));
+            };
+            let on_event = move |name: String, phase: String| {
+                let _ = ev_tx.send(format!("event: tool\ndata: {}\n\n", json!({"name": name, "phase": phase})));
+            };
+            let runner = async {
+                let res = agent
+                    .run_streaming(messages, &grants, Some(&state.approvals), now_ms(), &on_token, &on_event)
+                    .await;
+                let status = match res.status {
+                    AgentStatus::Final => "final",
+                    AgentStatus::PendingApproval => "pending_approval",
+                    AgentStatus::MaxIters => "max_iters",
+                };
+                let _ = state.audit.record("agent_stream", json!({"status": status}));
+                let done = json!({"status": status, "answer": res.answer, "pending": res.pending,
+                                  "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()});
+                let _ = tx.send(format!("event: done\ndata: {}\n\n", done));
+                // tx + the closures' senders drop when this future completes → rx closes → drain ends.
+            };
+            let drain = async {
+                while let Some(frame) = rx.recv().await {
+                    if stream.write_all(frame.as_bytes()).await.is_err() {
+                        break;
+                    }
+                }
+                let _ = stream.write_all(b"data: [DONE]\n\n").await;
+            };
+            tokio::join!(runner, drain);
+        }
         ("POST", "/v1/consolidate") => {
             // Self-improvement / learning loop: distill long-term memory into a durable core "profile"
             // block (always injected into context). Done in ONE model call for speed + bounded context:
