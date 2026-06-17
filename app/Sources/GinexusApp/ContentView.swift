@@ -114,11 +114,40 @@ struct ContentView: View {
                         ProgressView(value: model.pullProgress).tint(Brand.ember500)
                     }
                 }
+                // Live Hugging Face type-ahead (GGUF repos) — tap to fill the pull field.
+                if !model.hfResults.isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(model.hfResults) { r in
+                                Button(action: { model.pickHF(r) }) {
+                                    HStack {
+                                        Text(r.id).font(.system(size: 11, design: .monospaced))
+                                            .foregroundStyle(Brand.bone50).lineLimit(1)
+                                        if r.gated {
+                                            Text("gated").font(.system(size: 8, weight: .bold, design: .monospaced))
+                                                .foregroundStyle(Brand.ember500)
+                                        }
+                                        Spacer()
+                                        Text(dlFmt(r.downloads)).font(.system(size: 9, design: .monospaced))
+                                            .foregroundStyle(Brand.muted)
+                                    }
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                    .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.06), lineWidth: 1))
+                }
                 HStack(spacing: 8) {
-                    TextField("model name or hf.co/<org>/<repo>:<QUANT>", text: $model.pullInput)
+                    TextField("search Hugging Face, or paste a tag / hf.co/<org>/<repo>:<QUANT>", text: $model.pullInput)
                         .textFieldStyle(.plain).font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(Brand.bone50).padding(10).background(Brand.ink800)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .onChange(of: model.pullInput) { _, _ in model.scheduleHFSearch() }
                         .onSubmit { model.pullModel(model.pullInput) }
                     Button(action: { model.pullModel(model.pullInput) }) {
                         Text("PULL").font(.system(size: 11, weight: .bold, design: .monospaced)).kerning(1)
@@ -144,6 +173,12 @@ struct ContentView: View {
         }
         .buttonStyle(.plain).disabled(model.pulling)
         .help("Pull \(ref)")
+    }
+
+    private func dlFmt(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM↓", Double(n) / 1_000_000) }
+        if n >= 1_000 { return "\(n / 1_000)K↓" }
+        return "\(n)↓"
     }
 
     /// The "+" menu inside the input row: capabilities that act on your message, plus attachments

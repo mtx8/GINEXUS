@@ -37,6 +37,13 @@ struct MemFact: Identifiable, Sendable {
     let origin: String   // "trusted" | "untrusted"
 }
 
+/// A Hugging Face model repo surfaced by type-ahead search (GGUF, pullable via Ollama hf.co).
+struct HFModel: Identifiable, Sendable {
+    let id: String        // "<org>/<repo>"
+    let downloads: Int
+    let gated: Bool
+}
+
 /// A file or image attached to the NEXT message via the "+" menu.
 struct Attachment: Identifiable, Sendable {
     let id = UUID()
@@ -96,6 +103,9 @@ final class AppModel: ObservableObject {
     @Published var pullStatus = ""
     @Published var pullProgress: Double = 0
     @Published var pulling = false
+    /// Live Hugging Face type-ahead results for the pull field.
+    @Published var hfResults: [HFModel] = []
+    private var hfSearchTask: Task<Void, Never>?
     /// qwen3-vl (vision) needs Ollama ≥ 0.12.7; surface an upgrade prompt when older.
     var ollamaNeedsUpgradeForVision: Bool {
         !ollamaVersion.isEmpty && versionLess(ollamaVersion, "0.12.7")
@@ -355,6 +365,42 @@ final class AppModel: ObservableObject {
             if x != y { return x < y }
         }
         return false
+    }
+
+    /// Debounced Hugging Face type-ahead for the pull field. Skips when the user has already typed a
+    /// concrete ref (registry tag with ':' or an hf.co/ path).
+    func scheduleHFSearch() {
+        hfSearchTask?.cancel()
+        let q = pullInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.count < 2 || q.hasPrefix("hf.co/") || q.contains(":") {
+            hfResults = []
+            return
+        }
+        hfSearchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if Task.isCancelled { return }
+            await self?.searchHF(q)
+        }
+    }
+    private func searchHF(_ q: String) async {
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["query": q])
+        let res = await Task.detached {
+            UDSClient.request(socketPath: sock, method: "POST", path: "/v1/hf/search", token: tok, jsonBody: body)
+        }.value
+        if Task.isCancelled { return }
+        guard case .success(let r) = res, let d = r.body.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+        let arr = (o["results"] as? [[String: Any]]) ?? []
+        hfResults = arr.compactMap { m in
+            guard let id = m["id"] as? String, !id.isEmpty else { return nil }
+            return HFModel(id: id, downloads: (m["downloads"] as? Int) ?? 0, gated: (m["gated"] as? Bool) ?? false)
+        }
+    }
+    /// Pick an HF result → set the pull field to its Ollama hf.co ref (Ollama picks a default quant).
+    func pickHF(_ m: HFModel) {
+        pullInput = "hf.co/\(m.id)"
+        hfResults = []
     }
 
     // MARK: attachments (via the + menu)
