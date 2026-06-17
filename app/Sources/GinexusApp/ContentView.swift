@@ -209,14 +209,7 @@ struct ContentView: View {
                                     .foregroundStyle(Brand.ember500)
                             }
                         }
-                        if !msg.text.isEmpty {
-                            Text(msg.text + "▌")
-                                .font(.system(size: 14)).foregroundStyle(Brand.bone50)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true)
-                        } else if msg.status == nil {
-                            Text("▌").font(.system(size: 14)).foregroundStyle(Brand.muted)
-                        }
+                        StreamingText(text: msg.text)
                     }
                 } else {
                     // Finalized assistant reply — content-aware rich rendering (text/code/images/…).
@@ -255,5 +248,32 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .disabled(model.sending || !model.connected)
         }
+    }
+}
+
+/// Streaming answer text with a terminal-style BLINKING filled cursor in the SEND-button accent
+/// (ember). The cursor glyph is always present but alternates ember ⇄ clear, so it blinks in place
+/// with no layout reflow. Inline at the end of the (wrapping) text.
+private struct StreamingText: View {
+    let text: String
+    @State private var on = true
+    private let blink = Timer.publish(every: 0.53, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        Text(attributed)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onReceive(blink) { _ in on.toggle() }
+    }
+
+    private var attributed: AttributedString {
+        var s = AttributedString(text)
+        s.font = .system(size: 14)
+        s.foregroundColor = Brand.bone50
+        var cursor = AttributedString("▌")
+        cursor.font = .system(size: 14)
+        cursor.foregroundColor = on ? Brand.ember500 : .clear
+        return s + cursor
     }
 }
