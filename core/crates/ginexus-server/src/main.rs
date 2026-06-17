@@ -503,15 +503,11 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 err(&mut stream, 400, "Bad Request", "provide 'data' (export JSON) or 'path'").await;
                 return Ok(());
             };
-            // REQUIRED pre-step: scrub PII/secrets in-core (Rust sanitizer) before anything enters
-            // memory. Default on; `sanitize:false` only for already-sanitized input.
+            // REQUIRED pre-step: scrub PII/secrets in-core before anything enters memory. Sanitizing
+            // happens per kept message inside ingest (fast — only the messages we keep, not the whole
+            // multi-MB export). Default on; `sanitize:false` only for already-sanitized input.
             let sanitize = body.get("sanitize").and_then(|s| s.as_bool()).unwrap_or(true);
-            let to_ingest = if sanitize {
-                ginexus_sanitize::Sanitizer::new().sanitize_json_text(&json).unwrap_or(json)
-            } else {
-                json
-            };
-            match ginexus_memory::ingest::ingest_str(&state.memory, &to_ingest, include) {
+            match ginexus_memory::ingest::ingest_str(&state.memory, &json, include, sanitize) {
                 Ok(rep) => {
                     let _ = state.audit.record(
                         "ingest",

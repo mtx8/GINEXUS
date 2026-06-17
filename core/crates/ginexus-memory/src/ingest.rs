@@ -57,41 +57,13 @@ pub fn detect_source(root: &Value) -> ExportSource {
     ExportSource::Generic
 }
 
-/// Light, dependency-free defense-in-depth scrub. Token-based: redacts emails, obvious API-key
-/// shapes, and long digit runs. The operator's sanitizer is the canonical, thorough pass.
-fn scrub(s: &str) -> String {
-    s.split_whitespace()
-        .map(|tok| {
-            let core: String = tok.chars().filter(|c| !c.is_whitespace()).collect();
-            let lower = core.to_ascii_lowercase();
-            // email-ish
-            if core.contains('@') && core.contains('.') {
-                return "[redacted-email]".to_string();
-            }
-            // common secret prefixes
-            if lower.starts_with("sk-")
-                || lower.starts_with("ghp_")
-                || lower.starts_with("gho_")
-                || lower.starts_with("akia")
-                || lower.starts_with("xoxb-")
-                || lower.starts_with("xoxp-")
-            {
-                return "[redacted-secret]".to_string();
-            }
-            // long digit run (card/acct/phone-ish) — count digits in the token
-            let digits = core.chars().filter(|c| c.is_ascii_digit()).count();
-            if digits >= 12 {
-                return "[redacted-number]".to_string();
-            }
-            tok.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Normalize + cap + scrub one message, append it as an Untrusted fact. Returns true if loaded.
+/// Normalize + cap + sanitize one message, append it as an Untrusted fact. Returns true if loaded.
+/// The canonical Rust sanitizer (when provided) scrubs PII/secrets HERE — only the messages we
+/// keep are processed (small strings → fast + no catastrophic backtracking, unlike sanitizing the
+/// whole multi-MB export upfront). One shared Sanitizer per import → consistent placeholders.
 fn push_fact(
     store: &MemoryStore, report: &mut IngestReport, source_label: &str, role: &str, raw: &str,
+    san: Option<&ginexus_sanitize::Sanitizer>,
 ) -> bool {
     let text = raw.trim();
     if text.is_empty() || report.facts_loaded >= MAX_FACTS {
@@ -103,7 +75,11 @@ fn push_fact(
         return false;
     }
     let who = if role == "assistant" { "assistant" } else { "you" };
-    let fact = format!("[{source_label} · {who}] {}", scrub(text));
+    let clean = match san {
+        Some(s) => s.sanitize_text(text),
+        None => text.to_string(),
+    };
+    let fact = format!("[{source_label} · {who}] {clean}");
     store.append_fact(&fact, Origin::Untrusted);
     report.facts_loaded += 1;
     true
@@ -126,10 +102,12 @@ fn chatgpt_parts(message: &Value) -> String {
 
 /// Ingest a parsed export. `include_assistant=false` keeps only the user's own words (the
 /// strongest "about me" signal); true also loads assistant replies. Always Origin::Untrusted.
-pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool) -> IngestReport {
+pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool, sanitize: bool) -> IngestReport {
     let source = detect_source(root);
     let label = source.label();
     let mut report = IngestReport { source: label.to_string(), ..Default::default() };
+    // One shared sanitizer for the whole import → consistent placeholders, scrub only kept messages.
+    let san = if sanitize { Some(ginexus_sanitize::Sanitizer::new()) } else { None };
     let convs = match root.as_array() {
         Some(a) => a,
         None => return report,
@@ -155,7 +133,7 @@ pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool) 
                             continue;
                         }
                         let text = chatgpt_parts(msg);
-                        push_fact(store, &mut report, label, role, &text);
+                        push_fact(store, &mut report, label, role, &text, san.as_ref());
                     }
                 }
             }
@@ -169,7 +147,7 @@ pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool) 
                             continue;
                         }
                         let text = m.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                        push_fact(store, &mut report, label, role, text);
+                        push_fact(store, &mut report, label, role, text, san.as_ref());
                     }
                 }
             }
@@ -196,7 +174,7 @@ pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool) 
                         .or_else(|| m.get("text"))
                         .and_then(|t| t.as_str())
                         .unwrap_or("");
-                    push_fact(store, &mut report, label, role, text);
+                    push_fact(store, &mut report, label, role, text, san.as_ref());
                 }
             }
         }
@@ -204,12 +182,13 @@ pub fn ingest_value(store: &MemoryStore, root: &Value, include_assistant: bool) 
     report
 }
 
-/// Parse a JSON export string and ingest it.
+/// Parse a JSON export string and ingest it. `sanitize` runs the canonical PII/secret scrub on each
+/// kept message before it enters memory (the required pre-step; pass false only for clean input).
 pub fn ingest_str(
-    store: &MemoryStore, json: &str, include_assistant: bool,
+    store: &MemoryStore, json: &str, include_assistant: bool, sanitize: bool,
 ) -> Result<IngestReport, String> {
     let root: Value = serde_json::from_str(json).map_err(|e| format!("bad export JSON: {e}"))?;
-    Ok(ingest_value(store, &root, include_assistant))
+    Ok(ingest_value(store, &root, include_assistant, sanitize))
 }
 
 /// HITL-gated agent tool: "import my ChatGPT export at <path>". Bulk import of personal data is
@@ -236,7 +215,7 @@ pub fn ingest_tool(store: Arc<MemoryStore>) -> Tool {
                 Ok(s) => s,
                 Err(e) => return ToolResult::err(format!("read {path}: {e}")),
             };
-            match ingest_str(&store, &json, include) {
+            match ingest_str(&store, &json, include, true) {
                 Ok(r) => ToolResult::ok(format!(
                     "imported {} facts from {} export ({} conversations, {} skipped)",
                     r.facts_loaded, r.source, r.conversations, r.skipped
@@ -277,7 +256,7 @@ mod tests {
             "n2":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["Noted."]}}}
           }}
         ]"#;
-        let rep = ingest_str(&store, export, false).unwrap();
+        let rep = ingest_str(&store, export, false, false).unwrap();
         assert_eq!(rep.source, "chatgpt");
         assert_eq!(rep.facts_loaded, 1); // user only
         let hits = store.search("Okinawa dark mode", 5);
@@ -297,7 +276,7 @@ mod tests {
             {"sender":"assistant","text":"Great, tell me more"}
           ]}
         ]"#;
-        let rep = ingest_str(&store, export, true).unwrap();
+        let rep = ingest_str(&store, export, true, false).unwrap();
         assert_eq!(rep.source, "claude");
         assert_eq!(rep.facts_loaded, 2);
         assert!(store.search("flagship GINEXUS", 5)[0].text.contains("[claude · you]"));
@@ -310,16 +289,16 @@ mod tests {
         let store = MemoryStore::open(dir.clone());
         let export = r#"[
           {"messages":[
-            {"role":"user","content":"contact me at dreb@example.com or key sk-ABCDEF1234567890"},
+            {"role":"user","content":"contact me at dreb@example.com or key sk-ant-abcdefghijklmnopqrstuvwxyz0123"},
             {"role":"assistant","content":"ok"}
           ]}
         ]"#;
-        let rep = ingest_str(&store, export, false).unwrap();
+        let rep = ingest_str(&store, export, false, true).unwrap(); // sanitize on
         assert_eq!(rep.facts_loaded, 1);
         let hit = &store.search("contact me", 5)[0];
-        assert!(hit.text.contains("[redacted-email]"));
-        assert!(hit.text.contains("[redacted-secret]"));
-        assert!(!hit.text.contains("example.com"));
+        assert!(hit.text.contains("[EMAIL_1]"));
+        assert!(hit.text.contains("[API_KEY_1]"));
+        assert!(!hit.text.contains("example.com") && !hit.text.contains("sk-ant-"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -331,7 +310,7 @@ mod tests {
         let export = format!(
             r#"[{{"messages":[{{"role":"user","content":""}},{{"role":"user","content":"{big}"}}]}}]"#
         );
-        let rep = ingest_str(&store, &export, false).unwrap();
+        let rep = ingest_str(&store, &export, false, false).unwrap();
         assert_eq!(rep.facts_loaded, 0);
         assert_eq!(rep.skipped, 2);
         std::fs::remove_dir_all(&dir).ok();

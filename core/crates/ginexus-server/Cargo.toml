@@ -20,4 +20,3 @@ ginexus-gateway.workspace = true
 ginexus-mcp.workspace = true
 ginexus-memory.workspace = true
 ginexus-skills.workspace = true
-ginexus-sanitize.workspace = true
