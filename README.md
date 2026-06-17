@@ -13,15 +13,27 @@ sanitized personal-data exports (ChatGPT/Claude/Gemini/Perplexity).
 shell) · `ai-export-sanitizer` (ingest) · `Hermes` (always-on body, later).
 
 ## Status
-**Design phase.** See the master design:
+**v1 daily-driver works end-to-end** (acceptance: *researched X → wrote it to a file → recalled it
+the next session*). The core engine is **Rust** (`core/` — crates: security, agent, gateway, mcp,
+memory, skills, sanitize, server; 80+ tests green). Python is the reference impl only, retired from
+the runtime path (ADR 0003).
+
+Shipped: SP0 security spine · SP1 model router · SP1.5 notarized self-contained app (Rust core
+embedded + signed) · SP2 agent loop + MCP host · SP4 web + safe terminal · SP3 two-tier memory +
+injection-quarantined ingestion · **semantic recall** (Rust-native vector cosine over Ollama
+embeddings) · SP5 macOS integration (Shortcuts/EventKit + Touch-ID approval) · SP6 image generation ·
+hot-loadable **skills** · **subagents** (delegate) · **scheduler/heartbeat** · **autonomy modes**
+(HITL default + fully-autonomous + non-overridable hard gate). The operator's **real ChatGPT export
+(3,779 messages)** is sanitized + embedded into quarantined memory in ~25s (batched embeddings).
+
+Remaining: SP7 Home Assistant IoT · SP8 self-improvement + Council/Group mode · SP9 Hermes always-on
+body + iPhone/Watch. See the master design:
 [`docs/superpowers/specs/2026-06-15-ginexus-master-design.md`](docs/superpowers/specs/2026-06-15-ginexus-master-design.md).
 
-Built as 10 sub-projects (SP0–SP9); first build is **SP0 → SP1 → SP2**.
-
 ## Architecture (one line)
-Native SwiftUI shell (signed, non-sandboxed, notarized) owns OS calls + MCP host → Python/uv
-FastAPI sidecar runs MLX/mflux inference over UDS+Keychain → LiteLLM-style OpenAI-compatible router
-(Tier 0 Apple FM / Tier 1 MLX local / Tier 2 API) → tools as MCP, two-tier local memory, deep
-macOS + Home Assistant integration.
+Native SwiftUI shell (signed, non-sandboxed, notarized) owns OS calls + Touch-ID approval → UDS +
+HMAC-token → **Rust `ginexus-core`** (agent loop, model router, MCP host, two-tier memory + ingest
+sanitizer, kill switch, hash-chain audit) → HTTP → local model servers (Ollama / MLX; optional
+Python media sidecar for mflux). Auto/manual model selector (fast/smart/embed/code tiers).
 
 See [`CLAUDE.md`](CLAUDE.md) for full session context.
