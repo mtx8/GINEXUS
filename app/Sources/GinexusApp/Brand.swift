@@ -146,34 +146,30 @@ struct TacticalLabel: View {
     }
 }
 
-/// The GINEXUS wordmark — ONE word, two-tone: GI (bone) + NEXUS (ember). No italic second word.
+/// The GINEXUS wordmark — ONE word, ONE color (the brand ember logotype).
 struct Wordmark: View {
     var size: CGFloat = 22
+    var color: Color = Brand.ember500
     var body: some View {
-        HStack(spacing: 0) {
-            Text("GI").foregroundStyle(Brand.bone50)
-            Text("NEXUS").foregroundStyle(Brand.ember500)
-        }
-        .font(Brand.display(size, weight: .heavy)).kerning(0.5)
+        Text("GINEXUS").foregroundStyle(color)
+            .font(Brand.display(size, weight: .heavy)).kerning(0.5)
     }
 }
 
-/// The abstract ember nexus app glyph (no text/name — per the no-name-on-logo rule).
+/// The abstract ember nexus app glyph (no text/name — per the no-name-on-logo rule). Clean + thin:
+/// a hairline ember-outlined square holding a fine 6-point nexus starburst. No thick gradient ring.
 struct GlyphMark: View {
     var size: CGFloat = 26
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.3, style: .continuous).fill(Brand.emberConic)
-            RoundedRectangle(cornerRadius: size * 0.3 - 2, style: .continuous)
-                .fill(Brand.ink900).padding(2.5)
-            // 6-point nexus starburst in ember.
+            RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                .stroke(Brand.ember500.opacity(0.5), lineWidth: 1)
             ForEach(0..<6, id: \.self) { i in
                 Capsule().fill(Brand.ember500)
-                    .frame(width: 1.6, height: size * 0.42)
-                    .offset(y: -size * 0.0)
+                    .frame(width: 1.2, height: size * 0.38)
                     .rotationEffect(.degrees(Double(i) * 60))
             }
-            Circle().fill(Brand.ember300).frame(width: size * 0.16, height: size * 0.16)
+            Circle().fill(Brand.ember300).frame(width: size * 0.13, height: size * 0.13)
         }
         .frame(width: size, height: size)
     }
