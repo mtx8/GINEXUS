@@ -5,5 +5,5 @@ pub mod tools;
 pub mod loop_;
 pub mod app_tools;
 
-pub use loop_::{AgentLoop, AgentResult, AgentStatus, ApprovalGrant, AssistantTurn, ModelCall, ToolCall};
+pub use loop_::{AgentLoop, AgentResult, AgentStatus, ApprovalGrant, AssistantTurn, Mode, ModelCall, ToolCall};
 pub use tools::{Tool, ToolRegistry, ToolResult, notes_registry};

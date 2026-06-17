@@ -69,6 +69,16 @@ pub const MAX_DELEGATE_DEPTH: usize = 1;
 /// Max sub-tasks per delegate call (caps fan-out).
 const MAX_SUBTASKS: usize = 4;
 
+/// Autonomy mode (per request/agent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Human-in-the-loop (default): every irreversible tool requires approval.
+    Hitl,
+    /// Fully autonomous: irreversible tools run unattended — EXCEPT hard-gated ones (money /
+    /// external comms / legal / irreversible delete / arbitrary execution), which always gate.
+    Autonomous,
+}
+
 pub struct AgentLoop<'a> {
     pub model: &'a dyn ModelCall,
     pub registry: &'a ToolRegistry,
@@ -76,6 +86,8 @@ pub struct AgentLoop<'a> {
     pub max_iters: usize,
     /// Delegation depth (0 = top-level agent). Subagents run at depth+1 and can't delegate at MAX.
     pub depth: usize,
+    /// Autonomy mode for this run.
+    pub mode: Mode,
 }
 
 /// The synthetic `delegate` tool the loop advertises (handled by the loop itself, not the registry).
@@ -154,9 +166,12 @@ impl<'a> AgentLoop<'a> {
                     }
                 };
                 let target = target_of(&tc.name, &tc.arguments);
-                if tool.irreversible
+                // HITL mode gates every irreversible tool; autonomous mode gates only hard-gated
+                // ones (money/comms/legal/delete/arbitrary-exec) — the non-overridable hard gate.
+                let needs_approval = tool.irreversible
                     && self.hitl.requires_confirmation(&Action::new(tc.name.clone(), target.clone()))
-                {
+                    && (self.mode == Mode::Hitl || tool.hard_gate);
+                if needs_approval {
                     let mut ok = false;
                     if let Some(v) = approvals {
                         for g in grants {
@@ -223,6 +238,7 @@ impl<'a> AgentLoop<'a> {
                 hitl: self.hitl,
                 max_iters: self.max_iters.min(4),
                 depth: self.depth + 1,
+                mode: Mode::Hitl, // workers are read-only; mode is moot, Hitl is the safe default
             };
             let msgs = vec![json!({"role": "user", "content": &task})];
             // Box the recursive call so the returned future has a finite size.
@@ -299,7 +315,7 @@ mod tests {
             final_turn("The note says: hello world"),
         ]);
         let hitl = HitlPolicy::new();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
         let res = loop_.run(vec![json!({"role": "user", "content": "read n"})], &[], None, NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert!(res.answer.contains("hello world"));
@@ -313,7 +329,7 @@ mod tests {
         let model = Mock::new(vec![call_turn(tc("write_note", json!({"name": "x", "content": "d"})))]);
         let hitl = HitlPolicy::new();
         let av = ApprovalVerifier::new(key(), BOOT).unwrap();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
         let res = loop_.run(vec![], &[], Some(&av), NOW).await;
         assert_eq!(res.status, AgentStatus::PendingApproval);
         assert_eq!(res.pending.unwrap()["tool"], "write_note");
@@ -332,7 +348,7 @@ mod tests {
         let model = Mock::new(vec![call_turn(tc("write_note", args)), final_turn("saved")]);
         let hitl = HitlPolicy::new();
         let av = ApprovalVerifier::new(key(), BOOT).unwrap();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
         let res = loop_.run(vec![], &[grant], Some(&av), NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert_eq!(res.answer, "saved");
@@ -346,7 +362,7 @@ mod tests {
         let reg = notes_registry(dir);
         let model = Mock::new(vec![call_turn(tc("read_note", json!({"name": "n"})))]); // never finals
         let hitl = HitlPolicy::new();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 3, depth: 0 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 3, depth: 0, mode: Mode::Hitl };
         let res = loop_.run(vec![], &[], None, NOW).await;
         assert_eq!(res.status, AgentStatus::MaxIters);
     }
@@ -360,7 +376,7 @@ mod tests {
             final_turn("recovered"),
         ]);
         let hitl = HitlPolicy::new();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
         let res = loop_.run(vec![], &[], None, NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert_eq!(res.answer, "recovered");
@@ -378,7 +394,7 @@ mod tests {
             final_turn("Done — a subagent reported: 42"),
         ]);
         let hitl = HitlPolicy::new();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0 };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
         let res = loop_.run(vec![json!({"role": "user", "content": "do it"})], &[], None, NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert!(res.trace.iter().any(|(n, _)| n == "delegate"));
@@ -396,10 +412,40 @@ mod tests {
             final_turn("recovered"),
         ]);
         let hitl = HitlPolicy::new();
-        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: MAX_DELEGATE_DEPTH };
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: MAX_DELEGATE_DEPTH, mode: Mode::Hitl };
         let res = loop_.run(vec![], &[], None, NOW).await;
         assert_eq!(res.status, AgentStatus::Final);
         assert_eq!(res.answer, "recovered");
         assert!(res.trace.contains(&("unknown_tool".to_string(), false)));
+    }
+
+    #[tokio::test]
+    async fn autonomous_runs_ordinary_irreversible_without_approval() {
+        let dir = tmp_dir();
+        let reg = notes_registry(dir.clone());
+        let args = json!({"name": "x", "content": "data"});
+        let model = Mock::new(vec![call_turn(tc("write_note", args)), final_turn("saved")]);
+        let hitl = HitlPolicy::new();
+        let av = ApprovalVerifier::new(key(), BOOT).unwrap();
+        // write_note is irreversible but NOT hard-gated → autonomous mode runs it unattended.
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Autonomous };
+        let res = loop_.run(vec![], &[], Some(&av), NOW).await;
+        assert_eq!(res.status, AgentStatus::Final);
+        assert_eq!(res.answer, "saved");
+        assert_eq!(reg.get("read_note").unwrap().run(json!({"name": "x"})).output, "data");
+    }
+
+    #[tokio::test]
+    async fn autonomous_still_gates_hard_gate_tool() {
+        let dir = tmp_dir();
+        let mut reg = notes_registry(dir.clone());
+        reg.register(crate::tools::terminal_tool(dir, vec!["echo".to_string()])); // hard_gated
+        let model = Mock::new(vec![call_turn(tc("run_command", json!({"program": "echo", "args": ["hi"]})))]);
+        let hitl = HitlPolicy::new();
+        let av = ApprovalVerifier::new(key(), BOOT).unwrap();
+        // Even in autonomous mode, the hard gate (arbitrary execution) requires approval.
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Autonomous };
+        let res = loop_.run(vec![], &[], Some(&av), NOW).await;
+        assert_eq!(res.status, AgentStatus::PendingApproval);
     }
 }

@@ -466,8 +466,14 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             let messages = with_memory(&state.memory,
                 body.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default());
             let grants = parse_grants(&body);
+            // Autonomy mode: "autonomous" runs irreversible tools unattended EXCEPT hard-gated ones
+            // (money/comms/legal/delete/arbitrary-exec); default is human-in-the-loop.
+            let mode = match body.get("mode").and_then(|m| m.as_str()) {
+                Some("autonomous") => ginexus_agent::Mode::Autonomous,
+                _ => ginexus_agent::Mode::Hitl,
+            };
             let bound = BoundModel { gateway: &state.gateway, model };
-            let agent = AgentLoop { model: &bound, registry: &state.registry, hitl: &state.hitl, max_iters: 6, depth: 0 };
+            let agent = AgentLoop { model: &bound, registry: &state.registry, hitl: &state.hitl, max_iters: 6, depth: 0, mode };
             let res = agent.run(messages, &grants, Some(&state.approvals), now_ms()).await;
             let status = match res.status {
                 AgentStatus::Final => "final",
@@ -577,7 +583,8 @@ async fn heartbeat(state: Arc<AppState>) {
             let model = state.gateway.select(None, "reason", "normal", false);
             let bound = BoundModel { gateway: &state.gateway, model };
             let agent =
-                AgentLoop { model: &bound, registry: &readonly, hitl: &state.hitl, max_iters: 6, depth: 0 };
+                AgentLoop { model: &bound, registry: &readonly, hitl: &state.hitl, max_iters: 6, depth: 0,
+                            mode: ginexus_agent::Mode::Hitl };
             let msgs = with_memory(&state.memory, vec![json!({"role": "user", "content": prompt})]);
             let res = agent.run(msgs, &[], None, now_ms()).await;
             let _ = state.audit.record(

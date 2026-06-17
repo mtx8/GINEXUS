@@ -118,7 +118,8 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
                    "properties": {"name": {"type": "string"}, "input": {"type": "string"}},
                    "required": ["name"]}),
             true, // HITL-gated: a shortcut can do anything
-        ),
+        )
+        .hard_gated(), // arbitrary execution → always approved, even in autonomous mode
     ]
 }
 

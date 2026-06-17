@@ -31,6 +31,10 @@ pub struct Tool {
     pub description: String,
     pub parameters: Value,
     pub irreversible: bool,
+    /// Hard-gate: ALWAYS requires explicit approval, even in fully-autonomous mode (the
+    /// non-overridable gate for money / external comms / legal / irreversible delete / arbitrary
+    /// execution). Ordinary irreversible tools are gated only in HITL mode.
+    pub hard_gate: bool,
     run: ToolFn,
 }
 
@@ -39,7 +43,13 @@ impl Tool {
         name: impl Into<String>, description: impl Into<String>, parameters: Value,
         irreversible: bool, run: ToolFn,
     ) -> Self {
-        Self { name: name.into(), description: description.into(), parameters, irreversible, run }
+        Self { name: name.into(), description: description.into(), parameters, irreversible, hard_gate: false, run }
+    }
+
+    /// Mark this tool as hard-gated (always requires approval, even in autonomous mode).
+    pub fn hard_gated(mut self) -> Self {
+        self.hard_gate = true;
+        self
     }
     pub fn definition(&self) -> Value {
         json!({"type": "function", "function": {
@@ -201,6 +211,7 @@ pub fn terminal_tool(workdir: PathBuf, allowlist: Vec<String>) -> Tool {
             }
         }),
     )
+    .hard_gated() // arbitrary execution → always requires approval, even in autonomous mode
 }
 
 #[cfg(test)]
