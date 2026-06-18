@@ -275,11 +275,12 @@ impl Gateway {
     /// `AssistantTurn` (content + any tool calls) at the end. Tool-call deltas arrive fragmented
     /// (per `index`, with `arguments` concatenated across chunks), so we accumulate them and parse
     /// once complete. Content during a tool-calling turn (model "thinking") streams too — harmless.
-    pub async fn complete_with_tools_streaming<F>(
-        &self, model: &str, messages: &[Value], tools: &[Value], on_token: F,
+    pub async fn complete_with_tools_streaming<F, G>(
+        &self, model: &str, messages: &[Value], tools: &[Value], on_token: F, on_tool: G,
     ) -> Result<AssistantTurn, String>
     where
         F: Fn(&str),
+        G: Fn(&str), // called once with a tool's name the moment it's known (before its arguments)
     {
         use futures_util::StreamExt;
         let ep = self.resolve(model);
@@ -356,6 +357,9 @@ impl Gateway {
                         }
                         if let Some(n) = tc["function"].get("name").and_then(|n| n.as_str()) {
                             if !n.is_empty() {
+                                if e.1.is_empty() {
+                                    on_tool(n); // first time this call's tool is known → signal intent
+                                }
                                 e.1 = n.to_string();
                             }
                         }
@@ -530,10 +534,20 @@ impl ModelCall for BoundModel<'_> {
     }
 
     async fn call_streaming(
-        &self, messages: &[Value], tools: &[Value], on_token: &(dyn Fn(String) + Send + Sync),
+        &self,
+        messages: &[Value],
+        tools: &[Value],
+        on_token: &(dyn Fn(String) + Send + Sync),
+        on_event: &(dyn Fn(String, String) + Send + Sync),
     ) -> AssistantTurn {
         self.gateway
-            .complete_with_tools_streaming(&self.model, messages, tools, |t| on_token(t.to_string()))
+            .complete_with_tools_streaming(
+                &self.model,
+                messages,
+                tools,
+                |t| on_token(t.to_string()),
+                |name| on_event(name.to_string(), "intent".to_string()), // model is about to call this tool
+            )
             .await
             .unwrap_or_else(|e| AssistantTurn { content: Some(format!("model error: {e}")), tool_calls: vec![], usage: Usage::default() })
     }

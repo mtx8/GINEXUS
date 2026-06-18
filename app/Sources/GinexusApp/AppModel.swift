@@ -983,10 +983,13 @@ final class AppModel: ObservableObject {
                let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
                 let name = (o["name"] as? String) ?? "tool"
                 switch (o["phase"] as? String) {
-                case "start":
-                    flushActivity(i)         // finalize any lingering card so the timeline can't double it
+                case "intent", "start":
+                    // "intent" = the model is ABOUT to call this tool (fires as soon as its name is
+                    // known, so the card shows during the slow compose); "start" = now executing.
+                    // Same tool → keep the one card (don't double); finalize only a DIFFERENT prior one.
+                    if let prev = chat[i].status, prev != name { flushActivity(i) }
+                    if chat[i].status != name { activityStartedAt = Date() }
                     chat[i].status = name    // the live card animates this activity ("Running…")
-                    activityStartedAt = Date()
                     chat[i].text = ""        // the final answer streams AFTER the tool; drop any preamble
                 case "done":
                     // Document tools finish in ~1ms, so the live card would never be seen. Keep it up

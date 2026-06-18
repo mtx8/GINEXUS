@@ -48,10 +48,17 @@ impl Usage {
 pub trait ModelCall: Send + Sync {
     async fn call(&self, messages: &[Value], tools: &[Value]) -> AssistantTurn;
     /// Streaming variant: forward each content delta to `on_token` as it arrives, returning the
-    /// assembled turn. Default just calls `call` then emits the whole content once — so mocks and
-    /// the non-streaming path work unchanged; real model bindings override this to truly stream.
+    /// assembled turn. `on_event(tool, phase)` lets the binding report a tool the model is ABOUT to
+    /// call ("intent") as soon as its name is known — before the (possibly long) arguments finish —
+    /// so the UI can show "Creating document / Generating image …" for the whole time it's working.
+    /// Default just calls `call` then emits the whole content once (no intent) — so mocks and the
+    /// non-streaming path work unchanged; real model bindings override this to truly stream.
     async fn call_streaming(
-        &self, messages: &[Value], tools: &[Value], on_token: &(dyn Fn(String) + Send + Sync),
+        &self,
+        messages: &[Value],
+        tools: &[Value],
+        on_token: &(dyn Fn(String) + Send + Sync),
+        _on_event: &(dyn Fn(String, String) + Send + Sync),
     ) -> AssistantTurn {
         let turn = self.call(messages, tools).await;
         if let Some(c) = &turn.content {
@@ -295,7 +302,7 @@ impl<'a> AgentLoop<'a> {
         }
 
         for _ in 0..self.max_iters {
-            let turn = self.model.call_streaming(&msgs, &defs, on_token).await;
+            let turn = self.model.call_streaming(&msgs, &defs, on_token, on_event).await;
             total_usage.add(turn.usage);
             if turn.tool_calls.is_empty() {
                 return AgentResult {
