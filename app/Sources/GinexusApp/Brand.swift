@@ -227,11 +227,23 @@ struct BlockCard<Content: View>: View {
     var icon: String? = nil
     var accent: Color = Brand.bone300
     var active: Bool = false
+    /// Pulse the header icon — used by the live "what GINEXUS is doing now" card.
+    var iconAnimating: Bool = false
+    @State private var pulse = false
     @ViewBuilder var content: () -> Content
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
             HStack(spacing: 7) {
-                if let icon { Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(accent) }
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(accent)
+                        .scaleEffect(iconAnimating && pulse ? 1.22 : 1.0)
+                        .opacity(iconAnimating && !pulse ? 0.55 : 1.0)
+                        .onAppear {
+                            if iconAnimating {
+                                withAnimation(.easeInOut(duration: 0.72).repeatForever(autoreverses: true)) { pulse = true }
+                            }
+                        }
+                }
                 Text(label.uppercased()).font(Brand.mono(10, weight: .semibold)).kerning(1.4).foregroundStyle(accent)
                 Spacer(minLength: 0)
             }

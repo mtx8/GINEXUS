@@ -238,6 +238,50 @@ struct ContentView: View {
     /// agent FLOW: an "Action" card per tool the agent used (the execution blocks from your reference),
     /// then the answer as clean bare prose led by the brand glyph. Plain chats (no tools) show no
     /// cards — just the prose — so it stays clean, not gimmicky.
+    /// Contextual SF Symbol for what GINEXUS is doing — the live/finished tool drives the icon.
+    static func activityIcon(_ tool: String) -> String {
+        let t = tool.lowercased()
+        switch true {
+        case t.contains("image") || t.contains("photo"):              return "photo"
+        case t.contains("document") || t.contains("pdf") || t.contains("docx"): return "doc.text"
+        case t.contains("note"):                                       return "square.and.pencil"
+        case t.contains("deep_research") || t.contains("research"):    return "doc.text.magnifyingglass"
+        case t.contains("delegate") || t.contains("subagent") || t.contains("worker"): return "person.2.fill"
+        case t.contains("council"):                                    return "person.3.fill"
+        case t.contains("web") || t.contains("fetch") || t.contains("search"): return "globe"
+        case t.contains("command") || t.contains("terminal") || t.contains("shell"): return "terminal.fill"
+        case t.contains("memory") || t.contains("recall") || t.contains("remember") || t.contains("consolidate"): return "brain.head.profile"
+        case t.contains("obsidian") || t.contains("vault"):            return "books.vertical.fill"
+        case t.contains("ingest") || t.contains("import"):             return "tray.and.arrow.down.fill"
+        case t.contains("calendar"):                                   return "calendar"
+        case t.contains("shortcut"):                                   return "wand.and.rays"
+        case t.contains("status") || t.contains("system"):            return "cpu"
+        default:                                                       return "bolt.fill"
+        }
+    }
+
+    /// Friendly present-tense label for the same activity (raw tool name as the fallback).
+    static func activityLabel(_ tool: String) -> String {
+        let t = tool.lowercased()
+        switch true {
+        case t.contains("image") || t.contains("photo"):              return "Generating image"
+        case t.contains("document") || t.contains("pdf") || t.contains("docx"): return "Creating document"
+        case t.contains("note"):                                       return "Writing note"
+        case t.contains("deep_research") || t.contains("research"):    return "Deep research"
+        case t.contains("delegate") || t.contains("subagent") || t.contains("worker"): return "Agents working"
+        case t.contains("council"):                                    return "Consulting council"
+        case t.contains("web") || t.contains("fetch") || t.contains("search"): return "Researching the web"
+        case t.contains("command") || t.contains("terminal") || t.contains("shell"): return "Running command"
+        case t.contains("memory") || t.contains("recall") || t.contains("remember") || t.contains("consolidate"): return "Working memory"
+        case t.contains("obsidian") || t.contains("vault"):            return "Reading the vault"
+        case t.contains("ingest") || t.contains("import"):             return "Ingesting data"
+        case t.contains("calendar"):                                   return "Checking calendar"
+        case t.contains("shortcut"):                                   return "Running shortcut"
+        case t.contains("status") || t.contains("system"):            return "Checking system"
+        default:                                                       return tool
+        }
+    }
+
     @ViewBuilder private func streamBlock(_ msg: ChatMsg) -> some View {
         if msg.role == "user" {
             HStack(alignment: .top, spacing: 0) {
@@ -253,20 +297,22 @@ struct ContentView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 10) {
-                // Completed agent actions (tools used this turn) → clean Action cards.
+                // Completed agent actions (tools used this turn) → clean Action cards, each with the
+                // icon for what it did (photo / document / research / agents / …).
                 ForEach(Array(msg.steps.enumerated()), id: \.offset) { _, step in
-                    BlockCard(label: "Action · \(step)", icon: "bolt.fill", accent: Brand.ember300) {
+                    BlockCard(label: "\(Self.activityLabel(step))", icon: Self.activityIcon(step), accent: Brand.ember300) {
                         HStack(spacing: 6) {
                             Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Brand.success)
                             Text("Completed").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
                         }
                     }
                 }
-                // Live action card while a tool runs.
+                // Live action card while a tool runs — the icon CHANGES to match the activity and
+                // ANIMATES (pulses) until it finishes.
                 if msg.streaming, let s = msg.status {
-                    BlockCard(label: s, icon: "bolt.fill", accent: Brand.ember300, active: true) {
+                    BlockCard(label: Self.activityLabel(s), icon: Self.activityIcon(s),
+                              accent: Brand.ember300, active: true, iconAnimating: true) {
                         HStack(spacing: 7) {
-                            ProgressView().controlSize(.mini)
                             Text("Running…").font(Brand.mono(11)).foregroundStyle(Brand.ember300)
                         }
                     }
