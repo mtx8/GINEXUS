@@ -258,8 +258,11 @@ pub fn write_document_tool(docs_dir: PathBuf) -> Tool {
     Tool::new(
         "write_document",
         "Create a real document file (PDF or Word .docx) from a title and body text, saved to the \
-         user's local Documents area on this Mac. Use for reports, letters, notes-to-export, etc. \
-         Returns the file path. Args: filename, format ('pdf' or 'docx'), title, content.",
+         user's local Documents area on this Mac. Use for ANY story, article, report, letter, note, \
+         essay, or document the user wants written or exported — including 'a story in a PDF', 'a \
+         report as a docx', etc. This tool ALONE fulfills a document/PDF request; do NOT also call \
+         image_generate unless the user explicitly asked for a picture too. Returns the file path. \
+         Args: filename, format ('pdf' or 'docx'), title, content.",
         json!({"type": "object", "properties": {
             "filename": {"type": "string", "description": "base name, no extension"},
             "format": {"type": "string", "enum": ["pdf", "docx"], "description": "pdf or docx"},
