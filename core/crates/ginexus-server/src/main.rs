@@ -61,7 +61,10 @@ Use tools only when the request needs them, and only the tools it needs — pref
 that fulfills the request. Generate an image ONLY when the user explicitly asks for a picture, \
 image, illustration, photo, drawing, or artwork. For a story, article, report, note, or document \
 (including a PDF or Word/.docx file), use write_document ALONE — never also generate an image \
-unless the user explicitly asked for a picture too.";
+unless the user explicitly asked for a picture too. \
+PRIVACY: never reveal the user's macOS username or an absolute home path in your reply. Refer to \
+files with a ~ shortcut (e.g. `~/Downloads/report.pdf`), and only show the full absolute path if the \
+user explicitly asks for it.";
 
 /// Agent message stack: base guidance + memory preamble + the conversation.
 fn agent_messages(memory: &MemoryStore, raw: Vec<Value>) -> Vec<Value> {

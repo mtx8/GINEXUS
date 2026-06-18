@@ -659,7 +659,13 @@ pub fn write_document_tool(docs_dir: PathBuf) -> Tool {
             let _ = std::fs::create_dir_all(base.as_ref());
             let bytes = if ext == "pdf" { build_pdf(title, content) } else { build_docx(title, content) };
             match std::fs::write(&path, &bytes) {
-                Ok(_) => ToolResult::ok(format!("Created {} ({} bytes) at {}", ext.to_uppercase(), bytes.len(), path.display())),
+                // Report the path with ~ (never the username/absolute home).
+                Ok(_) => ToolResult::ok(format!(
+                    "Created {} ({} bytes) at {}",
+                    ext.to_uppercase(),
+                    bytes.len(),
+                    crate::abbreviate_home(&path.display().to_string())
+                )),
                 Err(e) => ToolResult::err(format!("write failed: {e}")),
             }
         }),
