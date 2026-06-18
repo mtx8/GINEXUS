@@ -1061,11 +1061,16 @@ final class AppModel: ObservableObject {
     /// dir contains a space ("Application Support"), so match the known prefix, not whitespace tokens.
     static func extractImagePath(_ text: String) -> String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let prefix = "\(home)/Library/Application Support/GINEXUS/media/"
-        guard let start = text.range(of: prefix) else { return nil }
-        let rest = text[start.lowerBound...]
-        guard let png = rest.range(of: ".png") else { return nil }
-        return String(rest[..<png.upperBound])
+        let sub = "/Library/Application Support/GINEXUS/media/"
+        // Accept either the absolute path or the privacy-friendly ~ form, then resolve ~ back to home.
+        for prefix in ["\(home)\(sub)", "~\(sub)"] {
+            guard let start = text.range(of: prefix) else { continue }
+            let rest = text[start.lowerBound...]
+            guard let png = rest.range(of: ".png") else { continue }
+            let p = String(rest[..<png.upperBound])
+            return p.hasPrefix("~") ? home + p.dropFirst() : p
+        }
+        return nil
     }
 
     /// Newest generated document (PDF/Word) — surfaced as a Final Output card after write_document.

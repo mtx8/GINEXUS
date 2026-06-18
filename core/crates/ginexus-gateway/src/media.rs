@@ -25,8 +25,9 @@ pub fn image_generate_tool(base: String) -> Tool {
          save it to the user's media folder. Use ONLY when the user EXPLICITLY asks for an image, \
          picture, illustration, photo, drawing, artwork, or visual. Do NOT call this for a story, \
          article, report, note, or document request (including a PDF or Word file) — those need only \
-         `write_document`; never add an illustration unless the user explicitly asked for one. Returns \
-         the saved PNG path — include that exact path in your reply so the app can show it.",
+         `write_document`; never add an illustration unless the user explicitly asked for one. The app \
+         displays the generated image automatically — just tell the user it was created (do NOT paste \
+         the absolute file path or the computer username in your reply).",
         json!({"type": "object",
                "properties": {
                    "prompt": {"type": "string"},
@@ -64,7 +65,7 @@ pub fn image_generate_tool(base: String) -> Tool {
                             ToolResult::err("sidecar returned no path")
                         } else {
                             let ms = v.get("ms").and_then(|m| m.as_i64()).unwrap_or(0);
-                            ToolResult::ok(format!("Image saved to {path} ({ms} ms)."))
+                            ToolResult::ok(format!("Image saved to {} ({ms} ms).", ginexus_agent::abbreviate_home(path)))
                         }
                     }
                     Err(e) => ToolResult::err(format!("bad sidecar reply: {e}")),
