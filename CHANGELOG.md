@@ -10,14 +10,48 @@ running history.
 
 - **v1 acceptance test PASSES** end-to-end on the Rust core: research (web_fetch) → write-to-file
   (HITL approval) → remember (persistent memory), with cross-language (Swift↔Rust) approval-token parity.
-- **8 Rust crates** — security, agent, gateway, mcp, memory, skills, sanitize, server. **100 Rust tests + 14 Swift tests.**
-- **App**: self-contained signed `GINEXUS.app` (embeds the Rust core), token-streaming chat with
-  content-aware rendering, **conversation history sidebar**, **settings screen**, capability menu,
-  smart attachments + **vision wiring**, in-app model manager, memory browser.
+- **8 Rust crates** — security, agent, gateway, mcp, memory, skills, sanitize, server. **103 Rust tests + 16 Swift tests.**
+- **App**: self-contained signed `GINEXUS.app` (embeds the Rust core), redesigned as a three-pane
+  **"Execution Stream"** (icon rail · floating Conversations card · stream of agent-flow blocks ·
+  floating Context & Tools card) on the MackTrax brand. Token-streaming chat with content-aware
+  rendering, action/final-output cards, **PDF + Word document creation**, collapsible **floating
+  side panels**, settings screen, smart attachments + **vision wiring**, in-app model manager,
+  memory browser.
 - **Live memory**: the operator's full ChatGPT history — 3,779 sanitized facts with 768-dim embeddings.
 - **Default model**: Qwen3-30B-A3B-Instruct-2507 (Apache-2.0) via Ollama. Vision tier ready (Qwen3-VL-30B-A3B, pull when Ollama ≥ 0.12.7).
 
 ---
+
+## 2026-06-18 — Make-it-beautiful: the "Execution Stream" redesign (MackTrax brand)
+
+A full visual rebuild of the app shell into a three-pane agentic **Execution Stream**, iterated
+against operator reference UIs (a tactical-HUD aesthetic and the OMNISCIENT floating-panel system)
+with an offscreen `ImageRenderer` harness as the visual feedback loop (screen capture is TCC-blocked
+on this Mac). Every token comes from the `macktrax-design` system — `ink900` canvas, single `ember`
+accent, dark-only, no emoji/neon/glassmorphism, real data only.
+
+- **#34 — Floating side panels (OMNISCIENT-style).** Both rails are now rich **floating cards** over
+  the canvas — rounded 16px, hairline border, top highlight, soft shadow, generous margins — instead
+  of flush bordered columns. A reusable `FloatingPanel` (titled header + collapse chevron + optional
+  header accessory) and `CollapsedTab` (thin vertical tab that expands) drive both the left
+  **Conversations** card (list + new-chat + AGENT status footer) and the right **Context & Tools**
+  card (Session stats · Current File Context · Enabled Tools), each independently collapsible with an
+  eased transition. Same look and feel whether revealed or collapsed.
+- **#33 — One-color wordmark + boxless glyph + bigger branding.** `GINEXUS` is a single-color
+  Trade-Gothic stamp (no two-tone), the corner glyph is an 8-point ember starburst with **no square
+  box**, sized up, and the `GINEXUS` wordmark now reads larger than the `Execution Stream` label.
+- **#29 — PDF + Word document creation.** A new HITL-gated `write_document` core tool builds valid
+  files with **zero new crates** — hand-rolled **PDF-1.4** (xref/trailer, Courier, wrapped/paged)
+  and **DOCX** (OPC ZIP with stored entries + CRC32, `[Content_Types].xml`/rels/`document.xml`).
+  Verified by `file` ("PDF document, version 1.4" / "Microsoft Word 2007+") and `unzip -t`. The app
+  surfaces the result as a **Final Output** card with Open / Reveal (NSWorkspace). +4 Rust tests.
+- **#28 — Luxe agent-flow redesign.** The stream renders as composable blocks — user prompts as a
+  right-aligned bubble; assistant turns as **Action cards** (one per tool step), a live status card,
+  bare prose, and a Final Output card — with a text-only **SEND** control (no gimmick icon). Center
+  column locked to a readable 760px measure with auto-scroll.
+- **#26–#27 — Tactical HUD + Gemini-style chat foundations.** Mono tactical labels, status dots,
+  `BlockCard`/`Panel` primitives, and a clean Gemini-style conversation flow established the base the
+  later passes refined.
 
 ## 2026-06-17 — Functional-UI completion (history, settings, vision)
 

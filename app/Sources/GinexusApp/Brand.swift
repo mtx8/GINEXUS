@@ -225,6 +225,64 @@ struct BlockCard<Content: View>: View {
     }
 }
 
+/// A modern FLOATING side panel — a rounded, slightly translucent dark card with a header
+/// (title + collapse chevron), hairline border, top highlight, and a soft drop shadow so it floats
+/// over the canvas. Matches the OMNISCIENT side-panel design.
+struct FloatingPanel<Content: View>: View {
+    let title: String
+    var collapseIcon: String = "chevron.left"
+    var onCollapse: (() -> Void)? = nil
+    var headerAccessory: AnyView? = nil
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Text(title.uppercased()).font(Brand.mono(11, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone200)
+                Spacer(minLength: 8)
+                if let headerAccessory { headerAccessory }
+                if let onCollapse {
+                    Button(action: onCollapse) {
+                        Image(systemName: collapseIcon).font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone400)
+                    }.buttonStyle(.plain).help("Collapse")
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 13)
+            Divider().overlay(Brand.line1)
+            content()
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Brand.ink800.opacity(0.9))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Brand.line2, lineWidth: 1))
+        .overlay(alignment: .top) { Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1).padding(.horizontal, 2) }
+        .shadow(color: .black.opacity(0.55), radius: 26, x: 0, y: 12)
+    }
+}
+
+/// A thin floating tab shown when a panel is collapsed — a rotated label + expand chevron.
+struct CollapsedTab: View {
+    let label: String
+    var expandIcon: String = "chevron.right"
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 12) {
+                Image(systemName: expandIcon).font(.system(size: 11, weight: .semibold))
+                Text(label.uppercased()).font(Brand.mono(9.5, weight: .bold)).kerning(2)
+                    .fixedSize().rotationEffect(.degrees(-90)).frame(width: 14, height: 90)
+            }
+            .foregroundStyle(Brand.bone300)
+            .padding(.vertical, 16)
+            .frame(width: 36)
+            .frame(maxHeight: .infinity)
+            .background(Brand.ink800.opacity(0.9))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line2, lineWidth: 1))
+            .shadow(color: .black.opacity(0.5), radius: 18, x: 0, y: 8)
+        }.buttonStyle(.plain).help("Expand")
+    }
+}
+
 /// A small status dot (connection / capability state).
 struct StatusDot: View {
     var color: Color

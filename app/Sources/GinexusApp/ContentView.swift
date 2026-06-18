@@ -17,13 +17,9 @@ struct ContentView: View {
     var body: some View {
         HStack(spacing: 0) {
             iconRail
-            if sidebarShown {
-                conversationSidebar.transition(.move(edge: .leading).combined(with: .opacity))
-            }
+            leftColumn
             centerColumn
-            if contextShown {
-                contextRail.transition(.move(edge: .trailing).combined(with: .opacity))
-            }
+            rightColumn
         }
         .animation(Brand.ease(0.28), value: sidebarShown)
         .animation(Brand.ease(0.28), value: contextShown)
@@ -39,7 +35,6 @@ struct ContentView: View {
     private var iconRail: some View {
         VStack(spacing: 6) {
             GlyphMark(size: 38).padding(.top, 16).padding(.bottom, 12)
-            railIcon(sidebarShown ? "sidebar.left" : "sidebar.leading", "Show / hide conversations") { sidebarShown.toggle() }
             railIcon("square.and.pencil", "New conversation", enabled: model.connected && !model.sending) { model.newChat() }
             railIcon("brain", "Memory — what GINEXUS knows", enabled: model.connected) { model.openMemory() }
             railIcon("cube.box", "Models — download / manage", enabled: model.connected) { model.openModels() }
@@ -66,51 +61,63 @@ struct ContentView: View {
         .buttonStyle(.plain).help(help).disabled(!enabled)
     }
 
-    // MARK: ── conversation sidebar ─────────────────────────────────────────────
-    private var conversationSidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Eyebrow(text: "Conversations")
-                Spacer()
+    // MARK: ── left: conversations (floating panel) ─────────────────────────────
+    @ViewBuilder private var leftColumn: some View {
+        if sidebarShown {
+            conversationPanel
+                .frame(width: 256)
+                .padding(.leading, 14).padding(.vertical, 16)
+                .transition(.move(edge: .leading).combined(with: .opacity))
+        } else {
+            CollapsedTab(label: "Chats", expandIcon: "chevron.right") { sidebarShown = true }
+                .padding(.leading, 12).padding(.vertical, 16)
+                .transition(.move(edge: .leading).combined(with: .opacity))
+        }
+    }
+
+    private var conversationPanel: some View {
+        FloatingPanel(
+            title: "Conversations",
+            collapseIcon: "chevron.left",
+            onCollapse: { sidebarShown = false },
+            headerAccessory: AnyView(
                 Button(action: { model.newChat() }) {
                     Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.ember500)
-                }
-                .buttonStyle(.plain).help("New conversation").disabled(!model.connected || model.sending)
-                Button(action: { sidebarShown = false }) {
-                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone400)
-                }.buttonStyle(.plain).help("Hide conversations")
-            }
-            .padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 10)
-            Divider().overlay(Brand.line1)
-
-            if model.conversations.isEmpty {
-                Text("No conversations yet").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
-                    .padding(.horizontal, 14).padding(.top, 12)
-                Spacer()
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 3) {
-                        ForEach(model.conversations) { c in
-                            ConversationRow(
-                                c: c, selected: c.id == model.activeConversationID,
-                                disabled: model.sending && c.id != model.activeConversationID,
-                                renamingID: $renamingID, renameText: $renameText,
-                                onSelect: { renamingID = nil; model.selectConversation(c.id) },
-                                onCommitRename: { model.renameConversation(c.id, to: renameText); renamingID = nil },
-                                onRequestRename: { renameText = c.title; renamingID = c.id },
-                                onRequestDelete: { pendingDeleteConversation = c })
+                }.buttonStyle(.plain).help("New conversation").disabled(!model.connected || model.sending)
+            )
+        ) {
+            VStack(spacing: 0) {
+                if model.conversations.isEmpty {
+                    Text("No conversations yet").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.top, 14)
+                    Spacer()
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 3) {
+                            ForEach(model.conversations) { c in
+                                ConversationRow(
+                                    c: c, selected: c.id == model.activeConversationID,
+                                    disabled: model.sending && c.id != model.activeConversationID,
+                                    renamingID: $renamingID, renameText: $renameText,
+                                    onSelect: { renamingID = nil; model.selectConversation(c.id) },
+                                    onCommitRename: { model.renameConversation(c.id, to: renameText); renamingID = nil },
+                                    onRequestRename: { renameText = c.title; renamingID = c.id },
+                                    onRequestDelete: { pendingDeleteConversation = c })
+                            }
                         }
+                        .padding(8).animation(Brand.ease, value: model.conversations)
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 8)
-                    .animation(Brand.ease, value: model.conversations)
                 }
+                Divider().overlay(Brand.line1)
+                HStack(spacing: 8) {
+                    StatusDot(color: statusColor, glow: model.connected, size: 7)
+                    Text("AGENT").font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.bone400)
+                    Text(statusLabel).font(Brand.mono(10, weight: .bold)).kerning(1).foregroundStyle(statusColor)
+                    Spacer()
+                }
+                .padding(.horizontal, 14).padding(.vertical, 11)
             }
-            agentStatusFooter
         }
-        .frame(width: 248)
-        .frame(maxHeight: .infinity)
-        .background(Brand.ink900)
-        .overlay(alignment: .trailing) { Rectangle().fill(Brand.line1).frame(width: 1) }
         .confirmationDialog(
             "Delete this conversation?",
             isPresented: Binding(get: { pendingDeleteConversation != nil }, set: { if !$0 { pendingDeleteConversation = nil } }),
@@ -121,20 +128,6 @@ struct ContentView: View {
         } message: { c in Text("\"\(c.title)\" will be permanently removed. This cannot be undone.") }
     }
 
-    private var agentStatusFooter: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Divider().overlay(Brand.line1)
-            HStack(spacing: 8) {
-                StatusDot(color: statusColor, glow: model.connected, size: 7)
-                VStack(alignment: .leading, spacing: 1) {
-                    Eyebrow(text: "Agent Status")
-                    Text(statusLabel).font(Brand.mono(11, weight: .medium)).foregroundStyle(statusColor)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 14).padding(.vertical, 12)
-        }
-    }
     private var statusColor: Color { model.sending ? Brand.warning : (model.connected ? Brand.success : Brand.bone400) }
     private var statusLabel: String { model.sending ? "THINKING" : (model.connected ? "ONLINE" : "OFFLINE") }
 
@@ -157,11 +150,6 @@ struct ContentView: View {
             Spacer()
             autonomyToggle
             modelSelector
-            Button(action: { contextShown.toggle() }) {
-                Image(systemName: contextShown ? "sidebar.right" : "sidebar.trailing")
-                    .font(.system(size: 15)).foregroundStyle(Brand.bone300)
-            }
-            .buttonStyle(.plain).help("Show / hide Context & Tools")
         }
     }
 
@@ -431,38 +419,57 @@ struct ContentView: View {
         }
     }
 
-    // MARK: ── right: context & tools rail ─────────────────────────────────────
-    private var contextRail: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Eyebrow(text: "Context & Tools")
-                    Spacer()
-                    Button(action: { contextShown = false }) {
-                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone400)
-                    }.buttonStyle(.plain).help("Hide Context & Tools")
-                }
-                .padding(.bottom, 2)
-                sessionPanel
-                currentContextPanel
-                capabilitiesPanel
-            }
-            .padding(16)
+    // MARK: ── right: Context & Tools (floating panel) ─────────────────────────
+    @ViewBuilder private var rightColumn: some View {
+        if contextShown {
+            contextPanel
+                .frame(width: 300)
+                .padding(.trailing, 14).padding(.vertical, 16)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+        } else {
+            CollapsedTab(label: "Tools", expandIcon: "chevron.left") { contextShown = true }
+                .padding(.trailing, 12).padding(.vertical, 16)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
         }
-        .frame(width: 288)
-        .frame(maxHeight: .infinity)
-        .background(Brand.ink850)
-        .overlay(alignment: .leading) { Rectangle().fill(Brand.line1).frame(width: 1) }
     }
 
-    private var sessionPanel: some View {
-        Panel(title: "Session") {
-            statRow("Status", model.connected ? "CONNECTED" : "OFFLINE", dot: model.connected ? Brand.success : Brand.bone400)
-            statRow("Model", model.activeModelLabel, dot: nil)
-            statRow("Conversations", "\(model.conversations.count)", dot: nil)
-            statRow("Memory facts", model.memFactsCount > 0 ? "\(model.memFactsCount)" : "—", dot: nil)
+    private var contextPanel: some View {
+        FloatingPanel(title: "Context & Tools", collapseIcon: "chevron.right", onCollapse: { contextShown = false }) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    railSection("Session") {
+                        statRow("Status", model.connected ? "CONNECTED" : "OFFLINE", dot: model.connected ? Brand.success : Brand.bone400)
+                        statRow("Model", model.activeModelLabel, dot: nil)
+                        statRow("Conversations", "\(model.conversations.count)", dot: nil)
+                        statRow("Memory facts", model.memFactsCount > 0 ? "\(model.memFactsCount)" : "—", dot: nil)
+                    }
+                    railDivider
+                    railSection("Current File Context") { currentContextContent }
+                    railDivider
+                    railSection("Enabled Tools") {
+                        capRow("globe", "Web research", on: true)
+                        capRow("terminal", "Terminal", on: true)
+                        capRow("brain", "Memory", on: true)
+                        capRow("person.3", "Council", on: true)
+                        capRow("doc.text.magnifyingglass", "Deep research", on: true)
+                        capRow("photo.badge.plus", "Image generation", on: model.settings.settings.mediaSidecarEnabled) { model.openSettings() }
+                        capRow("eye", "Vision", on: model.visionAvailable, warn: !model.visionAvailable, note: model.visionStatus) { model.openModels() }
+                        capRow("books.vertical", "Obsidian vault", on: model.obsidianAvailable) { model.openSettings() }
+                    }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 15)
+            }
         }
     }
+
+    private func railSection<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Eyebrow(text: title, color: Brand.bone300)
+            content()
+        }
+    }
+    private var railDivider: some View { Divider().overlay(Brand.line1).padding(.vertical, 13) }
+
     private func statRow(_ label: String, _ value: String, dot: Color?) -> some View {
         HStack(spacing: 8) {
             Text(label.uppercased()).font(Brand.mono(10)).foregroundStyle(Brand.bone300)
@@ -473,44 +480,29 @@ struct ContentView: View {
         }
     }
 
-    private var currentContextPanel: some View {
-        Panel(title: "Current File Context") {
-            if let att = model.attachment {
-                HStack(spacing: 10) {
-                    if att.kind == "image", let t = model.attachmentThumb {
-                        Image(nsImage: t).resizable().scaledToFill().frame(width: 32, height: 32)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    } else {
-                        Image(systemName: att.kind == "image" ? "photo" : "doc.text")
-                            .font(.system(size: 14)).foregroundStyle(Brand.ember500)
-                            .frame(width: 32, height: 32).background(Brand.ink600).clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(att.name).font(Brand.mono(11)).foregroundStyle(Brand.bone50).lineLimit(1).truncationMode(.middle)
-                        Text(att.kind.uppercased()).font(Brand.mono(9, weight: .bold)).foregroundStyle(Brand.bone400)
-                    }
-                    Spacer()
-                    Button(action: { model.clearAttachment() }) {
-                        Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(Brand.bone400)
-                    }.buttonStyle(.plain)
+    @ViewBuilder private var currentContextContent: some View {
+        if let att = model.attachment {
+            HStack(spacing: 10) {
+                if att.kind == "image", let t = model.attachmentThumb {
+                    Image(nsImage: t).resizable().scaledToFill().frame(width: 32, height: 32)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                } else {
+                    Image(systemName: att.kind == "image" ? "photo" : "doc.text")
+                        .font(.system(size: 14)).foregroundStyle(Brand.ember500)
+                        .frame(width: 32, height: 32).background(Brand.ink600).clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-            } else {
-                Text("No file attached. Use + to add a file, image, or AI-data export.")
-                    .font(Brand.body(11)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(att.name).font(Brand.mono(11)).foregroundStyle(Brand.bone50).lineLimit(1).truncationMode(.middle)
+                    Text(att.kind.uppercased()).font(Brand.mono(9, weight: .bold)).foregroundStyle(Brand.bone400)
+                }
+                Spacer()
+                Button(action: { model.clearAttachment() }) {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(Brand.bone400)
+                }.buttonStyle(.plain)
             }
-        }
-    }
-
-    private var capabilitiesPanel: some View {
-        Panel(title: "Enabled Tools") {
-            capRow("globe", "Web research", on: true)
-            capRow("terminal", "Terminal", on: true)
-            capRow("brain", "Memory", on: true)
-            capRow("person.3", "Council", on: true)
-            capRow("doc.text.magnifyingglass", "Deep research", on: true)
-            capRow("photo.badge.plus", "Image generation", on: model.settings.settings.mediaSidecarEnabled) { model.openSettings() }
-            capRow("eye", "Vision", on: model.visionAvailable, warn: !model.visionAvailable, note: model.visionStatus) { model.openModels() }
-            capRow("books.vertical", "Obsidian vault", on: model.obsidianAvailable) { model.openSettings() }
+        } else {
+            Text("No file attached. Use + to add a file, image, or AI-data export.")
+                .font(Brand.body(11)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
         }
     }
 
