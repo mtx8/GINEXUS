@@ -16,10 +16,18 @@ struct ContentView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            iconRail
-            leftColumn
-            centerColumn
-            rightColumn
+            iconRail   // far-left bar + icons — full height, untouched
+            // Everything else: a full-width GINEXUS header bar on top, panels + stream BELOW it.
+            VStack(spacing: 0) {
+                streamHeader
+                    .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 14)
+                Divider().overlay(Brand.line1)
+                HStack(spacing: 0) {
+                    leftColumn
+                    streamColumn
+                    rightColumn
+                }
+            }
         }
         .animation(Brand.ease(0.28), value: sidebarShown)
         .animation(Brand.ease(0.28), value: contextShown)
@@ -70,8 +78,8 @@ struct ContentView: View {
                 .transition(.move(edge: .leading).combined(with: .opacity))
         } else {
             CollapsedTab(label: "Chats", expandIcon: "chevron.right") { sidebarShown = true }
-                .frame(maxHeight: .infinity, alignment: .top)   // high in the upper area…
-                .padding(.leading, 12).padding(.top, 92).padding(.bottom, 16)   // …but below the GINEXUS header band
+                .frame(maxHeight: .infinity, alignment: .top)   // top of the panel area (already below the header bar)
+                .padding(.leading, 12).padding(.vertical, 16)
                 .transition(.move(edge: .leading).combined(with: .opacity))
         }
     }
@@ -133,9 +141,9 @@ struct ContentView: View {
     private var statusLabel: String { model.sending ? "THINKING" : (model.connected ? "ONLINE" : "OFFLINE") }
 
     // MARK: ── center: execution stream ────────────────────────────────────────
-    private var centerColumn: some View {
+    // Center: just the execution stream + input — the GINEXUS header now lives in the top bar above.
+    private var streamColumn: some View {
         VStack(spacing: 0) {
-            streamHeader.padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 14)
             executionStream
             inputBar.frame(maxWidth: 760).frame(maxWidth: .infinity)
                 .padding(.horizontal, 24).padding(.vertical, 16)
@@ -430,8 +438,8 @@ struct ContentView: View {
                 .transition(.move(edge: .trailing).combined(with: .opacity))
         } else {
             CollapsedTab(label: "Tools", expandIcon: "chevron.left") { contextShown = true }
-                .frame(maxHeight: .infinity, alignment: .top)   // high in the upper area…
-                .padding(.trailing, 12).padding(.top, 92).padding(.bottom, 16)   // …but below the GINEXUS header band
+                .frame(maxHeight: .infinity, alignment: .top)   // top of the panel area (already below the header bar)
+                .padding(.trailing, 12).padding(.vertical, 16)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
         }
     }
