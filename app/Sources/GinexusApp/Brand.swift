@@ -183,14 +183,18 @@ struct GlyphMark: View {
         .onChange(of: spinning) { _, on in if on { start() } else { stop() } }
     }
     private func start() {
-        angle = 0
+        // Reset instantly (0° ≡ 360° for the 8-fold mark, so invisible), THEN spin.
+        var t = Transaction(); t.disablesAnimations = true
+        withTransaction(t) { angle = 0 }
         withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { angle = 360 }
         withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true }
     }
     private func stop() {
-        // Settle FORWARD to upright (360° ≡ 0° for the 8-fold mark) — no backspin — then rest.
-        withAnimation(.easeOut(duration: 0.5)) { angle = 360 }
-        withAnimation(.easeOut(duration: 0.35)) { pulse = false }
+        // CHANGE the value (360 → 0) with animations OFF — this cancels the repeatForever (setting
+        // it back to 360 would be a no-op and the spin would never stop). 360≡0, so no visible jump.
+        var t = Transaction(); t.disablesAnimations = true
+        withTransaction(t) { angle = 0 }
+        withAnimation(.easeOut(duration: 0.3)) { pulse = false }
     }
 }
 

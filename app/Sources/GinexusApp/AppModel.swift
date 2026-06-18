@@ -948,6 +948,7 @@ final class AppModel: ObservableObject {
         }
         // Stream closed: make sure the bubble is finalized + input re-enabled.
         if let i = chat.firstIndex(where: { $0.id == msgId }) {
+            flushActivity(i)   // finalize any activity whose min-display timer is still pending
             chat[i].streaming = false
             chat[i].status = nil
         }
@@ -957,13 +958,24 @@ final class AppModel: ObservableObject {
     }
 
     /// Apply one SSE frame to the streaming assistant bubble (runs on the main actor, in order).
+    /// When the current live activity started — drives the live card's minimum visible window.
+    private var activityStartedAt = Date()
+
+    /// Finalize any still-running activity into the completed timeline (no double, no loss).
+    private func flushActivity(_ i: Int) {
+        if let s = chat[i].status {
+            chat[i].steps.append(s)
+            chat[i].status = nil
+        }
+    }
+
     private func handleSSE(event: String, data: String, msgId: UUID, context: [[String: Any]]) {
         guard let i = chat.firstIndex(where: { $0.id == msgId }) else { return }
         switch event {
         case "token":
-            // data is a JSON-encoded string (handles newlines/escapes).
+            // data is a JSON-encoded string (handles newlines/escapes). Don't clear the live
+            // activity card here — its minimum-visible timer (below) owns when it completes.
             if let tok = try? JSONDecoder().decode(String.self, from: Data(data.utf8)) {
-                if chat[i].status != nil { chat[i].status = nil }
                 chat[i].text += tok
             }
         case "tool":
@@ -972,12 +984,24 @@ final class AppModel: ObservableObject {
                 let name = (o["name"] as? String) ?? "tool"
                 switch (o["phase"] as? String) {
                 case "start":
-                    chat[i].status = name   // the live card animates this activity ("Running…")
+                    flushActivity(i)         // finalize any lingering card so the timeline can't double it
+                    chat[i].status = name    // the live card animates this activity ("Running…")
+                    activityStartedAt = Date()
                     chat[i].text = ""        // the final answer streams AFTER the tool; drop any preamble
                 case "done":
-                    // The SAME card flips from running → completed in place (progressive timeline).
-                    chat[i].steps.append(name)
-                    chat[i].status = nil
+                    // Document tools finish in ~1ms, so the live card would never be seen. Keep it up
+                    // for a minimum window, THEN flip it to "Completed" in place (progressive timeline).
+                    let started = activityStartedAt
+                    let mid = msgId
+                    Task { @MainActor in
+                        let remaining = 0.9 - Date().timeIntervalSince(started)
+                        if remaining > 0 { try? await Task.sleep(for: .seconds(remaining)) }
+                        guard let j = self.chat.firstIndex(where: { $0.id == mid }) else { return }
+                        if self.chat[j].status == name {       // not already superseded/flushed
+                            self.chat[j].steps.append(name)
+                            self.chat[j].status = nil
+                        }
+                    }
                 default:
                     break
                 }
@@ -986,7 +1010,7 @@ final class AppModel: ObservableObject {
             if data == "[DONE]" { return }
             guard let d = data.data(using: .utf8),
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
-            chat[i].status = nil
+            flushActivity(i)   // finalize any still-running activity into the completed timeline
             // Real token usage for this turn (omitted by the core when the model server reported none).
             if let u = o["usage"] as? [String: Any] {
                 let p = max(0, (u["prompt_tokens"] as? Int) ?? 0)
