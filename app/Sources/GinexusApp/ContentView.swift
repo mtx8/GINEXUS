@@ -165,9 +165,15 @@ struct ContentView: View {
 
     private var autonomyToggle: some View {
         Button(action: { model.autonomous.toggle() }) {
-            TacticalLabel(text: model.autonomous ? "Auto" : "HITL",
-                          icon: model.autonomous ? "bolt.fill" : "hand.raised.fill",
-                          filled: false, tint: model.autonomous ? Brand.ember500 : Brand.bone300)
+            // Box-less — just the icon + label, no border/plate (cleaner, more modern).
+            HStack(spacing: 6) {
+                Image(systemName: model.autonomous ? "bolt.fill" : "hand.raised.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(model.autonomous ? "AUTO" : "HITL").font(Brand.mono(10.5, weight: .bold)).kerning(1.2)
+            }
+            .foregroundStyle(model.autonomous ? Brand.ember500 : Brand.bone300)
+            .padding(.vertical, 6).padding(.horizontal, 4)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain).disabled(!model.connected)
         .help(model.autonomous
