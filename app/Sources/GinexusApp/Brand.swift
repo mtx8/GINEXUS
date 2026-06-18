@@ -153,6 +153,8 @@ struct Wordmark: View {
     var body: some View {
         Text("GINEXUS").foregroundStyle(color)
             .font(Brand.display(size, weight: .heavy)).kerning(0.5)
+            .lineLimit(1)                                  // the wordmark is ONE line, always
+            .fixedSize(horizontal: true, vertical: false)  // never compress/wrap on a tight header
     }
 }
 
@@ -160,6 +162,10 @@ struct Wordmark: View {
 /// the GINEXUS mark, used bigger in the rail.
 struct GlyphMark: View {
     var size: CGFloat = 26
+    /// When true the mark slowly rotates + breathes — the "GINEXUS is thinking / loading" state.
+    var spinning: Bool = false
+    @State private var angle: Double = 0
+    @State private var pulse = false
     var body: some View {
         ZStack {
             ForEach(0..<8, id: \.self) { i in
@@ -170,6 +176,21 @@ struct GlyphMark: View {
             Circle().fill(Brand.ember300).frame(width: size * 0.2, height: size * 0.2)
         }
         .frame(width: size, height: size)
+        .rotationEffect(.degrees(angle))
+        .scaleEffect(pulse ? 1.07 : 1.0)
+        .shadow(color: Brand.ember500.opacity(pulse ? 0.5 : 0), radius: pulse ? size * 0.16 : 0)
+        .onAppear { if spinning { start() } }
+        .onChange(of: spinning) { _, on in if on { start() } else { stop() } }
+    }
+    private func start() {
+        angle = 0
+        withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { angle = 360 }
+        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true }
+    }
+    private func stop() {
+        // Settle FORWARD to upright (360° ≡ 0° for the 8-fold mark) — no backspin — then rest.
+        withAnimation(.easeOut(duration: 0.5)) { angle = 360 }
+        withAnimation(.easeOut(duration: 0.35)) { pulse = false }
     }
 }
 
