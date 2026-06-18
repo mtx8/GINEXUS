@@ -970,9 +970,16 @@ final class AppModel: ObservableObject {
             if let d = data.data(using: .utf8),
                let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
                 let name = (o["name"] as? String) ?? "tool"
-                if (o["phase"] as? String) == "start" {
-                    chat[i].status = name   // the live "Action · <tool>" card shows "Running…"
+                switch (o["phase"] as? String) {
+                case "start":
+                    chat[i].status = name   // the live card animates this activity ("Running…")
                     chat[i].text = ""        // the final answer streams AFTER the tool; drop any preamble
+                case "done":
+                    // The SAME card flips from running → completed in place (progressive timeline).
+                    chat[i].steps.append(name)
+                    chat[i].status = nil
+                default:
+                    break
                 }
             }
         case "done", "message":
@@ -1012,7 +1019,9 @@ final class AppModel: ObservableObject {
                 if !answer.isEmpty { chat[i].text = answer }      // authoritative (think-stripped/trimmed)
                 chat[i].imagePath = img
                 if didDoc { chat[i].docPath = Self.newestDocument() }   // Final Output card
-                chat[i].steps = trace.compactMap { $0.first as? String }   // agent-flow Action cards
+                // Steps are accumulated live (running → completed in place); fall back to the trace
+                // only if no per-tool events arrived, so the order/identity stays stable.
+                if chat[i].steps.isEmpty { chat[i].steps = trace.compactMap { $0.first as? String } }
                 chat[i].streaming = false
                 dbg("agent stream done; status=\(st)")
             }
