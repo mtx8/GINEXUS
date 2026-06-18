@@ -20,6 +20,28 @@ pub struct ToolCall {
 pub struct AssistantTurn {
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
+    /// Token usage for THIS model call, as reported by the model server (OpenAI-compatible
+    /// `usage`). Zero when the server doesn't report it (e.g. mocks) — never fabricated.
+    pub usage: Usage,
+}
+
+/// Token usage. `total` is derived (`prompt + completion`), so only two real fields are stored.
+/// `u64` (not u32) so a long-context or always-on run can never silently truncate the count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+impl Usage {
+    /// Saturating accumulation — token counts only ever grow across a run.
+    pub fn add(&mut self, other: Usage) {
+        self.prompt_tokens = self.prompt_tokens.saturating_add(other.prompt_tokens);
+        self.completion_tokens = self.completion_tokens.saturating_add(other.completion_tokens);
+    }
+    pub fn total_tokens(&self) -> u64 {
+        self.prompt_tokens.saturating_add(self.completion_tokens)
+    }
 }
 
 #[async_trait]
@@ -63,6 +85,9 @@ pub struct AgentResult {
     pub answer: String,
     pub pending: Option<Value>,
     pub trace: Vec<(String, bool)>,
+    /// Aggregated token usage across EVERY model call in this run — main-loop iterations plus the
+    /// synthetic delegate / council / deep_research fan-outs and all of their workers.
+    pub total_usage: Usage,
 }
 
 fn target_of(name: &str, args: &Value) -> String {
@@ -251,6 +276,8 @@ impl<'a> AgentLoop<'a> {
         let mut trace: Vec<(String, bool)> = Vec::new();
         // Per-run budget consumed by delegate / council / deep_research (the multiplicative tools).
         let mut synthetic_used: usize = 0;
+        // Real token usage accumulated across every model call this run makes.
+        let mut total_usage = Usage::default();
 
         // Subagent delegation: advertise + handle `delegate` only below the depth ceiling. Workers
         // get a READ-ONLY registry (they can never perform an irreversible/HITL action on their own).
@@ -269,12 +296,14 @@ impl<'a> AgentLoop<'a> {
 
         for _ in 0..self.max_iters {
             let turn = self.model.call_streaming(&msgs, &defs, on_token).await;
+            total_usage.add(turn.usage);
             if turn.tool_calls.is_empty() {
                 return AgentResult {
                     status: AgentStatus::Final,
                     answer: turn.content.unwrap_or_default(),
                     pending: None,
                     trace,
+                    total_usage,
                 };
             }
 
@@ -312,7 +341,7 @@ impl<'a> AgentLoop<'a> {
                     }
                     synthetic_used += 1;
                     on_event(tc.name.clone(), "start".into());
-                    let out = match tc.name.as_str() {
+                    let (out, syn_usage) = match tc.name.as_str() {
                         "delegate" => {
                             self.run_delegate(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms).await
                         }
@@ -322,6 +351,7 @@ impl<'a> AgentLoop<'a> {
                         }
                         _ => self.run_council(&tc.arguments).await, // "council"
                     };
+                    total_usage.add(syn_usage);
                     on_event(tc.name.clone(), "done".into());
                     trace.push((tc.name.clone(), true));
                     msgs.push(tool_msg(&tc.id, &out));
@@ -363,6 +393,7 @@ impl<'a> AgentLoop<'a> {
                                 "preview": format!("{}({})", tc.name, tc.arguments),
                             })),
                             trace,
+                            total_usage,
                         };
                     }
                 }
@@ -384,6 +415,7 @@ impl<'a> AgentLoop<'a> {
             answer: "(stopped: reached max iterations)".to_string(),
             pending: None,
             trace,
+            total_usage,
         }
     }
 
@@ -400,7 +432,7 @@ impl<'a> AgentLoop<'a> {
     /// approvals (nothing to gate); safe to run unattended.
     async fn run_workers(
         &self, tasks: &[String], sub_registry: &ToolRegistry, now_ms: i64,
-    ) -> Vec<String> {
+    ) -> (Vec<String>, Usage) {
         // One worker AgentLoop per task, kept in a Vec that outlives the join so each worker future
         // can borrow its loop (run takes &self) across the concurrent await.
         let subs: Vec<AgentLoop> = (0..tasks.len())
@@ -420,16 +452,29 @@ impl<'a> AgentLoop<'a> {
                 let msgs = vec![json!({"role": "user", "content": task})];
                 Box::pin(async move {
                     let res = sub.run(msgs, &[], None, now_ms).await;
-                    res.answer.trim().to_string()
+                    (res.answer.trim().to_string(), res.total_usage)
                 })
             })
             .collect();
-        futures_util::future::join_all(futs).await
+        let results = futures_util::future::join_all(futs).await;
+        // Roll each worker's full run usage up into the fan-out total (workers go through `run`,
+        // which itself accumulates their internal calls).
+        let mut usage = Usage::default();
+        let answers = results
+            .into_iter()
+            .map(|(ans, u)| {
+                usage.add(u);
+                ans
+            })
+            .collect();
+        (answers, usage)
     }
 
     /// `delegate`: split a job into sub-tasks and run fresh workers on them concurrently. Output
     /// preserves task order. Fan-out is capped (MAX_SUBTASKS).
-    async fn run_delegate(&self, args: &Value, sub_registry: &ToolRegistry, now_ms: i64) -> String {
+    async fn run_delegate(
+        &self, args: &Value, sub_registry: &ToolRegistry, now_ms: i64,
+    ) -> (String, Usage) {
         let tasks: Vec<String> = match args.get("tasks").and_then(|t| t.as_array()) {
             Some(arr) => arr.iter().filter_map(|t| t.as_str().map(str::to_string)).collect(),
             None => args
@@ -439,18 +484,22 @@ impl<'a> AgentLoop<'a> {
                 .unwrap_or_default(),
         };
         if tasks.is_empty() {
-            return "error: delegate requires 'task' (string) or 'tasks' (array of strings)".into();
+            return (
+                "error: delegate requires 'task' (string) or 'tasks' (array of strings)".into(),
+                Usage::default(),
+            );
         }
         let tasks: Vec<String> = tasks.into_iter().take(MAX_SUBTASKS).collect();
-        let answers = self.run_workers(&tasks, sub_registry, now_ms).await;
-        tasks
+        let (answers, usage) = self.run_workers(&tasks, sub_registry, now_ms).await;
+        let out = tasks
             .iter()
             .zip(answers.iter())
             .enumerate()
             .map(|(i, (task, ans))| format!("[subagent {}] {} → {}\n\n", i + 1, task, ans))
             .collect::<String>()
             .trim_end()
-            .to_string()
+            .to_string();
+        (out, usage)
     }
 
     /// `deep_research`: decompose a question into focused sub-questions, investigate each in parallel
@@ -458,17 +507,19 @@ impl<'a> AgentLoop<'a> {
     /// decompose (1 call) → concurrent worker research → synthesize (1 call).
     async fn run_deep_research(
         &self, args: &Value, sub_registry: &ToolRegistry, now_ms: i64,
-    ) -> String {
+    ) -> (String, Usage) {
         let question = args.get("question").and_then(|q| q.as_str()).unwrap_or("").trim();
         if question.is_empty() {
-            return "error: deep_research requires 'question' (string)".into();
+            return ("error: deep_research requires 'question' (string)".into(), Usage::default());
         }
+        let mut usage = Usage::default();
         // 1 — decompose into independent sub-questions (fall back to the question itself).
         let decompose = format!(
             "Break this research question into 3-5 focused, independent sub-questions that together \
              fully cover it. Return ONLY a JSON array of strings.\n\nQuestion: {question}"
         );
         let turn = self.model.call(&[json!({"role": "user", "content": decompose})], &[]).await;
+        usage.add(turn.usage);
         let subqs = turn
             .content
             .as_deref()
@@ -477,7 +528,8 @@ impl<'a> AgentLoop<'a> {
         let subqs: Vec<String> = subqs.into_iter().take(MAX_SUBTASKS).collect();
 
         // 2 — research each sub-question concurrently (workers have read-only web/recall tools).
-        let findings = self.run_workers(&subqs, sub_registry, now_ms).await;
+        let (findings, worker_usage) = self.run_workers(&subqs, sub_registry, now_ms).await;
+        usage.add(worker_usage);
 
         // 3 — synthesize a cited report from the findings.
         let mut prompt = format!(
@@ -492,18 +544,20 @@ impl<'a> AgentLoop<'a> {
              and citing the findings above. Flag any gaps or uncertainty honestly.",
         );
         let report = self.model.call(&[json!({"role": "user", "content": prompt})], &[]).await;
-        report.content.unwrap_or_default()
+        usage.add(report.usage);
+        (report.content.unwrap_or_default(), usage)
     }
 
     /// Convene a council: gather N persona-diverse opinions CONCURRENTLY on the bound model, then
     /// synthesize the single best answer. Pure reasoning (no tools) → read-only/autonomous. Members
     /// run in parallel (`join_all`), so wall-clock is ~2 calls (opinions phase + synthesis), not N+1.
-    async fn run_council(&self, args: &Value) -> String {
+    async fn run_council(&self, args: &Value) -> (String, Usage) {
         let question = args.get("question").and_then(|q| q.as_str()).unwrap_or("").trim();
         if question.is_empty() {
-            return "error: council requires 'question' (string)".into();
+            return ("error: council requires 'question' (string)".into(), Usage::default());
         }
         let personas = select_personas(args.get("personas").and_then(|p| p.as_array()));
+        let mut usage = Usage::default();
 
         // Phase 1 — gather independent opinions concurrently (each member sees only its persona).
         let futs: Vec<_> = personas
@@ -515,11 +569,18 @@ impl<'a> AgentLoop<'a> {
                 ];
                 Box::pin(async move {
                     let turn = self.model.call(&msgs, &[]).await;
-                    (name.clone(), turn.content.unwrap_or_default())
+                    (name.clone(), turn.content.unwrap_or_default(), turn.usage)
                 })
             })
             .collect();
-        let opinions = futures_util::future::join_all(futs).await;
+        let results = futures_util::future::join_all(futs).await;
+        let opinions: Vec<(String, String)> = results
+            .into_iter()
+            .map(|(name, content, u)| {
+                usage.add(u);
+                (name, content)
+            })
+            .collect();
 
         // Phase 2 — synthesize. The chair sees the question + every member's opinion.
         let mut prompt = format!(
@@ -534,7 +595,8 @@ impl<'a> AgentLoop<'a> {
              the strongest reasoning, and briefly note any critical dissent. Answer directly.",
         );
         let synth = self.model.call(&[json!({"role": "user", "content": prompt})], &[]).await;
-        synth.content.unwrap_or_default()
+        usage.add(synth.usage);
+        (synth.content.unwrap_or_default(), usage)
     }
 }
 
@@ -703,10 +765,10 @@ mod tests {
         ToolCall { id: "c1".into(), name: name.into(), arguments: args }
     }
     fn final_turn(s: &str) -> AssistantTurn {
-        AssistantTurn { content: Some(s.into()), tool_calls: vec![] }
+        AssistantTurn { content: Some(s.into()), tool_calls: vec![], ..Default::default() }
     }
     fn call_turn(tc: ToolCall) -> AssistantTurn {
-        AssistantTurn { content: None, tool_calls: vec![tc] }
+        AssistantTurn { content: None, tool_calls: vec![tc], ..Default::default() }
     }
 
     #[tokio::test]
@@ -724,6 +786,45 @@ mod tests {
         assert_eq!(res.status, AgentStatus::Final);
         assert!(res.answer.contains("hello world"));
         assert!(res.trace.contains(&("read_note".to_string(), true)));
+    }
+
+    #[tokio::test]
+    async fn usage_accumulates_across_model_calls() {
+        // Two model calls in one run: a tool-call turn (10/5) then a final turn (8/12).
+        // The loop must report the SUM as total_usage (18/17, total 35) — real counts, summed.
+        let dir = tmp_dir();
+        let reg = notes_registry(dir.clone());
+        reg.get("write_note").unwrap().run(json!({"name": "n", "content": "hello"}));
+        let turn1 = AssistantTurn {
+            tool_calls: vec![tc("read_note", json!({"name": "n"}))],
+            usage: Usage { prompt_tokens: 10, completion_tokens: 5 },
+            ..Default::default()
+        };
+        let turn2 = AssistantTurn {
+            content: Some("done".into()),
+            usage: Usage { prompt_tokens: 8, completion_tokens: 12 },
+            ..Default::default()
+        };
+        let model = Mock::new(vec![turn1, turn2]);
+        let hitl = HitlPolicy::new();
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 5, depth: 0, mode: Mode::Hitl };
+        let res = loop_.run(vec![json!({"role": "user", "content": "read n"})], &[], None, NOW).await;
+        assert_eq!(res.status, AgentStatus::Final);
+        assert_eq!(res.total_usage.prompt_tokens, 18);
+        assert_eq!(res.total_usage.completion_tokens, 17);
+        assert_eq!(res.total_usage.total_tokens(), 35);
+    }
+
+    #[tokio::test]
+    async fn usage_defaults_to_zero_when_unreported() {
+        // Mocks report no usage → total stays zero (so the server omits it → app shows an empty state).
+        let dir = tmp_dir();
+        let reg = notes_registry(dir);
+        let model = Mock::new(vec![final_turn("hi")]);
+        let hitl = HitlPolicy::new();
+        let loop_ = AgentLoop { model: &model, registry: &reg, hitl: &hitl, max_iters: 3, depth: 0, mode: Mode::Hitl };
+        let res = loop_.run(vec![], &[], None, NOW).await;
+        assert_eq!(res.total_usage.total_tokens(), 0);
     }
 
     #[tokio::test]
@@ -933,6 +1034,7 @@ mod tests {
             tool_calls: (0..6)
                 .map(|i| ToolCall { id: format!("c{i}"), name: "delegate".into(), arguments: json!({}) })
                 .collect(),
+            ..Default::default()
         };
         let model = Mock::new(vec![burst, final_turn("done")]);
         let hitl = HitlPolicy::new();

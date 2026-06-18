@@ -53,6 +53,19 @@ fn with_memory(memory: &MemoryStore, mut messages: Vec<Value>) -> Vec<Value> {
     messages
 }
 
+/// Real token usage as a JSON object — or `None` when the model server reported nothing (so the
+/// client shows an honest empty state rather than a fabricated zero). "Real data or none."
+fn usage_json(u: ginexus_agent::Usage) -> Option<Value> {
+    if u.total_tokens() == 0 {
+        return None;
+    }
+    Some(json!({
+        "prompt_tokens": u.prompt_tokens,
+        "completion_tokens": u.completion_tokens,
+        "total_tokens": u.total_tokens(),
+    }))
+}
+
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -668,9 +681,16 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 AgentStatus::PendingApproval => "pending_approval",
                 AgentStatus::MaxIters => "max_iters",
             };
-            let _ = state.audit.record("agent", json!({"status": status}));
-            json_ok(&mut stream, json!({"status": status, "answer": res.answer, "pending": res.pending,
-                                        "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()})).await;
+            let usage_v = usage_json(res.total_usage);
+            let mut audit_data = json!({"status": status});
+            if let Some(u) = &usage_v { audit_data["usage"] = u.clone(); }
+            let _ = state.audit.record("agent", audit_data);
+            let mut agent_resp = json!({"status": status, "answer": res.answer, "pending": res.pending,
+                                        "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()});
+            if let Some(u) = usage_v {
+                agent_resp["usage"] = u;
+            }
+            json_ok(&mut stream, agent_resp).await;
         }
         ("POST", "/v1/agent/stream") => {
             // Streaming agent: same loop as /v1/agent, but emits Server-Sent Events as work happens —
@@ -723,9 +743,15 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                     AgentStatus::PendingApproval => "pending_approval",
                     AgentStatus::MaxIters => "max_iters",
                 };
-                let _ = state.audit.record("agent_stream", json!({"status": status}));
-                let done = json!({"status": status, "answer": res.answer, "pending": res.pending,
+                let usage_v = usage_json(res.total_usage);
+                let mut audit_data = json!({"status": status});
+                if let Some(u) = &usage_v { audit_data["usage"] = u.clone(); }
+                let _ = state.audit.record("agent_stream", audit_data);
+                let mut done = json!({"status": status, "answer": res.answer, "pending": res.pending,
                                   "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()});
+                if let Some(u) = usage_v {
+                    done["usage"] = u;
+                }
                 let _ = tx.send(format!("event: done\ndata: {}\n\n", done));
                 // tx + the closures' senders drop when this future completes → rx closes → drain ends.
             };

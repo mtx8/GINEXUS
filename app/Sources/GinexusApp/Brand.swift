@@ -251,34 +251,37 @@ struct FloatingPanel<Content: View>: View {
             content()
         }
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(Brand.ink800.opacity(0.9))
+        // Really subtle fill — the panel reads as a floating outline, not a solid block.
+        .background(Brand.ink850.opacity(0.42))
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Brand.line2, lineWidth: 1))
-        .overlay(alignment: .top) { Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1).padding(.horizontal, 2) }
-        .shadow(color: .black.opacity(0.55), radius: 26, x: 0, y: 12)
+        // Thin, bright hairline border.
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.14), lineWidth: 1))
+        .shadow(color: .black.opacity(0.45), radius: 22, x: 0, y: 10)
     }
 }
 
-/// A thin floating tab shown when a panel is collapsed — a rotated label + expand chevron.
+/// A small floating tab shown when a panel is collapsed — a rotated label + expand chevron. Compact
+/// (intrinsic height, vertically centered by its column), so a hidden panel reads as a short pill,
+/// not a full-height bar. Same subtle-fill / bright-hairline language as the expanded panel.
 struct CollapsedTab: View {
     let label: String
     var expandIcon: String = "chevron.right"
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 12) {
-                Image(systemName: expandIcon).font(.system(size: 11, weight: .semibold))
+            VStack(spacing: 10) {
+                Image(systemName: expandIcon).font(.system(size: 10, weight: .semibold))
                 Text(label.uppercased()).font(Brand.mono(9.5, weight: .bold)).kerning(2)
-                    .fixedSize().rotationEffect(.degrees(-90)).frame(width: 14, height: 90)
+                    .fixedSize().rotationEffect(.degrees(-90)).frame(width: 14, height: 64)
             }
             .foregroundStyle(Brand.bone300)
             .padding(.vertical, 16)
-            .frame(width: 36)
-            .frame(maxHeight: .infinity)
-            .background(Brand.ink800.opacity(0.9))
+            .frame(width: 34)
+            .background(Brand.ink850.opacity(0.42))
             .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line2, lineWidth: 1))
-            .shadow(color: .black.opacity(0.5), radius: 18, x: 0, y: 8)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.14), lineWidth: 1))
+            .shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
+            .contentShape(Rectangle())   // whole pill is the click target
         }.buttonStyle(.plain).help("Expand")
     }
 }
