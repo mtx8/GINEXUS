@@ -45,7 +45,7 @@ struct ContentView: View {
             GlyphMark(size: 38, spinning: model.sending).padding(.top, 16).padding(.bottom, 12)
             railIcon("square.and.pencil", "New conversation", enabled: model.connected && !model.sending) { model.newChat() }
             railIcon("brain", "Memory — what GINEXUS knows", enabled: model.connected) { model.openMemory() }
-            railIcon("cube.box", "Models — download / manage", enabled: model.connected) { model.openModels() }
+            railIcon("cube.box", "Models — download / manage", enabled: model.connected, animating: model.pulling) { model.openModels() }
             railIcon("gearshape", "Settings") { model.openSettings() }   // always reachable (recovery)
             Spacer()
             StatusDot(color: model.connected ? Brand.success : Brand.bone400, glow: model.connected, size: 8)
@@ -59,10 +59,11 @@ struct ContentView: View {
     }
 
     private func railIcon(_ system: String, _ help: String, enabled: Bool = true,
-                          _ action: @escaping () -> Void) -> some View {
+                          animating: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system).font(.system(size: 16))
-                .foregroundStyle(enabled ? Brand.bone300 : Brand.bone400)
+                .foregroundStyle(animating ? Brand.ember500 : (enabled ? Brand.bone300 : Brand.bone400))
+                .symbolEffect(.pulse, isActive: animating)   // pulses while a model is downloading
                 .frame(width: 40, height: 40)
                 .contentShape(Rectangle())
         }
