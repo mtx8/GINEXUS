@@ -243,6 +243,13 @@ struct BlockCard<Content: View>: View {
                                 withAnimation(.easeInOut(duration: 0.72).repeatForever(autoreverses: true)) { pulse = true }
                             }
                         }
+                        .onChange(of: iconAnimating) { _, on in
+                            if on {
+                                withAnimation(.easeInOut(duration: 0.72).repeatForever(autoreverses: true)) { pulse = true }
+                            } else {
+                                withAnimation(.easeOut(duration: 0.2)) { pulse = false }   // settle when the step completes
+                            }
+                        }
                 }
                 Text(label.uppercased()).font(Brand.mono(10, weight: .semibold)).kerning(1.4).foregroundStyle(accent)
                 Spacer(minLength: 0)

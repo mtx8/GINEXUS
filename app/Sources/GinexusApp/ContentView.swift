@@ -260,26 +260,33 @@ struct ContentView: View {
         }
     }
 
-    /// Friendly present-tense label for the same activity (raw tool name as the fallback).
-    static func activityLabel(_ tool: String) -> String {
+    /// Friendly label for an activity — present tense while running, neutral/past when done.
+    static func activityLabel(_ tool: String, done: Bool) -> String {
         let t = tool.lowercased()
         switch true {
-        case t.contains("image") || t.contains("photo"):              return "Generating image"
-        case t.contains("document") || t.contains("pdf") || t.contains("docx"): return "Creating document"
-        case t.contains("note"):                                       return "Writing note"
-        case t.contains("deep_research") || t.contains("research"):    return "Deep research"
-        case t.contains("delegate") || t.contains("subagent") || t.contains("worker"): return "Agents working"
-        case t.contains("council"):                                    return "Consulting council"
-        case t.contains("web") || t.contains("fetch") || t.contains("search"): return "Researching the web"
-        case t.contains("command") || t.contains("terminal") || t.contains("shell"): return "Running command"
-        case t.contains("memory") || t.contains("recall") || t.contains("remember") || t.contains("consolidate"): return "Working memory"
-        case t.contains("obsidian") || t.contains("vault"):            return "Reading the vault"
-        case t.contains("ingest") || t.contains("import"):             return "Ingesting data"
-        case t.contains("calendar"):                                   return "Checking calendar"
-        case t.contains("shortcut"):                                   return "Running shortcut"
-        case t.contains("status") || t.contains("system"):            return "Checking system"
+        case t.contains("image") || t.contains("photo"):              return done ? "Image generated" : "Generating image"
+        case t.contains("document") || t.contains("pdf") || t.contains("docx"): return done ? "Document created" : "Creating document"
+        case t.contains("note"):                                       return done ? "Note written" : "Writing note"
+        case t.contains("deep_research") || t.contains("research"):    return done ? "Deep research" : "Researching"
+        case t.contains("delegate") || t.contains("subagent") || t.contains("worker"): return done ? "Agents finished" : "Agents working"
+        case t.contains("council"):                                    return done ? "Council convened" : "Consulting council"
+        case t.contains("web") || t.contains("fetch") || t.contains("search"): return done ? "Web research" : "Researching the web"
+        case t.contains("command") || t.contains("terminal") || t.contains("shell"): return done ? "Command run" : "Running command"
+        case t.contains("memory") || t.contains("recall") || t.contains("remember") || t.contains("consolidate"): return done ? "Memory updated" : "Working memory"
+        case t.contains("obsidian") || t.contains("vault"):            return done ? "Vault read" : "Reading the vault"
+        case t.contains("ingest") || t.contains("import"):             return done ? "Data ingested" : "Ingesting data"
+        case t.contains("calendar"):                                   return done ? "Calendar checked" : "Checking calendar"
+        case t.contains("shortcut"):                                   return done ? "Shortcut run" : "Running shortcut"
+        case t.contains("status") || t.contains("system"):            return done ? "System checked" : "Checking system"
         default:                                                       return tool
         }
+    }
+
+    /// The turn's activity timeline: completed steps (in order) + the one currently running, if any.
+    private func activityTimeline(_ msg: ChatMsg) -> [(tool: String, done: Bool)] {
+        var items: [(tool: String, done: Bool)] = msg.steps.map { (tool: $0, done: true) }
+        if msg.streaming, let s = msg.status { items.append((tool: s, done: false)) }
+        return items
     }
 
     @ViewBuilder private func streamBlock(_ msg: ChatMsg) -> some View {
@@ -297,22 +304,19 @@ struct ContentView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 10) {
-                // Completed agent actions (tools used this turn) → clean Action cards, each with the
-                // icon for what it did (photo / document / research / agents / …).
-                ForEach(Array(msg.steps.enumerated()), id: \.offset) { _, step in
-                    BlockCard(label: "\(Self.activityLabel(step))", icon: Self.activityIcon(step), accent: Brand.ember300) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Brand.success)
-                            Text("Completed").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
-                        }
-                    }
-                }
-                // Live action card while a tool runs — the icon CHANGES to match the activity and
-                // ANIMATES (pulses) until it finishes.
-                if msg.streaming, let s = msg.status {
-                    BlockCard(label: Self.activityLabel(s), icon: Self.activityIcon(s),
-                              accent: Brand.ember300, active: true, iconAnimating: true) {
-                        HStack(spacing: 7) {
+                // ONE timeline of activity cards: each completed step (done) plus the one currently
+                // running. A running card flips to "Completed" IN PLACE (same offset → same card),
+                // so it "completes from the same animation". Each shows the icon for what it is doing.
+                ForEach(Array(activityTimeline(msg).enumerated()), id: \.offset) { _, item in
+                    BlockCard(label: Self.activityLabel(item.tool, done: item.done),
+                              icon: Self.activityIcon(item.tool), accent: Brand.ember300,
+                              active: !item.done, iconAnimating: !item.done) {
+                        if item.done {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Brand.success)
+                                Text("Completed").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                            }
+                        } else {
                             Text("Running…").font(Brand.mono(11)).foregroundStyle(Brand.ember300)
                         }
                     }
