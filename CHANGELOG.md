@@ -10,7 +10,7 @@ running history.
 
 - **v1 acceptance test PASSES** end-to-end on the Rust core: research (web_fetch) → write-to-file
   (HITL approval) → remember (persistent memory), with cross-language (Swift↔Rust) approval-token parity.
-- **8 Rust crates** — security, agent, gateway, mcp, memory, skills, sanitize, server. **106 Rust tests + 16 Swift tests.**
+- **8 Rust crates** — security, agent, gateway, mcp, memory, skills, sanitize, server. **108 Rust tests + 16 Swift tests.**
 - **App**: self-contained signed `GINEXUS.app` (embeds the Rust core), redesigned as a three-pane
   **"Execution Stream"** (icon rail · floating Conversations card · stream of agent-flow blocks ·
   floating Context & Tools card) on the MackTrax brand. Token-streaming chat with content-aware
@@ -21,6 +21,30 @@ running history.
 - **Default model**: Qwen3-30B-A3B-Instruct-2507 (Apache-2.0) via Ollama. Vision tier ready (Qwen3-VL-30B-A3B, pull when Ollama ≥ 0.12.7).
 
 ---
+
+## 2026-06-18 — Polish + real-work pass (PRs #34–#45)
+
+A long operator-driven session refining the shell and the actually-doing-work flows.
+
+- **Layout (#34, #35, #37):** the GINEXUS header is now a **full-width top bar** (right of the icon
+  rail) with the panels + stream BELOW it — the brand no longer gets squeezed between panels; a hidden
+  panel collapses to a small floating tab high in the upper area, with GINEXUS clearly above it.
+- **Brand (#36, #38):** the wordmark never wraps/compresses (`lineLimit(1)` + `fixedSize`); the AUTO /
+  HITL toggle is box-less (just the ember bolt + label).
+- **Working-state animation (#36, #39, #40, #43, #45):** the corner glyph + the active reply avatar
+  rotate/breathe while the AI is thinking and **stop when done** (fixed a stuck `repeatForever`); the
+  Models rail icon pulses while a model **downloads**. Each tool shows **one contextual card** that
+  animates and then completes **in place** — photo for images, document for PDFs/Word, research, agents,
+  council, web, terminal, memory, vault. The card now appears from an **early "intent" signal** (the
+  moment the model commits to a tool, before its arguments finish) so it animates for the whole job,
+  with tense-aware labels ("Generating image" → "Image generated").
+- **Documents (#41, #42):** the agent no longer generates an image for a document/PDF request (tool
+  descriptions + an `AGENT_GUIDANCE` system rule keep tool selection disciplined); and both renderers
+  now **parse the model's Markdown** into properly formatted files — **PDF** in Helvetica with accurate
+  AFM proportional wrapping (no clipping), inline bold/italic, sized headings, bullets/numbered lists,
+  pagination; **DOCX** with real Word headings/bold/italic/bulleted paragraphs. Verified by rendering.
+- **Privacy (#44):** GINEXUS never reveals the macOS username or absolute home path — tool results and
+  replies use `~/…` (via `abbreviate_home`), full path only if explicitly asked.
 
 ## 2026-06-18 — Token-usage gauge + side-panel polish
 
