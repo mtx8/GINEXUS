@@ -24,6 +24,13 @@ struct BlockKV: Identifiable, Sendable {
     let value: String
 }
 
+/// Real token usage for one agent turn (from the core's SSE done event). Total is server-provided.
+struct TokenUsage: Sendable, Equatable {
+    let prompt: Int
+    let completion: Int
+    let total: Int
+}
+
 /// One archival memory fact surfaced in the memory browser.
 struct MemFact: Identifiable, Sendable {
     let id = UUID()
@@ -104,6 +111,9 @@ final class AppModel: ObservableObject {
     private var modeString: String { autonomous ? "autonomous" : "hitl" }
     /// HITL: when set, an irreversible/OS action is waiting on the biometric approval sheet.
     @Published var pending: PendingAction?
+
+    /// Token usage from the most recent agent turn (nil until one completes with real counts).
+    @Published var lastUsage: TokenUsage?
 
     /// Memory browser ("what GINEXUS knows about you"): core blocks + searchable archival facts.
     @Published var memoryOpen = false
@@ -232,6 +242,7 @@ final class AppModel: ObservableObject {
         chat = conv.messages
         attachment = nil
         pending = nil
+        lastUsage = nil   // token gauge reflects the ACTIVE conversation; clear on switch
     }
 
     /// Start a fresh chat. Blocked mid-stream so the streaming bubble lookup can't be orphaned.
@@ -249,6 +260,7 @@ final class AppModel: ObservableObject {
         attachment = nil
         attachmentThumb = nil
         pending = nil
+        lastUsage = nil   // fresh chat starts with no token usage shown
         chatInput = ""
         unsavedIDs.insert(id)
         conversations.insert(ConversationMeta(id: id, title: "New chat", updatedAt: Date(), messageCount: 0), at: 0)
@@ -968,6 +980,14 @@ final class AppModel: ObservableObject {
             guard let d = data.data(using: .utf8),
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
             chat[i].status = nil
+            // Real token usage for this turn (omitted by the core when the model server reported none).
+            if let u = o["usage"] as? [String: Any] {
+                let p = max(0, (u["prompt_tokens"] as? Int) ?? 0)
+                let c = max(0, (u["completion_tokens"] as? Int) ?? 0)
+                // Keep header + bar coherent even if a server reports an inconsistent total.
+                let t = max((u["total_tokens"] as? Int) ?? 0, p + c)
+                if t > 0 { lastUsage = TokenUsage(prompt: p, completion: c, total: t) }
+            }
             let st = (o["status"] as? String) ?? "final"
             if st == "pending_approval", let p = o["pending"] as? [String: Any] {
                 chat.remove(at: i)   // drop the empty placeholder; the approval sheet drives the re-run

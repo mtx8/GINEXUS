@@ -7,5 +7,5 @@ pub mod app_tools;
 pub mod obsidian;
 pub mod documents;
 
-pub use loop_::{AgentLoop, AgentResult, AgentStatus, ApprovalGrant, AssistantTurn, Mode, ModelCall, ToolCall};
+pub use loop_::{AgentLoop, AgentResult, AgentStatus, ApprovalGrant, AssistantTurn, Mode, ModelCall, ToolCall, Usage};
 pub use tools::{Tool, ToolRegistry, ToolResult, notes_registry};

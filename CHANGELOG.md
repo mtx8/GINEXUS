@@ -10,7 +10,7 @@ running history.
 
 - **v1 acceptance test PASSES** end-to-end on the Rust core: research (web_fetch) → write-to-file
   (HITL approval) → remember (persistent memory), with cross-language (Swift↔Rust) approval-token parity.
-- **8 Rust crates** — security, agent, gateway, mcp, memory, skills, sanitize, server. **103 Rust tests + 16 Swift tests.**
+- **8 Rust crates** — security, agent, gateway, mcp, memory, skills, sanitize, server. **106 Rust tests + 16 Swift tests.**
 - **App**: self-contained signed `GINEXUS.app` (embeds the Rust core), redesigned as a three-pane
   **"Execution Stream"** (icon rail · floating Conversations card · stream of agent-flow blocks ·
   floating Context & Tools card) on the MackTrax brand. Token-streaming chat with content-aware
@@ -21,6 +21,30 @@ running history.
 - **Default model**: Qwen3-30B-A3B-Instruct-2507 (Apache-2.0) via Ollama. Vision tier ready (Qwen3-VL-30B-A3B, pull when Ollama ≥ 0.12.7).
 
 ---
+
+## 2026-06-18 — Token-usage gauge + side-panel polish
+
+A real **token-usage gauge** wired end-to-end, and a second pass on the floating side panels per
+operator feedback. Designed by a parallel "understand" workflow (one reader per code layer), built
+coherently across Rust + Swift, then hardened by a 4-dimension adversarial review (each finding
+independently verified — which correctly **refuted** a false "panic" claim and two false "invalid SF
+Symbol" claims, the latter settled by an empirical `NSImage(systemSymbolName:)` probe).
+
+- **Real token usage, gauge in the Context rail.** The gateway now sends `stream_options.include_usage`
+  and captures the late empty-`choices` usage chunk (and the non-streaming `usage`); `AssistantTurn`
+  carries per-call `Usage{prompt,completion}` (now **u64**, no truncation), and `AgentResult.total_usage`
+  **sums every model call in a run** — main-loop iterations plus the delegate / council / deep_research
+  fan-outs and all their workers. The core emits `usage` on the `/v1/agent` + `/v1/agent/stream` done
+  frames **only when real (total > 0)** — "real data or none" — and records it in the audit trail. The
+  app shows a clean gauge (prompt / completion counts, an ember-vs-bone proportional bar, total) that
+  resets per conversation and shows "—" until a turn reports real counts. **Verified live**: a real
+  30B turn returned `usage{prompt 1391, completion 2, total 1393}` on the SSE done frame. +2 Rust tests
+  (accumulation + zero-default), bar width clamped against a malformed total.
+- **Side panels, second pass.** Floating panels now use a **really subtle fill** (`ink850` @ 0.42)
+  with a **thin bright hairline** (`white` @ 0.14) so they read as outlines, not solid blocks; a
+  **collapsed panel is now a small floating pill** (compact, vertically centered — no longer a
+  full-height bar) with a full-pill click target; and the Enabled-Tools icons are a cleaner, modern
+  **monochrome** set (`network`, `terminal.fill`, `brain.head.profile`, `person.3.fill`, …).
 
 ## 2026-06-18 — Make-it-beautiful: the "Execution Stream" redesign (MackTrax brand)
 

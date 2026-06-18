@@ -12,7 +12,7 @@
 //! The roster is data-driven: load from JSON via `GINEXUS_MODELS_CONFIG`, else `default_local()`.
 
 use async_trait::async_trait;
-use ginexus_agent::{AssistantTurn, ModelCall, ToolCall};
+use ginexus_agent::{AssistantTurn, ModelCall, ToolCall, Usage};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -267,7 +267,7 @@ impl Gateway {
                 tool_calls.push(ToolCall { id, name, arguments });
             }
         }
-        Ok(AssistantTurn { content, tool_calls })
+        Ok(AssistantTurn { content, tool_calls, usage: parse_usage(v.get("usage")) })
     }
 
     /// Streaming completion: same as `complete_with_tools` but forwards each content delta to
@@ -283,8 +283,8 @@ impl Gateway {
     {
         use futures_util::StreamExt;
         let ep = self.resolve(model);
-        let mut body =
-            json!({"model": ep.model, "messages": messages, "stream": true, "temperature": 0});
+        let mut body = json!({"model": ep.model, "messages": messages, "stream": true,
+                              "temperature": 0, "stream_options": {"include_usage": true}});
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
@@ -304,6 +304,8 @@ impl Gateway {
         let mut emitted_len = 0usize; // bytes of displayable (think-stripped) content already forwarded
         // tool-call accumulators keyed by index: (id, name, arguments-so-far)
         let mut tcs: std::collections::BTreeMap<usize, (String, String, String)> = Default::default();
+        // Real token usage — arrives on a late chunk with empty `choices` (stream_options.include_usage).
+        let mut usage = Usage::default();
         let mut stream = resp.bytes_stream();
         let mut buf = String::new();
         while let Some(chunk) = stream.next().await {
@@ -324,6 +326,12 @@ impl Gateway {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
+                // The usage chunk arrives late with an empty `choices` array; capture and keep going.
+                if let Some(u) = v.get("usage") {
+                    if !u.is_null() {
+                        usage = parse_usage(Some(u));
+                    }
+                }
                 let delta = &v["choices"][0]["delta"];
                 if let Some(tok) = delta.get("content").and_then(|c| c.as_str()) {
                     if !tok.is_empty() {
@@ -372,7 +380,19 @@ impl Gateway {
         Ok(AssistantTurn {
             content: if answer.is_empty() { None } else { Some(answer.to_string()) },
             tool_calls,
+            usage,
         })
+    }
+}
+
+/// Extract a `Usage` from an OpenAI-compatible `usage` object. Missing/garbage → zeros (never faked).
+fn parse_usage(u: Option<&Value>) -> Usage {
+    match u {
+        Some(u) => Usage {
+            prompt_tokens: u.get("prompt_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+            completion_tokens: u.get("completion_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
+        },
+        None => Usage::default(),
     }
 }
 
@@ -506,7 +526,7 @@ impl ModelCall for BoundModel<'_> {
         self.gateway
             .complete_with_tools(&self.model, messages, tools)
             .await
-            .unwrap_or_else(|e| AssistantTurn { content: Some(format!("model error: {e}")), tool_calls: vec![] })
+            .unwrap_or_else(|e| AssistantTurn { content: Some(format!("model error: {e}")), tool_calls: vec![], usage: Usage::default() })
     }
 
     async fn call_streaming(
@@ -515,7 +535,7 @@ impl ModelCall for BoundModel<'_> {
         self.gateway
             .complete_with_tools_streaming(&self.model, messages, tools, |t| on_token(t.to_string()))
             .await
-            .unwrap_or_else(|e| AssistantTurn { content: Some(format!("model error: {e}")), tool_calls: vec![] })
+            .unwrap_or_else(|e| AssistantTurn { content: Some(format!("model error: {e}")), tool_calls: vec![], usage: Usage::default() })
     }
 }
 

@@ -444,17 +444,19 @@ struct ContentView: View {
                         statRow("Memory facts", model.memFactsCount > 0 ? "\(model.memFactsCount)" : "—", dot: nil)
                     }
                     railDivider
+                    railSection("Token Usage") { TokenUsageGauge(usage: model.lastUsage) }
+                    railDivider
                     railSection("Current File Context") { currentContextContent }
                     railDivider
                     railSection("Enabled Tools") {
-                        capRow("globe", "Web research", on: true)
-                        capRow("terminal", "Terminal", on: true)
-                        capRow("brain", "Memory", on: true)
-                        capRow("person.3", "Council", on: true)
+                        capRow("network", "Web research", on: true)
+                        capRow("terminal.fill", "Terminal", on: true)
+                        capRow("brain.head.profile", "Memory", on: true)
+                        capRow("person.3.fill", "Council", on: true)
                         capRow("doc.text.magnifyingglass", "Deep research", on: true)
-                        capRow("photo.badge.plus", "Image generation", on: model.settings.settings.mediaSidecarEnabled) { model.openSettings() }
-                        capRow("eye", "Vision", on: model.visionAvailable, warn: !model.visionAvailable, note: model.visionStatus) { model.openModels() }
-                        capRow("books.vertical", "Obsidian vault", on: model.obsidianAvailable) { model.openSettings() }
+                        capRow("photo.fill.on.rectangle.fill", "Image generation", on: model.settings.settings.mediaSidecarEnabled) { model.openSettings() }
+                        capRow("eye.fill", "Vision", on: model.visionAvailable, warn: !model.visionAvailable, note: model.visionStatus) { model.openModels() }
+                        capRow("books.vertical.fill", "Obsidian vault", on: model.obsidianAvailable) { model.openSettings() }
                     }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 15)
@@ -509,10 +511,11 @@ struct ContentView: View {
     private func capRow(_ icon: String, _ label: String, on: Bool, warn: Bool = false,
                         note: String = "", config: (() -> Void)? = nil) -> some View {
         let statusColor = on ? Brand.success : (warn ? Brand.warning : Brand.bone400)
-        return HStack(spacing: 9) {
-            Image(systemName: icon).font(.system(size: 11))
-                .foregroundStyle(on ? Brand.ember500.opacity(0.9) : Brand.bone400).frame(width: 14)
-            Text(label).font(Brand.body(12)).foregroundStyle(on ? Brand.bone100 : Brand.bone300).lineLimit(1)
+        return HStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 13, weight: .medium))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(on ? Brand.ember500 : Brand.bone400).frame(width: 18)
+            Text(label).font(Brand.body(12.5)).foregroundStyle(on ? Brand.bone100 : Brand.bone300).lineLimit(1)
             Spacer(minLength: 6)
             if let config {
                 Button(action: config) {
@@ -713,6 +716,45 @@ struct ContentView: View {
 }
 
 // MARK: - streaming answer text with a blinking ember cursor (matches the EXECUTE accent)
+// MARK: - token usage gauge (Context rail) — REAL counts only, honest empty state ("—")
+private struct TokenUsageGauge: View {
+    let usage: TokenUsage?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            metricRow("Prompt", usage.map { "\($0.prompt)" })
+            metricRow("Completion", usage.map { "\($0.completion)" })
+            // Proportional bar: ember = prompt, bone = completion. Hidden until there's real data.
+            if let u = usage, u.total > 0 {
+                GeometryReader { geo in
+                    // Clamp to [0, width] so a malformed total (< prompt) can't overflow the bar.
+                    let pw = min(geo.size.width, geo.size.width * CGFloat(u.prompt) / CGFloat(u.total))
+                    HStack(spacing: 0) {
+                        Rectangle().fill(Brand.ember500).frame(width: max(0, pw))
+                        Rectangle().fill(Brand.bone300.opacity(0.55)).frame(width: max(0, geo.size.width - pw))
+                    }
+                }
+                .frame(height: 4)
+                .clipShape(Capsule())
+                .padding(.vertical, 1)
+            }
+            Divider().overlay(Brand.line1).padding(.vertical, 1)
+            HStack(spacing: 8) {
+                Text("TOTAL").font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
+                Spacer(minLength: 8)
+                Text(usage.map { "\($0.total)" } ?? "—")
+                    .font(Brand.mono(12, weight: .semibold)).foregroundStyle(usage == nil ? Brand.bone400 : Brand.ember500)
+            }
+        }
+    }
+    private func metricRow(_ label: String, _ value: String?) -> some View {
+        HStack(spacing: 8) {
+            Text(label.uppercased()).font(Brand.mono(10)).foregroundStyle(Brand.bone300)
+            Spacer(minLength: 8)
+            Text(value ?? "—").font(Brand.mono(11, weight: .medium)).foregroundStyle(value == nil ? Brand.bone400 : Brand.bone100)
+        }
+    }
+}
+
 private struct StreamingText: View {
     let text: String
     @State private var on = true
