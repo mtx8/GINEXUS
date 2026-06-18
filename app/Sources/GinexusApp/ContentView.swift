@@ -70,7 +70,8 @@ struct ContentView: View {
                 .transition(.move(edge: .leading).combined(with: .opacity))
         } else {
             CollapsedTab(label: "Chats", expandIcon: "chevron.right") { sidebarShown = true }
-                .padding(.leading, 12).padding(.vertical, 16)
+                .frame(maxHeight: .infinity, alignment: .top)   // sit high — upper area, not centered
+                .padding(.leading, 12).padding(.top, 60).padding(.bottom, 16)
                 .transition(.move(edge: .leading).combined(with: .opacity))
         }
     }
@@ -428,7 +429,8 @@ struct ContentView: View {
                 .transition(.move(edge: .trailing).combined(with: .opacity))
         } else {
             CollapsedTab(label: "Tools", expandIcon: "chevron.left") { contextShown = true }
-                .padding(.trailing, 12).padding(.vertical, 16)
+                .frame(maxHeight: .infinity, alignment: .top)   // sit high — upper area, not centered
+                .padding(.trailing, 12).padding(.top, 60).padding(.bottom, 16)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
         }
     }
