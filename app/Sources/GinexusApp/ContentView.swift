@@ -34,7 +34,7 @@ struct ContentView: View {
     // MARK: ── far-left icon rail ───────────────────────────────────────────────
     private var iconRail: some View {
         VStack(spacing: 6) {
-            GlyphMark(size: 38).padding(.top, 16).padding(.bottom, 12)
+            GlyphMark(size: 38, spinning: model.sending).padding(.top, 16).padding(.bottom, 12)
             railIcon("square.and.pencil", "New conversation", enabled: model.connected && !model.sending) { model.newChat() }
             railIcon("brain", "Memory — what GINEXUS knows", enabled: model.connected) { model.openMemory() }
             railIcon("cube.box", "Models — download / manage", enabled: model.connected) { model.openModels() }
@@ -145,12 +145,13 @@ struct ContentView: View {
 
     private var streamHeader: some View {
         HStack(spacing: 12) {
-            Wordmark(size: 30)
+            Wordmark(size: 30).layoutPriority(2)   // never yields — the brand holds its line
             Rectangle().fill(Brand.line2).frame(width: 1, height: 22).padding(.horizontal, 2)
             Text("Execution Stream").font(Brand.body(14, weight: .medium)).foregroundStyle(Brand.bone300)
-            Spacer()
-            autonomyToggle
-            modelSelector
+                .lineLimit(1).truncationMode(.tail).layoutPriority(0)   // truncates first on a tight header
+            Spacer(minLength: 8)
+            autonomyToggle.layoutPriority(1)
+            modelSelector.layoutPriority(1)
         }
     }
 
@@ -258,7 +259,7 @@ struct ContentView: View {
                 }
                 // The answer — bare, readable prose led by the brand glyph (Gemini-clean).
                 HStack(alignment: .top, spacing: 12) {
-                    GlyphMark(size: 22)
+                    GlyphMark(size: 22, spinning: msg.streaming)
                     VStack(alignment: .leading, spacing: 10) {
                         if msg.streaming {
                             StreamingText(text: msg.text)
