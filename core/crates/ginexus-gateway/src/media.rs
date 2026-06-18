@@ -21,8 +21,11 @@ pub fn image_generate_tool(base: String) -> Tool {
     let base = Arc::new(base.trim_end_matches('/').to_string());
     Tool::new(
         "image_generate",
-        "Generate an image locally from a text prompt (Z-Image-Turbo on Apple MLX) and save it to \
-         the user's media folder. Use for any 'make/draw/generate an image of …' request. Returns \
+        "Generate a PICTURE/illustration locally from a text prompt (Z-Image-Turbo on Apple MLX) and \
+         save it to the user's media folder. Use ONLY when the user EXPLICITLY asks for an image, \
+         picture, illustration, photo, drawing, artwork, or visual. Do NOT call this for a story, \
+         article, report, note, or document request (including a PDF or Word file) — those need only \
+         `write_document`; never add an illustration unless the user explicitly asked for one. Returns \
          the saved PNG path — include that exact path in your reply so the app can show it.",
         json!({"type": "object",
                "properties": {

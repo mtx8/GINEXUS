@@ -53,6 +53,23 @@ fn with_memory(memory: &MemoryStore, mut messages: Vec<Value>) -> Vec<Value> {
     messages
 }
 
+/// Base behavioral guidance for the tool-using agent — keeps tool selection disciplined so it
+/// matches what the user actually asked for (e.g. a PDF request runs `write_document` only, NOT
+/// `image_generate`). Prepended as a system message ahead of the memory preamble.
+const AGENT_GUIDANCE: &str = "You are GINEXUS, a local-first personal AI agent on the user's Mac. \
+Use tools only when the request needs them, and only the tools it needs — prefer the smallest set \
+that fulfills the request. Generate an image ONLY when the user explicitly asks for a picture, \
+image, illustration, photo, drawing, or artwork. For a story, article, report, note, or document \
+(including a PDF or Word/.docx file), use write_document ALONE — never also generate an image \
+unless the user explicitly asked for a picture too.";
+
+/// Agent message stack: base guidance + memory preamble + the conversation.
+fn agent_messages(memory: &MemoryStore, raw: Vec<Value>) -> Vec<Value> {
+    let mut messages = with_memory(memory, raw);
+    messages.insert(0, json!({"role": "system", "content": AGENT_GUIDANCE}));
+    messages
+}
+
 /// Real token usage as a JSON object — or `None` when the model server reported nothing (so the
 /// client shows an honest empty state rather than a fabricated zero). "Real data or none."
 fn usage_json(u: ginexus_agent::Usage) -> Option<Value> {
@@ -665,7 +682,7 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             let requested = if has_img { None } else { body.get("model").and_then(|m| m.as_str()) };
             let task = if has_img { "vision" } else { "reason" };
             let model = state.gateway.select(requested, task, difficulty, false);
-            let messages = with_memory(&state.memory, raw);
+            let messages = agent_messages(&state.memory, raw);
             let grants = parse_grants(&body);
             // Autonomy mode: "autonomous" runs irreversible tools unattended EXCEPT hard-gated ones
             // (money/comms/legal/delete/arbitrary-exec); default is human-in-the-loop.
@@ -710,7 +727,7 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             let requested = if has_img { None } else { body.get("model").and_then(|m| m.as_str()) };
             let task = if has_img { "vision" } else { "reason" };
             let model = state.gateway.select(requested, task, difficulty, false);
-            let messages = with_memory(&state.memory, raw);
+            let messages = agent_messages(&state.memory, raw);
             let grants = parse_grants(&body);
             let mode = match body.get("mode").and_then(|m| m.as_str()) {
                 Some("autonomous") => ginexus_agent::Mode::Autonomous,
