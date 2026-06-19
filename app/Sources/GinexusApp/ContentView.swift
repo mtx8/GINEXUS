@@ -421,7 +421,8 @@ struct ContentView: View {
                         .onSubmit { model.send(model.chatInput) }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 12)
-                .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 10))
+                .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 10)) }
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
                 Button(action: { model.send(model.chatInput) }) {
                     Text("SEND").font(Brand.mono(12, weight: .bold)).kerning(1.6)
