@@ -65,6 +65,19 @@ enum Brand {
     static let canvasGlow = RadialGradient(
         colors: [ember500.opacity(0.06), .clear],
         center: .init(x: 0.5, y: -0.1), startRadius: 0, endRadius: 520)
+    /// Subtle top→bottom card fill — clean modern depth (a slightly raised ink top settling into the
+    /// card base). Neutral (no blue/teal) so the ember accent stays the only color.
+    static let cardFill = LinearGradient(
+        colors: [hex(0x1C1C25), hex(0x121217)],
+        startPoint: .top, endPoint: .bottom)
+    /// Even subtler, slightly translucent — for the big floating side panels that sit over the canvas.
+    static let panelFill = LinearGradient(
+        colors: [hex(0x16161D).opacity(0.92), hex(0x0E0E12).opacity(0.92)],
+        startPoint: .top, endPoint: .bottom)
+    /// A 1px inset top sheen drawn over a card for the "lit from above" modern look.
+    static let topSheen = LinearGradient(
+        colors: [Color.white.opacity(0.06), .clear],
+        startPoint: .top, endPoint: .bottom)
 
     // MARK: motion
     static let ease = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.2)
@@ -217,8 +230,9 @@ struct Panel<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(padding)
-        .background(Brand.ink700)
+        .background(Brand.cardFill)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 12)) }
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line1, lineWidth: 1))
         .shadow(color: .black.opacity(0.22), radius: 14, x: 0, y: 6)   // soft luxe depth, not gimmicky
     }
@@ -262,8 +276,9 @@ struct BlockCard<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 18).padding(.vertical, 15)
-        .background(Brand.ink700)
+        .background(Brand.cardFill)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 14)) }
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(active ? Brand.ember500.opacity(0.45) : Brand.line1, lineWidth: 1))
         .shadow(color: .black.opacity(0.28), radius: 16, x: 0, y: 7)
     }
@@ -295,9 +310,10 @@ struct FloatingPanel<Content: View>: View {
             content()
         }
         .frame(maxHeight: .infinity, alignment: .top)
-        // Really subtle fill — the panel reads as a floating outline, not a solid block.
-        .background(Brand.ink850.opacity(0.42))
+        // Subtle top→bottom gradient fill (clean, modern depth) over the canvas.
+        .background(Brand.panelFill)
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 16)) }
         // Thin, bright hairline border.
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.14), lineWidth: 1))
         .shadow(color: .black.opacity(0.45), radius: 22, x: 0, y: 10)

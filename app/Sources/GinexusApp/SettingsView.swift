@@ -178,7 +178,11 @@ struct SettingsView: View {
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(14)
-        .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(Brand.cardFill)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 10)) }
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+        .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
     }
 
     private func row<Control: View>(_ label: String, @ViewBuilder _ control: () -> Control) -> some View {
