@@ -64,7 +64,12 @@ image, illustration, photo, drawing, or artwork. For a story, article, report, n
 unless the user explicitly asked for a picture too. \
 PRIVACY: never reveal the user's macOS username or an absolute home path in your reply. Refer to \
 files with a ~ shortcut (e.g. `~/Downloads/report.pdf`), and only show the full absolute path if the \
-user explicitly asks for it.";
+user explicitly asks for it. \
+FILE LOCATION: image_generate and write_document save into GINEXUS's own internal folder — they do \
+NOT put the file in Downloads/Desktop/Documents. So whenever the user asks for a generated image or \
+document IN a specific folder, you MUST, right after creating it, call save_to_folder with that \
+file's path (from the create-tool's result) and the requested location, and report THAT saved path. \
+Never claim a file is in Downloads/Desktop/Documents unless you actually called save_to_folder.";
 
 /// Agent message stack: base guidance + memory preamble + the conversation.
 fn agent_messages(memory: &MemoryStore, raw: Vec<Value>) -> Vec<Value> {
@@ -161,14 +166,23 @@ async fn main() {
 
     let approvals = ApprovalVerifier::new(approval_key, boot_id.clone()).expect("approval key");
     let memory = Arc::new(MemoryStore::open(sd.join("memory")));
+    // The signed app's tool-host (sock, token) — present only when launched by the app. Lets file
+    // tools place their output into the user's folders (Downloads/…) with correct TCC attribution.
+    let app_host: Option<(String, String)> = match (
+        std::env::var("GINEXUS_APP_HOST_SOCK"),
+        std::env::var("GINEXUS_APP_HOST_TOKEN"),
+    ) {
+        (Ok(s), Ok(t)) if !s.is_empty() && !t.is_empty() => Some((s, t)),
+        _ => None,
+    };
     let mut registry = ginexus_agent::tools::notes_registry(sd.join("notes"));
     registry.register(ginexus_gateway::web::web_fetch_tool()); // SP4: read-only web research
-    registry.register(ginexus_agent::documents::write_document_tool(sd.join("documents"))); // PDF/Word (HITL)
+    registry.register(ginexus_agent::documents::write_document_tool(sd.join("documents"), app_host.clone())); // PDF/Word (HITL)
     // SP6: local image generation — registered only when the app launched the media sidecar and
     // injected its base URL. Generation is autonomous (writes only into the media dir).
     if let Ok(base) = std::env::var("GINEXUS_MEDIA_BASE") {
         if !base.is_empty() {
-            registry.register(ginexus_gateway::media::image_generate_tool(base));
+            registry.register(ginexus_gateway::media::image_generate_tool(base, app_host.clone()));
             let _ = std::fs::create_dir_all(sd.join("media"));
             #[cfg(unix)]
             {
@@ -263,10 +277,8 @@ async fn main() {
     // SP5: OS-bridge tools (Calendar/Shortcuts/system) — registered ONLY when the signed app
     // injects its tool-host socket + token. Execution runs in the app (TCC attribution); the core
     // advertises schemas and forwards calls. A headless core (no app) omits them.
-    if let (Ok(sock), Ok(tok)) =
-        (std::env::var("GINEXUS_APP_HOST_SOCK"), std::env::var("GINEXUS_APP_HOST_TOKEN"))
-    {
-        if !sock.is_empty() && !tok.is_empty() {
+    if let Some((sock, tok)) = app_host.clone() {
+        {
             for t in ginexus_agent::app_tools::app_tools(sock, tok) {
                 registry.register(t);
             }
