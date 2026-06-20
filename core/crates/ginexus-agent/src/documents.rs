@@ -623,23 +623,34 @@ fn safe_doc_path(base: &PathBuf, name: &str, ext: &str) -> Result<PathBuf, Strin
 }
 
 /// `write_document` — create a real PDF or Word document. Irreversible (writes a file → HITL-gated).
-pub fn write_document_tool(docs_dir: PathBuf) -> Tool {
+/// `app_host` (when the signed app is present) lets `location` place the file into a user folder.
+pub fn write_document_tool(docs_dir: PathBuf, app_host: Option<(String, String)>) -> Tool {
     let base = Arc::new(docs_dir);
+    let host = Arc::new(app_host);
+    let loc_note = if host.is_some() {
+        " To put it in a user folder, set `location` to downloads, desktop, or documents (default = \
+         GINEXUS's internal folder); it is placed there for the user automatically."
+    } else {
+        ""
+    };
+    let desc = format!(
+        "Create a real document file (PDF or Word .docx) from a title and body. Use for ANY story, \
+         article, report, letter, note, essay, or document the user wants written or exported — \
+         including 'a story in a PDF', 'a report as a docx', etc. This tool ALONE fulfills a \
+         document/PDF request; do NOT also call image_generate unless the user explicitly asked for a \
+         picture too. The `content` is rendered as Markdown (# / ## / ### headings, **bold**, \
+         *italic*, `-` bullets, `1.` numbered lists, blank lines between paragraphs) for a clean, \
+         properly formatted document.{loc_note} Returns the saved path."
+    );
     Tool::new(
         "write_document",
-        "Create a real document file (PDF or Word .docx) from a title and body, saved to the user's \
-         local Documents area on this Mac. Use for ANY story, article, report, letter, note, essay, \
-         or document the user wants written or exported — including 'a story in a PDF', 'a report as \
-         a docx', etc. This tool ALONE fulfills a document/PDF request; do NOT also call \
-         image_generate unless the user explicitly asked for a picture too. The `content` is rendered \
-         as Markdown (use # / ## / ### headings, **bold**, *italic*, `-` bullets, `1.` numbered \
-         lists, blank lines between paragraphs) for a clean, properly formatted document. Returns the \
-         file path. Args: filename, format ('pdf' or 'docx'), title, content.",
+        &desc,
         json!({"type": "object", "properties": {
             "filename": {"type": "string", "description": "base name, no extension"},
             "format": {"type": "string", "enum": ["pdf", "docx"], "description": "pdf or docx"},
             "title": {"type": "string"},
-            "content": {"type": "string", "description": "Markdown body: ## headings, **bold**, - bullets, blank lines between paragraphs"}
+            "content": {"type": "string", "description": "Markdown body: ## headings, **bold**, - bullets, blank lines between paragraphs"},
+            "location": {"type": "string", "enum": ["downloads", "desktop", "documents"], "description": "save into this user folder (omit to keep it in GINEXUS's internal folder)"}
         }, "required": ["filename", "format", "content"]}),
         true, // irreversible → HITL-gated
         Arc::new(move |args: Value| {
@@ -647,6 +658,7 @@ pub fn write_document_tool(docs_dir: PathBuf) -> Tool {
             let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("pdf").trim().to_lowercase();
             let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let location = args.get("location").and_then(|v| v.as_str()).map(|s| s.trim().to_lowercase());
             let ext = match format.as_str() {
                 "pdf" => "pdf",
                 "docx" | "word" | "doc" => "docx",
@@ -658,16 +670,28 @@ pub fn write_document_tool(docs_dir: PathBuf) -> Tool {
             };
             let _ = std::fs::create_dir_all(base.as_ref());
             let bytes = if ext == "pdf" { build_pdf(title, content) } else { build_docx(title, content) };
-            match std::fs::write(&path, &bytes) {
-                // Report the path with ~ (never the username/absolute home).
-                Ok(_) => ToolResult::ok(format!(
-                    "Created {} ({} bytes) at {}",
-                    ext.to_uppercase(),
-                    bytes.len(),
-                    crate::abbreviate_home(&path.display().to_string())
-                )),
-                Err(e) => ToolResult::err(format!("write failed: {e}")),
+            if let Err(e) = std::fs::write(&path, &bytes) {
+                return ToolResult::err(format!("write failed: {e}"));
             }
+            // Place into the requested user folder via the signed app (TCC-correct), deterministically.
+            if let (Some(loc), Some((sock, tok))) = (location.as_deref(), host.as_ref()) {
+                if matches!(loc, "downloads" | "desktop" | "documents") {
+                    let fname = path.file_name().and_then(|f| f.to_str()).unwrap_or("document");
+                    let req = json!({"src": path.display().to_string(), "location": loc, "filename": fname});
+                    return match crate::app_tools::call_app_host(sock, tok, "save_to_folder", &req) {
+                        Ok(out) => ToolResult::ok(format!("Created {} ({} bytes). {}", ext.to_uppercase(), bytes.len(), out)),
+                        Err(e) => ToolResult::ok(format!(
+                            "Created {} ({} bytes) at {} (couldn't place it in {}: {})",
+                            ext.to_uppercase(), bytes.len(), crate::abbreviate_home(&path.display().to_string()), loc, e
+                        )),
+                    };
+                }
+            }
+            // Report the internal path with ~ (never the username/absolute home).
+            ToolResult::ok(format!(
+                "Created {} ({} bytes) at {}",
+                ext.to_uppercase(), bytes.len(), crate::abbreviate_home(&path.display().to_string())
+            ))
         }),
     )
 }
@@ -730,7 +754,7 @@ mod tests {
     #[test]
     fn tool_writes_both_formats_and_is_hitl() {
         let dir = tmp();
-        let t = write_document_tool(dir.clone());
+        let t = write_document_tool(dir.clone(), None);
         assert!(t.irreversible);
         let r = t.run(json!({"filename": "report", "format": "pdf", "title": "Q3", "content": "## Intro\n\nBody **text**."}));
         assert!(r.ok, "{}", r.output);
@@ -743,7 +767,7 @@ mod tests {
     #[test]
     fn rejects_traversal_and_bad_format() {
         let dir = tmp();
-        let t = write_document_tool(dir.clone());
+        let t = write_document_tool(dir.clone(), None);
         assert!(t.run(json!({"filename": "../evil", "format": "pdf", "content": "x"})).ok); // sanitized, not escaped
         assert!(!dir.parent().unwrap().join("evil.pdf").exists());
         assert!(!t.run(json!({"filename": "x", "format": "exe", "content": "x"})).ok);

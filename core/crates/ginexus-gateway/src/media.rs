@@ -17,22 +17,33 @@ fn dims(size: &str) -> (u32, u32) {
     }
 }
 
-pub fn image_generate_tool(base: String) -> Tool {
+pub fn image_generate_tool(base: String, app_host: Option<(String, String)>) -> Tool {
     let base = Arc::new(base.trim_end_matches('/').to_string());
+    let host = Arc::new(app_host);
+    let loc_note = if host.is_some() {
+        " To also drop the PNG into a user folder, set `location` to downloads, desktop, or documents \
+         — it is placed there for the user automatically."
+    } else {
+        ""
+    };
+    let desc = format!(
+        "Generate a PICTURE/illustration locally from a text prompt (Z-Image-Turbo on Apple MLX). Use \
+         ONLY when the user EXPLICITLY asks for an image, picture, illustration, photo, drawing, \
+         artwork, or visual. Do NOT call this for a story, article, report, note, or document request \
+         (including a PDF or Word file) — those need only `write_document`; never add an illustration \
+         unless the user explicitly asked for one. The app displays the generated image automatically \
+         — just tell the user it was created (do NOT paste the absolute file path or the computer \
+         username in your reply).{loc_note}"
+    );
     Tool::new(
         "image_generate",
-        "Generate a PICTURE/illustration locally from a text prompt (Z-Image-Turbo on Apple MLX) and \
-         save it to the user's media folder. Use ONLY when the user EXPLICITLY asks for an image, \
-         picture, illustration, photo, drawing, artwork, or visual. Do NOT call this for a story, \
-         article, report, note, or document request (including a PDF or Word file) — those need only \
-         `write_document`; never add an illustration unless the user explicitly asked for one. The app \
-         displays the generated image automatically — just tell the user it was created (do NOT paste \
-         the absolute file path or the computer username in your reply).",
+        &desc,
         json!({"type": "object",
                "properties": {
                    "prompt": {"type": "string"},
                    "size": {"type": "string", "enum": ["1024x1024", "1280x720", "768x1344"]},
-                   "seed": {"type": "integer"}},
+                   "seed": {"type": "integer"},
+                   "location": {"type": "string", "enum": ["downloads", "desktop", "documents"], "description": "also save the PNG into this user folder"}},
                "required": ["prompt"]}),
         false, // autonomous: non-destructive, writes only into the media dir
         Arc::new(move |args| {
@@ -40,6 +51,7 @@ pub fn image_generate_tool(base: String) -> Tool {
             if prompt.is_empty() {
                 return ToolResult::err("missing 'prompt'");
             }
+            let location = args.get("location").and_then(|v| v.as_str()).map(|s| s.trim().to_lowercase());
             let (w, h) = dims(args.get("size").and_then(|v| v.as_str()).unwrap_or("1024x1024"));
             let mut body = json!({"prompt": prompt, "width": w, "height": h, "model": "z-image-turbo"});
             if let Some(seed) = args.get("seed").and_then(|v| v.as_i64()) {
@@ -65,6 +77,20 @@ pub fn image_generate_tool(base: String) -> Tool {
                             ToolResult::err("sidecar returned no path")
                         } else {
                             let ms = v.get("ms").and_then(|m| m.as_i64()).unwrap_or(0);
+                            // Optionally place the PNG into a user folder via the signed app (TCC-correct).
+                            if let (Some(loc), Some((sock, tok))) = (location.as_deref(), host.as_ref()) {
+                                if matches!(loc, "downloads" | "desktop" | "documents") {
+                                    let fname = std::path::Path::new(path)
+                                        .file_name().and_then(|f| f.to_str()).unwrap_or("image.png");
+                                    let req = json!({"src": path, "location": loc, "filename": fname});
+                                    return match ginexus_agent::app_tools::call_app_host(sock, tok, "save_to_folder", &req) {
+                                        Ok(out) => ToolResult::ok(format!("Image generated ({ms} ms). {out}")),
+                                        Err(e) => ToolResult::ok(format!(
+                                            "Image generated ({ms} ms) but couldn't place it in {loc}: {e}"
+                                        )),
+                                    };
+                                }
+                            }
                             ToolResult::ok(format!("Image saved to {} ({ms} ms).", ginexus_agent::abbreviate_home(path)))
                         }
                     }
@@ -90,7 +116,7 @@ mod tests {
 
     #[test]
     fn missing_prompt_and_autonomy() {
-        let t = image_generate_tool("http://127.0.0.1:9".into());
+        let t = image_generate_tool("http://127.0.0.1:9".into(), None);
         assert!(!t.irreversible); // autonomous, no HITL
         assert!(!t.run(json!({})).ok); // missing prompt, no network call
     }

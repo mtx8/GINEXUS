@@ -97,6 +97,8 @@ final class AppToolHost {
         case "calendar_create": return calendarCreate(args)
         case "shortcuts_list":  return shortcutsList()
         case "shortcuts_run":   return shortcutsRun(args)
+        case "save_to_folder":  return saveToFolder(args)
+        case "pages_write":     return pagesWrite(args)
         default:                return fail("unknown tool '\(tool)'")
         }
     }
@@ -196,6 +198,97 @@ final class AppToolHost {
         let r = run("/usr/bin/shortcuts", ["run", name])
         return r.code == 0 ? ok("Ran '\(name)'.\(r.out.isEmpty ? "" : " " + r.out)")
                            : fail("run failed: \(r.out)")
+    }
+
+    // MARK: - files (TCC-correct: writes originate in the signed app, not the core)
+
+    /// Resolve one of the user's standard folders. macOS prompts once for access; attributed to GINEXUS.
+    private func standardFolder(_ name: String) -> URL? {
+        let dir: FileManager.SearchPathDirectory
+        switch name.lowercased() {
+        case "desktop": dir = .desktopDirectory
+        case "documents": dir = .documentDirectory
+        default: dir = .downloadsDirectory
+        }
+        return try? FileManager.default.url(for: dir, in: .userDomainMask, appropriateFor: nil, create: false)
+    }
+
+    /// `~`-relative display of a path (never leak the username).
+    private func tildeShown(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    }
+
+    private func saveToFolder(_ a: [String: Any]) -> Data {
+        guard let srcRaw = (a["src"] as? String), !srcRaw.isEmpty else { return fail("'src' required") }
+        let src = (srcRaw as NSString).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: src) else { return fail("source file not found: \(tildeShown(src))") }
+        guard let base = standardFolder((a["location"] as? String) ?? "downloads") else {
+            return fail("could not resolve the destination folder")
+        }
+        let rawName = (a["filename"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (src as NSString).lastPathComponent
+        let safe = (rawName as NSString).lastPathComponent   // single component, no traversal
+        let dest = base.appendingPathComponent(safe)
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
+            try FileManager.default.copyItem(atPath: src, toPath: dest.path)
+        } catch {
+            return fail("copy failed (grant GINEXUS access to the \(((a["location"] as? String) ?? "Downloads")) folder if macOS asks): \(error.localizedDescription)")
+        }
+        return ok("Saved to \(tildeShown(dest.path))")
+    }
+
+    private func stripMarkdown(_ s: String) -> String {
+        s.components(separatedBy: "\n").map { line -> String in
+            var t = line.trimmingCharacters(in: .whitespaces)
+            if t == "---" || t == "***" || t == "___" { return "" }
+            if let r = t.range(of: "^#{1,6}\\s+", options: .regularExpression) { t.removeSubrange(r) }
+            if let r = t.range(of: "^[-*+]\\s+", options: .regularExpression) { t.replaceSubrange(r, with: "•  ") }
+            t = t.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
+            t = t.replacingOccurrences(of: "`", with: "")
+            return t
+        }.joined(separator: "\n")
+    }
+
+    private func pagesWrite(_ a: [String: Any]) -> Data {
+        guard let content = a["content"] as? String, !content.isEmpty else { return fail("'content' required") }
+        let title = (a["title"] as? String) ?? ""
+        let fmt = ((a["format"] as? String) ?? "pdf").lowercased()
+        let ext = (fmt == "docx" || fmt == "word") ? "docx" : (fmt == "pages" ? "pages" : "pdf")
+        guard let base = standardFolder((a["location"] as? String) ?? "downloads") else {
+            return fail("could not resolve the destination folder")
+        }
+        let stem = ((((a["filename"] as? String) ?? "document") as NSString).lastPathComponent as NSString)
+            .deletingPathExtension
+        let dest = base.appendingPathComponent("\(stem.isEmpty ? "document" : stem).\(ext)")
+
+        // Body via a temp UTF-8 file → avoids AppleScript string-escaping of multi-line content.
+        let body = (title.isEmpty ? "" : title + "\n\n") + stripMarkdown(content)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("gx-pages-\(UUID().uuidString).txt")
+        guard (try? body.data(using: .utf8)?.write(to: tmp)) != nil else { return fail("temp write failed") }
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let setBody = "set body text of d to (read (POSIX file \"\(tmp.path)\") as «class utf8»)"
+        let finish: String
+        if ext == "pages" {
+            finish = "save d in (POSIX file \"\(dest.path)\")"
+        } else {
+            let asFmt = ext == "docx" ? "Microsoft Word" : "PDF"
+            finish = "export d to (POSIX file \"\(dest.path)\") as \(asFmt)"
+        }
+        let script = """
+        tell application "Pages"
+            set d to make new document
+            \(setBody)
+            \(finish)
+            close d saving no
+        end tell
+        """
+        let r = run("/usr/bin/osascript", ["-e", script])
+        if r.code != 0 {
+            return fail("Pages export failed — make sure Pages is installed and allow GINEXUS to control it if macOS asks. \(r.out)")
+        }
+        return ok("Created in Apple Pages and saved to \(tildeShown(dest.path))")
     }
 
     private func run(_ path: String, _ args: [String]) -> (code: Int32, out: String) {

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// One blocking request to the app host (runs inside the agent loop's spawn_blocking).
-fn call_app_host(sock: &str, token: &str, tool: &str, args: &Value) -> Result<String, String> {
+pub fn call_app_host(sock: &str, token: &str, tool: &str, args: &Value) -> Result<String, String> {
     let mut stream =
         UnixStream::connect(sock).map_err(|e| format!("app host unreachable ({tool}): {e}"))?;
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
@@ -110,8 +110,8 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
             false,
         ),
         bridge_tool(
-            sock,
-            token,
+            sock.clone(),
+            token.clone(),
             "shortcuts_run",
             "Run a macOS Shortcut by exact name. Optional `input` text is passed to the shortcut.",
             json!({"type": "object",
@@ -120,6 +120,44 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
             true, // HITL-gated: a shortcut can do anything
         )
         .hard_gated(), // arbitrary execution → always approved, even in autonomous mode
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
+            "save_to_folder",
+            "Copy a file GINEXUS just created (an image, PDF, or Word document) INTO one of the user's \
+             standard folders so they can find it. Call this AFTER image_generate or write_document \
+             when the user asked to save it to a specific folder — those tools only write to GINEXUS's \
+             internal folder, so without this the file won't appear where the user expects. \
+             `src` = the path the create-tool returned; `location` = downloads | desktop | documents \
+             (default downloads); optional `filename`.",
+            json!({"type": "object",
+                   "properties": {
+                       "src": {"type": "string", "description": "path of the file to copy (as returned by image_generate / write_document)"},
+                       "location": {"type": "string", "enum": ["downloads", "desktop", "documents"]},
+                       "filename": {"type": "string", "description": "optional new name; defaults to the source filename"}},
+                   "required": ["src"]}),
+            false, // copies an already-created file into a standard folder → not destructive
+        ),
+        bridge_tool(
+            sock,
+            token,
+            "pages_write",
+            "Create a real document USING Apple Pages and save it to the user's folder. Pages renders \
+             the text and exports it; needs Pages installed + a one-time automation consent. Prefer \
+             `write_document` for plain PDF/Word; use this when the user specifically wants a Pages \
+             document or Pages' typography. `content` is the body (Markdown is flattened to clean \
+             text); `format` = pdf | docx | pages (default pdf); `location` = downloads | desktop | \
+             documents (default downloads); `filename` base name; optional `title`.",
+            json!({"type": "object",
+                   "properties": {
+                       "content": {"type": "string"},
+                       "title": {"type": "string"},
+                       "format": {"type": "string", "enum": ["pdf", "docx", "pages"]},
+                       "location": {"type": "string", "enum": ["downloads", "desktop", "documents"]},
+                       "filename": {"type": "string"}},
+                   "required": ["content", "filename"]}),
+            true, // HITL-gated: writes a user-facing file + drives another app
+        ),
     ]
 }
 
@@ -164,9 +202,12 @@ mod tests {
         assert!(r.output.contains("battery 88%"));
         handle.join().unwrap();
 
-        // calendar_create / shortcuts_run advertise as irreversible (HITL-gated)
+        // calendar_create / shortcuts_run / pages_write advertise as irreversible (HITL-gated)
         assert!(tools.iter().find(|t| t.name == "calendar_create").unwrap().irreversible);
         assert!(tools.iter().find(|t| t.name == "shortcuts_run").unwrap().irreversible);
+        assert!(tools.iter().find(|t| t.name == "pages_write").unwrap().irreversible);
+        // save_to_folder just copies an already-created file → autonomous (not HITL)
+        assert!(!tools.iter().find(|t| t.name == "save_to_folder").unwrap().irreversible);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
