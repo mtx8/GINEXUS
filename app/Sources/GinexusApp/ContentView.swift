@@ -37,6 +37,7 @@ struct ContentView: View {
         .sheet(isPresented: $model.memoryOpen) { memorySheet }
         .sheet(isPresented: $model.modelsOpen) { modelsSheet }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model, store: model.settings) }
+        .sheet(isPresented: $model.projectSheetOpen) { ProjectEditorSheet(model: model) }
     }
 
     // MARK: ── far-left icon rail ───────────────────────────────────────────────
@@ -467,6 +468,22 @@ struct ContentView: View {
                 Button("Research", action: model.runResearch).disabled(!model.canQuickAction)
                 Button("Create image", action: model.runImage).disabled(!model.canQuickAction)
             }
+            Section(model.activeProject.map { "Project: \($0.name)" } ?? "Project: none") {
+                Button("New project…", action: model.openNewProjectSheet)
+                if !model.projects.isEmpty {
+                    Menu("Switch project") {
+                        Button("None (loose chat)") { model.selectProject(nil) }
+                        ForEach(model.projects) { p in
+                            Button(p.name) { model.selectProject(p.id) }
+                        }
+                    }
+                }
+                if let p = model.activeProject {
+                    Button("Edit “\(p.name)”…") { model.openEditProjectSheet(p.id) }
+                    if p.folderPath != nil { Button("Reveal project folder", action: model.revealProjectFolder) }
+                    Button("Delete “\(p.name)”", role: .destructive) { model.deleteProject(p.id) }
+                }
+            }
             Section("Attach") {
                 Button("Attach file…", action: model.attachAny)
                 Button("Attach image…", action: model.attachImage)
@@ -804,6 +821,51 @@ struct ContentView: View {
 
 // MARK: - streaming answer text with a blinking ember cursor (matches the EXECUTE accent)
 // MARK: - token usage gauge (Context rail) — REAL counts only, honest empty state ("—")
+/// Create/edit a project: name + custom instructions (the per-project system prompt).
+private struct ProjectEditorSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(model.editingProjectID == nil ? "NEW PROJECT" : "EDIT PROJECT")
+                .font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Name").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                TextField("e.g. Taxes 2026", text: $model.projectDraftName)
+                    .textFieldStyle(.plain).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
+                    .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Custom instructions").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Text("Steers every chat in this project. Files you add here ground its answers.")
+                    .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                TextEditor(text: $model.projectDraftInstructions)
+                    .font(Brand.mono(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                    .frame(minHeight: 140)
+                    .padding(8).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { model.projectSheetOpen = false }
+                    .buttonStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone200)
+                    .padding(.horizontal, 18).padding(.vertical, 10)
+                Button(action: model.saveProjectSheet) {
+                    Text(model.editingProjectID == nil ? "CREATE" : "SAVE")
+                        .font(Brand.mono(12, weight: .bold)).kerning(1.4).foregroundStyle(Brand.ink900)
+                        .padding(.horizontal, 22).padding(.vertical, 12)
+                        .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.projectDraftName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(22).frame(width: 460)
+        .background(Brand.ink850)
+    }
+}
+
 /// Live voice state above the composer: pulsing dot + state + mic level + last transcript.
 private struct VoiceStatusBar: View {
     @ObservedObject var controller: VoiceConversationController

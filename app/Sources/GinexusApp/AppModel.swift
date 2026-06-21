@@ -89,6 +89,8 @@ final class AppModel: ObservableObject {
     @Published var sidebarColumn: NavigationSplitViewVisibility = .all
     private var activeCreatedAt = Date()
     private var activeTitle = "New chat"
+    /// SP-Projects: which project the active thread belongs to (nil = loose chat). New chats inherit it.
+    @Published var activeProjectID: UUID?
     private let convStore: ConversationStoring = DiskConversationStore()
     let settings = SettingsStore.shared
     /// Conversations shown in the sidebar but not yet written to disk (empty "New chat" tiles). They
@@ -170,6 +172,83 @@ final class AppModel: ObservableObject {
 
     private let spine = SpineController()
 
+    /// SP-Projects: workspaces (folder + custom instructions + threads). `activeProjectID` selects the
+    /// one new chats join and whose instructions are injected.
+    @Published var projects: [Project] = []
+    private let projectStore: ProjectStoring = DiskProjectStore()
+    var activeProject: Project? { projects.first { $0.id == activeProjectID } }
+
+    /// Create a project (with a local folder; iCloud refused) and make it active.
+    func createProject(name: String, instructions: String = "") {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var p = Project(name: trimmed, instructions: instructions)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let folder = "\(home)/GINEXUS-Projects/\(p.slug)"
+        if !SpineController.isICloudPath(folder) {
+            try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+            p.folderPath = folder
+        }
+        projects.insert(p, at: 0)
+        activeProjectID = p.id
+        projectStore.save(projects)
+    }
+
+    func updateProject(_ id: UUID, name: String? = nil, instructions: String? = nil) {
+        guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
+        if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { projects[i].name = name }
+        if let instructions { projects[i].instructions = instructions }
+        projects[i].updatedAt = Date()
+        projectStore.save(projects)
+    }
+
+    func deleteProject(_ id: UUID) {
+        projects.removeAll { $0.id == id }
+        if activeProjectID == id { activeProjectID = nil }
+        projectStore.save(projects)
+    }
+
+    /// Switch the active project; new chats join it. Does not move existing threads.
+    func selectProject(_ id: UUID?) { activeProjectID = id }
+
+    // Project editor sheet (create / edit name + instructions).
+    @Published var projectSheetOpen = false
+    @Published var projectDraftName = ""
+    @Published var projectDraftInstructions = ""
+    @Published var editingProjectID: UUID?
+
+    func openNewProjectSheet() {
+        editingProjectID = nil
+        projectDraftName = ""
+        projectDraftInstructions = ""
+        projectSheetOpen = true
+    }
+
+    func openEditProjectSheet(_ id: UUID) {
+        guard let p = projects.first(where: { $0.id == id }) else { return }
+        editingProjectID = id
+        projectDraftName = p.name
+        projectDraftInstructions = p.instructions
+        projectSheetOpen = true
+    }
+
+    func saveProjectSheet() {
+        let name = projectDraftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { projectSheetOpen = false; return }
+        if let id = editingProjectID {
+            updateProject(id, name: name, instructions: projectDraftInstructions)
+        } else {
+            createProject(name: name, instructions: projectDraftInstructions)
+        }
+        projectSheetOpen = false
+    }
+
+    /// Open the active project's folder in Finder (where its files live).
+    func revealProjectFolder() {
+        guard let path = activeProject?.folderPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
     /// SP-Voice: the hands-free conversation loop. Non-nil while voice mode is active; the overlay
     /// observes it for live state (listening / thinking / speaking) and the mic level.
     @Published var voiceController: VoiceConversationController?
@@ -202,6 +281,7 @@ final class AppModel: ObservableObject {
 
     // MARK: lifecycle
     func start() {
+        projects = projectStore.load()   // SP-Projects: restore workspaces
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { await self?.pollHealth() }
         }
@@ -257,6 +337,7 @@ final class AppModel: ObservableObject {
         activeConversationID = conv.id
         activeCreatedAt = conv.createdAt
         activeTitle = conv.title
+        activeProjectID = conv.projectID
         chat = conv.messages
         attachment = nil
         pending = nil
@@ -366,7 +447,7 @@ final class AppModel: ObservableObject {
             if !t.isEmpty { activeTitle = String(t.prefix(48)) }
         }
         let conv = Conversation(id: id, title: activeTitle, createdAt: activeCreatedAt,
-                                updatedAt: Date(), messages: chat)
+                                updatedAt: Date(), messages: chat, projectID: activeProjectID)
         let meta = conv.meta
         unsavedIDs.remove(id)   // it now has content → a real, persisted conversation
         if let i = conversations.firstIndex(where: { $0.id == id }) { conversations[i] = meta }
@@ -594,6 +675,15 @@ final class AppModel: ObservableObject {
                         + "Briefly say you can't view images yet — they can enable vision from the Models manager.]"
                 }
                 msgs[last]["content"] = content
+            }
+        }
+        // SP-Projects: prepend the active project's custom instructions as a system message so every
+        // thread in the project is steered by them (user-authored → trusted).
+        if let proj = activeProject {
+            let instr = proj.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !instr.isEmpty {
+                msgs.insert(["role": "system",
+                             "content": "Project: \(proj.name)\nProject instructions:\n\(instr)"], at: 0)
             }
         }
         let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "mode": modeString])
