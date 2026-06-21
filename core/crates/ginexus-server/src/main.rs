@@ -228,6 +228,9 @@ async fn main() {
         registry.register(t);
     }
     registry.register(ginexus_memory::ingest::ingest_tool(memory.clone())); // SP3: import exports (HITL)
+    // SP-Docs Flow A: read & understand a local document (PDF via app host, text/code directly),
+    // chunking it into memory as untrusted reference data. Read-only → autonomous.
+    registry.register(ginexus_memory::read_document_tool(memory.clone(), app_host.clone()));
     registry.register(ginexus_agent::tools::terminal_tool(   // SP4: HITL-gated safe terminal
         sd.join("workspace"),
         ["ls", "cat", "echo", "date", "pwd", "head", "tail", "wc", "uname"]

@@ -102,6 +102,7 @@ final class AppToolHost {
         case "pages_write":     return pagesWrite(args)
         case "read_pdf_fields": return readPdfFields(args)
         case "fill_pdf_form":   return fillPdfForm(args)
+        case "read_pdf_text":   return readPdfText(args)
         default:                return fail("unknown tool '\(tool)'")
         }
     }
@@ -346,6 +347,17 @@ final class AppToolHost {
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return fail("could not encode fields") }
         return ok(json)
+    }
+
+    /// Extract a PDF's text (read_document's PDF path runs through here for TCC-correct file access).
+    private func readPdfText(_ a: [String: Any]) -> Data {
+        let doc: PDFDocument
+        switch openPDF(a) { case .err(let e): return e; case .ok(let d, _): doc = d }
+        let text = doc.string ?? ""
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ok("(no extractable text — this PDF is likely scanned images)")
+        }
+        return ok(text)
     }
 
     private static let truthy: Set<String> = ["on", "true", "yes", "y", "x", "1", "checked", "✓"]
