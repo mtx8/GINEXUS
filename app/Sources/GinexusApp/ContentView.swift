@@ -38,6 +38,7 @@ struct ContentView: View {
         .sheet(isPresented: $model.modelsOpen) { modelsSheet }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model, store: model.settings) }
         .sheet(isPresented: $model.projectSheetOpen) { ProjectEditorSheet(model: model) }
+        .sheet(isPresented: $model.connectionsOpen) { ConnectionsSheet(model: model) }
     }
 
     // MARK: ── far-left icon rail ───────────────────────────────────────────────
@@ -484,6 +485,9 @@ struct ContentView: View {
                     Button("Delete “\(p.name)”", role: .destructive) { model.deleteProject(p.id) }
                 }
             }
+            Section("Integrations") {
+                Button("Connections (Notion, …)…") { model.connectionsOpen = true }
+            }
             Section("Attach") {
                 Button("Attach file…", action: model.attachAny)
                 Button("Attach image…", action: model.attachImage)
@@ -821,6 +825,72 @@ struct ContentView: View {
 
 // MARK: - streaming answer text with a blinking ember cursor (matches the EXECUTE accent)
 // MARK: - token usage gauge (Context rail) — REAL counts only, honest empty state ("—")
+/// SP-Connect: manage external MCP integrations. Notion has a one-paste preset; others can be added
+/// as a raw stdio command. Secrets go to the Keychain; changes apply on the next app restart.
+private struct ConnectionsSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("CONNECTIONS").font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+            Text("Connect external tools over MCP. Tool calls are approval-gated; writes need your biometric OK. Changes apply after restarting GINEXUS.")
+                .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+
+            // Notion preset
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Notion").font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
+                Text("Paste an internal integration token (starts with “ntn_” / “secret_”).")
+                    .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                HStack(spacing: 8) {
+                    SecureField("Notion integration token", text: $model.notionTokenDraft)
+                        .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
+                        .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+                    Button(action: model.connectNotion) {
+                        Text("CONNECT").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
+                            .padding(.horizontal, 16).padding(.vertical, 11)
+                            .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.notionTokenDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+
+            Divider().overlay(Brand.line1)
+
+            // Configured servers
+            Text("CONFIGURED").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
+            if model.mcpServers.isEmpty {
+                Text("No connections yet.").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+            } else {
+                ForEach(model.mcpServers) { s in
+                    HStack(spacing: 10) {
+                        Circle().fill(s.enabled ? Brand.ember500 : Brand.ink500).frame(width: 7, height: 7)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(s.name).font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
+                            Text(s.command).font(Brand.mono(9)).foregroundStyle(Brand.bone400).lineLimit(1)
+                        }
+                        Spacer()
+                        Toggle("", isOn: Binding(get: { s.enabled }, set: { model.setMcpEnabled(s.id, $0) }))
+                            .labelsHidden().toggleStyle(.switch).tint(Brand.ember500)
+                        Button(role: .destructive) { model.removeMcpServer(s.id) } label: {
+                            Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(Brand.bone300)
+                        }.buttonStyle(.plain)
+                    }
+                    .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+                }
+            }
+
+            HStack { Spacer(); Button("Done") { model.connectionsOpen = false }
+                .buttonStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone200)
+                .padding(.horizontal, 18).padding(.vertical, 10) }
+        }
+        .padding(22).frame(width: 480)
+        .background(Brand.ink850)
+    }
+}
+
 /// Create/edit a project: name + custom instructions (the per-project system prompt).
 private struct ProjectEditorSheet: View {
     @ObservedObject var model: AppModel

@@ -13,6 +13,29 @@
 // remote host — so a missing or hostile file can never make boot() build an egressing env.
 import Foundation
 
+/// SP-Connect: one external MCP server GINEXUS launches over stdio. `command` is the full launch
+/// line (e.g. "npx -y @notionhq/notion-mcp-server"). If `tokenEnv` + `credentialRef` are set, the
+/// app injects Keychain[credentialRef] into the child as env[tokenEnv] (the secret never touches
+/// settings.json). Imported tools are prefixed `mcp.<name>.` and stay default-deny (HITL).
+public struct McpServerConfig: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var name: String          // short slug, used as the tool prefix
+    public var command: String       // stdio launch command line
+    public var enabled: Bool
+    public var tokenEnv: String?     // env var the command reads for its credential
+    public var credentialRef: String? // Keychain account holding the secret
+
+    public init(id: UUID = UUID(), name: String, command: String, enabled: Bool = true,
+                tokenEnv: String? = nil, credentialRef: String? = nil) {
+        self.id = id
+        self.name = name
+        self.command = command
+        self.enabled = enabled
+        self.tokenEnv = tokenEnv
+        self.credentialRef = credentialRef
+    }
+}
+
 public struct GinexusSettings: Codable, Sendable, Equatable {
     public var defaultModel: String          // picker default: "auto" | a roster tier id
     public var defaultMode: String           // "hitl" | "autonomous"
@@ -20,6 +43,7 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
     public var obsidianVaultPath: String?    // nil → auto-detect the open vault
     public var mediaSidecarEnabled: Bool     // gate the local image-generation sidecar + tool
     public var voiceEnabled: Bool            // gate the local voice (audio) sidecar + conversation loop
+    public var mcpServers: [McpServerConfig] // SP-Connect: external MCP integrations (Notion, etc.)
     public var importIncludeAssistant: Bool  // include assistant turns when importing AI data
     public var persistTranscript: Bool       // keep conversation history on disk across launches
     public var schemaVersion: Int
@@ -32,6 +56,7 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
                 obsidianVaultPath: String? = nil,
                 mediaSidecarEnabled: Bool = true,
                 voiceEnabled: Bool = true,
+                mcpServers: [McpServerConfig] = [],
                 importIncludeAssistant: Bool = false,
                 persistTranscript: Bool = true,
                 schemaVersion: Int = 2) {
@@ -41,6 +66,7 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
         self.obsidianVaultPath = obsidianVaultPath
         self.mediaSidecarEnabled = mediaSidecarEnabled
         self.voiceEnabled = voiceEnabled
+        self.mcpServers = mcpServers
         self.importIncludeAssistant = importIncludeAssistant
         self.persistTranscript = persistTranscript
         self.schemaVersion = schemaVersion
@@ -55,6 +81,7 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
         obsidianVaultPath = try c.decodeIfPresent(String.self, forKey: .obsidianVaultPath)
         mediaSidecarEnabled = try c.decodeIfPresent(Bool.self, forKey: .mediaSidecarEnabled) ?? d.mediaSidecarEnabled
         voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? d.voiceEnabled
+        mcpServers = try c.decodeIfPresent([McpServerConfig].self, forKey: .mcpServers) ?? d.mcpServers
         importIncludeAssistant = try c.decodeIfPresent(Bool.self, forKey: .importIncludeAssistant) ?? d.importIncludeAssistant
         persistTranscript = try c.decodeIfPresent(Bool.self, forKey: .persistTranscript) ?? d.persistTranscript
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? d.schemaVersion

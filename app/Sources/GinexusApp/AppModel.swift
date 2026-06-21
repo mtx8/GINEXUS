@@ -249,6 +249,48 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
+    // MARK: SP-Connect — external MCP integrations (Notion, Shopify, …)
+    @Published var connectionsOpen = false
+    @Published var notionTokenDraft = ""
+
+    var mcpServers: [McpServerConfig] { settings.settings.mcpServers }
+
+    /// Register (or replace) an MCP server; the secret goes to the Keychain, never settings.json.
+    /// Takes effect on the next spine restart (servers are spawned at boot).
+    func addMcpServer(name: String, command: String, tokenEnv: String?, token: String?) {
+        let slug = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !slug.isEmpty, !command.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        var ref: String?
+        if let tokenEnv, !tokenEnv.isEmpty, let token, !token.isEmpty {
+            let r = "mcp.\(slug).token"
+            Keychain.set(token, for: r)
+            ref = r
+        }
+        settings.update { s in
+            s.mcpServers.removeAll { $0.name == slug }
+            s.mcpServers.append(McpServerConfig(name: slug, command: command, enabled: true,
+                                                tokenEnv: tokenEnv, credentialRef: ref))
+        }
+    }
+
+    func removeMcpServer(_ id: UUID) {
+        if let s = mcpServers.first(where: { $0.id == id }), let ref = s.credentialRef { Keychain.delete(ref) }
+        settings.update { $0.mcpServers.removeAll { $0.id == id } }
+    }
+
+    func setMcpEnabled(_ id: UUID, _ on: Bool) {
+        settings.update { s in if let i = s.mcpServers.firstIndex(where: { $0.id == id }) { s.mcpServers[i].enabled = on } }
+    }
+
+    /// Preset: Notion's official stdio MCP server with an integration token.
+    func connectNotion() {
+        let tok = notionTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tok.isEmpty else { return }
+        addMcpServer(name: "notion", command: "npx -y @notionhq/notion-mcp-server",
+                     tokenEnv: "NOTION_TOKEN", token: tok)
+        notionTokenDraft = ""
+    }
+
     /// SP-Voice: the hands-free conversation loop. Non-nil while voice mode is active; the overlay
     /// observes it for live state (listening / thinking / speaking) and the mic level.
     @Published var voiceController: VoiceConversationController?

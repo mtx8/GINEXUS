@@ -119,6 +119,21 @@ final class SpineController {
         if let vault = Self.resolveVault(settings.obsidianVaultPath) {
             env["GINEXUS_OBSIDIAN_VAULT"] = vault
         }
+        // SP-Connect: configure enabled external MCP servers + inject their secrets from the Keychain
+        // into the core's env (the spawned MCP children inherit it). Secrets never land in settings.json.
+        let enabledMCP = settings.mcpServers.filter { $0.enabled }
+        if !enabledMCP.isEmpty {
+            let arr = enabledMCP.map { ["name": $0.name, "command": $0.command] }
+            if let data = try? JSONSerialization.data(withJSONObject: arr),
+               let json = String(data: data, encoding: .utf8) {
+                env["GINEXUS_MCP_SERVERS"] = json
+            }
+            for s in enabledMCP {
+                if let te = s.tokenEnv, !te.isEmpty, let ref = s.credentialRef, let secret = Keychain.get(ref) {
+                    env[te] = secret
+                }
+            }
+        }
         p.environment = env
         if let logHandle {
             p.standardOutput = logHandle

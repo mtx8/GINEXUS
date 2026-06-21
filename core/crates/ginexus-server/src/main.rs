@@ -252,6 +252,33 @@ async fn main() {
             }
         }
     }
+    // SP-Connect: multiple named MCP servers (Notion, Shopify, …). The app builds this JSON from
+    // settings.mcpServers and injects each server's credential into the child's env (the secret
+    // itself stays in the Keychain, never here). Tools are prefixed mcp.<name>. and stay default-deny.
+    if let Ok(json) = std::env::var("GINEXUS_MCP_SERVERS") {
+        if let Ok(servers) = serde_json::from_str::<Vec<serde_json::Value>>(&json) {
+            for s in servers {
+                let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let cmd = s.get("command").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if name.is_empty() || cmd.is_empty() {
+                    continue;
+                }
+                let parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+                let Some((prog, rest)) = parts.split_first() else { continue };
+                match ginexus_mcp::McpClient::spawn(prog, rest) {
+                    Ok(client) => {
+                        let client = Arc::new(Mutex::new(client));
+                        let prefix = format!("mcp.{name}.");
+                        match ginexus_mcp::import_mcp_tools(client, &mut registry, &prefix) {
+                            Ok(n) => eprintln!("imported {n} MCP tools from '{name}'"),
+                            Err(e) => eprintln!("MCP import failed for '{name}': {e}"),
+                        }
+                    }
+                    Err(e) => eprintln!("MCP spawn failed for '{name}': {e}"),
+                }
+            }
+        }
+    }
     // SP-Skills: hot-loadable modular skills (the core runs with zero skills installed). Loads
     // command tools + MCP-server skills from the skills dir; drop a folder in, restart, gain tools.
     let skills_dir = std::env::var("GINEXUS_SKILLS_DIR")
