@@ -41,7 +41,10 @@ final class AudioInput {
         try? input.setVoiceProcessingEnabled(true)
         let hwFormat = input.outputFormat(forBus: 0)
         inputSR = hwFormat.sampleRate
-        input.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { [weak self] buf, _ in
+        // The tap fires on a realtime audio thread. It MUST be @Sendable (non-isolated) — if it
+        // inherits this @MainActor class's isolation, Swift's runtime asserts the wrong executor and
+        // crashes (EXC_BREAKPOINT). Do only thread-safe local work here, then hop to the main actor.
+        input.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { @Sendable [weak self] buf, _ in
             guard let ch = buf.floatChannelData?[0] else { return }
             let n = Int(buf.frameLength)
             var sum: Float = 0
