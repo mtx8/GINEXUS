@@ -40,10 +40,19 @@ listeners preferring it over ElevenLabs (~63–65% preference). Speech-to-text i
    Okinawa/MackTrax brand). MIT licensed.
 3. **Voice selection = default built-in voice + zero-shot clone support** — ship a default voice now,
    plus the plumbing to clone a custom voice from a **~10 s** clean reference clip.
-4. **Engine = MLX**, via `mlx-audio-plus` + an `mlx-community` Chatterbox checkpoint — **NOT**
-   PyTorch-MPS. MPS is unstable on Apple Silicon for Chatterbox (tensor-allocation errors, pinned-torch
-   conflicts); MLX is the native-Metal path and matches GINEXUS's existing MLX-first stack. This is the
-   same family of concern as the master design's "reject native-FP8 / Metal-crash class" posture.
+4. **Engine = MLX** — **NOT** PyTorch-MPS. MPS is unstable on Apple Silicon for Chatterbox
+   (tensor-allocation errors, pinned-torch conflicts); MLX is the native-Metal path and matches
+   GINEXUS's existing MLX-first stack. This is the same family of concern as the master design's
+   "reject native-FP8 / Metal-crash class" posture.
+   - **Resolved checkpoint (2026-06-21):** the multilingual MLX weights exist and are commercial-clean.
+     **Primary = `theoracleguy/Chatterbox-Multilingual-MLX-v2-fp16`** (Apache-2.0, 331.5M params,
+     `mlx-audio` library, ~1.5K downloads); **lighter fallback = `…-MLX-v2-Q8`** (Apache-2.0). fp16 is
+     the default — a 331M model on a 192 GB Mac has no reason to quantize for memory; keep max quality.
+   - **Library note:** the multilingual checkpoints load via **`mlx-audio`** (not `mlx-audio-plus`,
+     which is the English-base path). Confirm the exact loader + sentence-streaming support at first
+     import (residual sub-risk, non-blocking).
+   - **Future ANE option:** `smdesai/Chatterbox-Multilingual-TTS-8bit` runs on **CoreML / Apple Neural
+     Engine** (23 langs, MIT) — benchmark later as a latency play; different runtime than `mlx-audio`.
 5. **STT = Parakeet-TDT-0.6b-v3** via `parakeet-mlx` (master-design roster; attribute NVIDIA).
 6. **Audio output = 24 kHz** (Chatterbox/S3Gen native rate; read `model.sr` at runtime, don't hardcode).
 7. **Perth watermark stays ON by default** — Chatterbox watermarks all generated audio; the code is MIT
@@ -71,9 +80,10 @@ lazy-load on first use with an explicit warmup call.
 | `/voices` | GET | List available voices (default + any registered clone references). |
 | `/warmup` | POST | Force-load STT + TTS weights (called at sidecar start so the first real turn is fast). |
 
-- **Dependencies pinned** in `app/audio-sidecar/pyproject.toml`: `mlx-audio-plus`, `parakeet-mlx`,
-  `fastapi`, `uvicorn`, plus the Chatterbox MLX checkpoint pulled from a **pinned HF revision**
-  (per the master-design supply-chain rule: pinned SHAs, `verify_lock` discipline).
+- **Dependencies pinned** in `app/audio-sidecar/pyproject.toml`: `mlx-audio` (multilingual Chatterbox
+  loader), `parakeet-mlx`, `fastapi`, `uvicorn`, plus the Chatterbox MLX checkpoint
+  (`theoracleguy/Chatterbox-Multilingual-MLX-v2-fp16`) pulled from a **pinned HF revision** (per the
+  master-design supply-chain rule: pinned SHAs, `verify_lock` discipline).
 - **Sentence chunking** is what makes it conversational: the synthesizer splits the LLM reply on
   sentence boundaries and emits audio per sentence so playback starts while later sentences are still
   generating (upstream Chatterbox has no first-class streaming API — we chunk at the sentence layer
@@ -157,13 +167,12 @@ pending `/v1/tts`, then re-enters capture — so the user is never talking over 
 
 ## 6. Risks
 
-1. **Risk #1 — MLX Multilingual V3 checkpoint availability (RESOLVE FIRST).** The confirmed-clean MLX
-   checkpoints found in research are the **English** base/Turbo (`mlx-community/Chatterbox-TTS-fp16`).
-   An MLX build of **Multilingual V3** is not yet confirmed. **Implementation step 1** is to verify one
-   exists on `mlx-community`; if it does, use it. If not: (a) convert the upstream Multilingual V3
-   weights with `mlx-audio-plus` conversion tooling and publish locally, or (b) fall back to
-   PyTorch-MPS **with CPU fallback** for the multilingual model *only*, while keeping the English path on
-   MLX. Do not start sidecar plumbing until this is resolved — it determines the engine wiring.
+1. **Risk #1 — MLX Multilingual checkpoint availability — RESOLVED (2026-06-21).** ✅ Multiple
+   Apache-2.0 MLX multilingual Chatterbox checkpoints exist on the Hub. **Chosen:
+   `theoracleguy/Chatterbox-Multilingual-MLX-v2-fp16`** (Apache-2.0, 331.5M, `mlx-audio`), Q8 as
+   fallback. No conversion or PyTorch-MPS fallback needed. **Residual sub-risk (non-blocking):** confirm
+   the exact loader package (`mlx-audio` vs `mlx-audio-plus`) and its sentence-streaming support at first
+   import; pin the HF revision SHA then.
 2. **First-audio latency on M2 Ultra is unverified.** No source gives an Apple-Silicon RTF for
    Chatterbox. Mitigation: sentence-chunked streaming + warmup; **benchmark before committing** (§7).
    If sentence-chunk latency is too high, evaluate a token-streaming fork as a follow-up.
@@ -190,8 +199,10 @@ pending `/v1/tts`, then re-enters capture — so the user is never talking over 
 
 ## 8. Decomposition (ordered implementation steps)
 
-1. **Resolve Risk #1** — confirm/convert the MLX Multilingual V3 checkpoint; pin its HF revision. *(Hard
-   gate before plumbing.)*
+1. **Risk #1 — DONE** ✅ checkpoint chosen (`theoracleguy/Chatterbox-Multilingual-MLX-v2-fp16`).
+   Remaining slice of this step: a throwaway spike that `pip install`s the loader, loads the checkpoint,
+   and synthesizes one phrase on the M2 Ultra — confirms `mlx-audio` vs `mlx-audio-plus` + streaming,
+   then pin the HF revision SHA. *(Spike before full sidecar plumbing.)*
 2. **Audio sidecar** — scaffold `app/audio-sidecar/` (mirror media-sidecar), implement `/healthz`,
    `/warmup`, `/synthesize` (sentence-chunked streaming), `/transcribe`, `/voices`; pin deps.
 3. **Sidecar launch** — `SpineController.startAudioSidecar()` + `voiceEnabled` setting + `GINEXUS_AUDIO_BASE`
@@ -226,7 +237,9 @@ pending `/v1/tts`, then re-enters capture — so the user is never talking over 
 
 - Chatterbox (source, MIT): https://github.com/resemble-ai/chatterbox
 - Chatterbox model card: https://huggingface.co/ResembleAI/chatterbox
-- MLX port (`mlx-audio-plus`): https://github.com/DePasqualeOrg/mlx-audio-plus
+- MLX checkpoint (CHOSEN, multilingual, Apache-2.0): https://huggingface.co/theoracleguy/Chatterbox-Multilingual-MLX-v2-fp16 (Q8 fallback: `…-MLX-v2-Q8`)
+- MLX ports: `mlx-audio` (multilingual loader) · `mlx-audio-plus` (English base): https://github.com/DePasqualeOrg/mlx-audio-plus
+- ANE/CoreML option (future latency play): https://huggingface.co/smdesai/Chatterbox-Multilingual-TTS-8bit
 - MLX checkpoint (English reference): https://huggingface.co/mlx-community/Chatterbox-TTS-fp16
 - Parakeet STT: master-design roster (`docs/model-roster-2026-06-15.md`), `parakeet-mlx`
 - Sidecar pattern to mirror: `app/media-sidecar/server.py`
