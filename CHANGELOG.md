@@ -22,6 +22,32 @@ running history.
 
 ---
 
+## 2026-06-21 — Voice, documents, projects, connections (branch `feat/voice-docs-projects-connect`)
+
+A large operator-driven session adding four new subsystems (specs in
+`docs/superpowers/specs/2026-06-21-*`), plus a competitive teardown
+(`docs/competitive-strategy-2026-06-21.md`) of Nous Hermes & PewDiePie Odysseus.
+
+- **SP-Voice — conversational voice.** New `app/audio-sidecar/` (FastAPI, loopback, single-thread
+  MLX): Chatterbox Multilingual V3 TTS + Parakeet-TDT STT, all local, no PyTorch. Verified
+  end-to-end on M2 Ultra — TTS↔STT round-trip 94% word overlap, warm TTS RTF 0.31×, STT 0.81s.
+  Swift hands-free loop (mic VAD → STT → agent → streamed 24 kHz TTS) with **barge-in** (AEC via
+  voice-processing), a mic toggle + live status bar, mic entitlement + usage string, and a core
+  `speak` tool. (Live mic loop needs on-device run to exercise.)
+- **SP-Docs — document intelligence + in-place PDF form filling.** Native PDFKit
+  `read_pdf_fields` + `fill_pdf_form` fill real AcroForm PDFs **in place** (timestamped backup),
+  iCloud-refused, XFA/flat detection — PDFKit round-trip verified PASS. `read_document` reads
+  PDF/text/code, chunking into memory as `Origin::Untrusted` (grounding + injection defense).
+- **SP-Projects — workspaces.** Projects group a local folder, custom instructions, and their own
+  threads; `Conversation` gains a back-compatible `projectID`; per-project instructions are injected
+  as a system message; Projects menu + editor sheet. Folders under `~/GINEXUS-Projects/` (iCloud refused).
+- **SP-Connect — MCP integration framework.** Keychain secret store; settings-driven multi-server
+  registry (`GINEXUS_MCP_SERVERS`); SpineController injects per-server secrets into the core env;
+  Connections sheet with a one-paste **Notion** preset. All MCP tools stay default-deny (HITL).
+- **Verification:** full `xcodebuild` SUCCEEDS with the mic entitlement embedded; Swift core tests
+  21/21 pass; new Rust voice/PDF tool tests pass. Remaining polish: docs review-diff UI, voice
+  cloning UI, MCP settings panel depth, and live Notion/mic exercising.
+
 ## 2026-06-18 — Polish + real-work pass (PRs #34–#45)
 
 A long operator-driven session refining the shell and the actually-doing-work flows.
