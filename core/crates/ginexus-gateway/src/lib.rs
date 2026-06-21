@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 pub mod web;
 pub mod media;
+pub mod voice;
 
 const OLLAMA_BASE: &str = "http://127.0.0.1:11434/v1";
 

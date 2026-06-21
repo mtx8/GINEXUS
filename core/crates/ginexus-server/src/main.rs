@@ -192,6 +192,22 @@ async fn main() {
             eprintln!("registered image_generate tool (media sidecar)");
         }
     }
+    // SP-Voice: local TTS `speak` tool — registered only when the app launched the audio sidecar and
+    // injected its base URL. Synthesis is autonomous (writes only into the audio dir). The realtime
+    // conversational loop talks to the sidecar directly from the Swift app; this tool is for the
+    // agent to proactively speak in a typed chat.
+    if let Ok(base) = std::env::var("GINEXUS_AUDIO_BASE") {
+        if !base.is_empty() {
+            registry.register(ginexus_gateway::voice::speak_tool(base));
+            let _ = std::fs::create_dir_all(sd.join("audio"));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(sd.join("audio"), std::fs::Permissions::from_mode(0o700));
+            }
+            eprintln!("registered speak tool (audio sidecar)");
+        }
+    }
     // Obsidian vault tools — registered only when the operator points GINEXUS at a vault dir
     // (GINEXUS_OBSIDIAN_VAULT). list/search/read are autonomous; write/append are HITL-gated.
     if let Ok(vault) = std::env::var("GINEXUS_OBSIDIAN_VAULT") {

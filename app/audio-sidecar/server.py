@@ -153,6 +153,26 @@ def synth_pcm_stream(text, lang_code="en", exaggeration=0.5, cfg_weight=0.5,
         yield item
 
 
+def synth_to_wav(text, lang_code="en", exaggeration=0.5, cfg_weight=0.5,
+                 temperature=0.8, voice_ref=None) -> dict:
+    """Synthesize the whole text to a single WAV in the audio dir (the `speak` agent tool path).
+
+    The sidecar owns the filename — the model never controls the path."""
+    import datetime
+    t0 = time.time()
+    chunks = [np.frombuffer(b, dtype="<i2") for b in synth_pcm_stream(
+        text, lang_code=lang_code, exaggeration=exaggeration, cfg_weight=cfg_weight,
+        temperature=temperature, voice_ref=voice_ref)]
+    if not chunks:
+        raise RuntimeError("no audio generated")
+    pcm = np.concatenate(chunks)
+    ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = SUPPORT / f"{ts}-{secrets.token_hex(3)}.wav"
+    sf.write(str(out), (pcm.astype(np.float32) / 32768.0), SR)
+    return {"path": str(out), "ms": int((time.time() - t0) * 1000),
+            "sample_rate": SR, "duration_s": round(len(pcm) / SR, 2)}
+
+
 def transcribe_file(path: str) -> dict:
     def work():
         model = _load_stt()
@@ -222,6 +242,20 @@ def synthesize(req: SynthReq):
         media_type="application/octet-stream",
         headers={"X-Sample-Rate": str(SR), "X-Audio-Format": "pcm_s16le_mono"},
     )
+
+
+@app.post("/speak")
+def speak(req: SynthReq):
+    """Non-streaming: synthesize the whole text to a WAV file and return its path (agent `speak`)."""
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(400, "empty text")
+    try:
+        return synth_to_wav(text, lang_code=req.language_id, exaggeration=req.exaggeration,
+                            cfg_weight=req.cfg_weight, temperature=req.temperature,
+                            voice_ref=req.voice_ref)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"synthesis failed: {e}")
 
 
 @app.post("/transcribe")
