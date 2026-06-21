@@ -19,6 +19,7 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
     public var ollamaBase: String            // OpenAI-compatible base, must end in /v1
     public var obsidianVaultPath: String?    // nil → auto-detect the open vault
     public var mediaSidecarEnabled: Bool     // gate the local image-generation sidecar + tool
+    public var voiceEnabled: Bool            // gate the local voice (audio) sidecar + conversation loop
     public var importIncludeAssistant: Bool  // include assistant turns when importing AI data
     public var persistTranscript: Bool       // keep conversation history on disk across launches
     public var schemaVersion: Int
@@ -30,14 +31,16 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
                 ollamaBase: String = GinexusSettings.defaultOllamaBase,
                 obsidianVaultPath: String? = nil,
                 mediaSidecarEnabled: Bool = true,
+                voiceEnabled: Bool = true,
                 importIncludeAssistant: Bool = false,
                 persistTranscript: Bool = true,
-                schemaVersion: Int = 1) {
+                schemaVersion: Int = 2) {
         self.defaultModel = defaultModel
         self.defaultMode = defaultMode
         self.ollamaBase = ollamaBase
         self.obsidianVaultPath = obsidianVaultPath
         self.mediaSidecarEnabled = mediaSidecarEnabled
+        self.voiceEnabled = voiceEnabled
         self.importIncludeAssistant = importIncludeAssistant
         self.persistTranscript = persistTranscript
         self.schemaVersion = schemaVersion
@@ -51,6 +54,7 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
         ollamaBase = try c.decodeIfPresent(String.self, forKey: .ollamaBase) ?? d.ollamaBase
         obsidianVaultPath = try c.decodeIfPresent(String.self, forKey: .obsidianVaultPath)
         mediaSidecarEnabled = try c.decodeIfPresent(Bool.self, forKey: .mediaSidecarEnabled) ?? d.mediaSidecarEnabled
+        voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? d.voiceEnabled
         importIncludeAssistant = try c.decodeIfPresent(Bool.self, forKey: .importIncludeAssistant) ?? d.importIncludeAssistant
         persistTranscript = try c.decodeIfPresent(Bool.self, forKey: .persistTranscript) ?? d.persistTranscript
         schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? d.schemaVersion

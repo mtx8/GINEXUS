@@ -169,6 +169,24 @@ final class AppModel: ObservableObject {
     @Published var settingsOpen = false
 
     private let spine = SpineController()
+
+    /// SP-Voice: the hands-free conversation loop. Non-nil while voice mode is active; the overlay
+    /// observes it for live state (listening / thinking / speaking) and the mic level.
+    @Published var voiceController: VoiceConversationController?
+    var voiceActive: Bool { voiceController != nil }
+
+    /// Toggle hands-free voice. Starts mic → STT → agent → TTS with barge-in, or stops it.
+    func toggleVoice() {
+        if let vc = voiceController {
+            vc.stop()
+            voiceController = nil
+            return
+        }
+        guard let vc = VoiceConversationController(app: self, audioBase: spine.audioBase) else { return }
+        voiceController = vc
+        Task { await vc.start() }
+    }
+
     private var pollTimer: Timer?
     private var autoDemoSent = false
     private var didRestoreSession = false   // transcript/settings restore runs once per launch, not per reconnect
@@ -947,15 +965,23 @@ final class AppModel: ObservableObject {
             handleSSE(event: event, data: data, msgId: msgId, context: contextMessages)
         }
         // Stream closed: make sure the bubble is finalized + input re-enabled.
+        var finalText = ""
         if let i = chat.firstIndex(where: { $0.id == msgId }) {
             flushActivity(i)   // finalize any activity whose min-display timer is still pending
             chat[i].streaming = false
             chat[i].status = nil
+            finalText = chat[i].text
         }
         sending = false
         persistActive()   // the only safe "message is final" point (text is authoritative now)
         renderSnapshot()
+        // SP-Voice: let the conversation loop speak the finished reply (no-op in text mode).
+        onTurnComplete?(finalText)
     }
+
+    /// SP-Voice: fired with the final assistant text when an agent turn finishes streaming. The voice
+    /// controller sets this to drive TTS; nil in normal typed use.
+    var onTurnComplete: ((String) -> Void)?
 
     /// Apply one SSE frame to the streaming assistant bubble (runs on the main actor, in order).
     /// When the current live activity started — drives the live card's minimum visible window.

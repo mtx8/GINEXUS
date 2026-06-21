@@ -24,6 +24,13 @@ final class SpineController {
     private let mediaPort = 8765
     private var mediaProcess: Process?
 
+    /// SP-Voice: the local audio sidecar (Chatterbox TTS + Parakeet STT on Apple MLX). Launched as a
+    /// sibling of the core; the core gets its base URL via env (the `speak` tool) and the Swift voice
+    /// loop calls it directly over loopback for low-latency synth/transcribe.
+    let audioPort = 8764
+    private var audioProcess: Process?
+    var audioBase: String { "http://127.0.0.1:\(audioPort)" }
+
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         socketPath = "\(home)/Library/Application Support/GINEXUS/run/ginexus.sock"
@@ -75,6 +82,10 @@ final class SpineController {
         // still points at the base URL and the image_generate tool simply errors until one answers.
         if settings.mediaSidecarEnabled { startMediaSidecar() }
 
+        // SP-Voice: best-effort launch the audio sidecar (Chatterbox TTS + Parakeet STT). Gated by the
+        // "Voice" setting; preloads both models so the first turn is warm.
+        if settings.voiceEnabled { startAudioSidecar() }
+
         let p = Process()
         p.executableURL = embeddedBinary
         p.arguments = ["--uds", socketPath]
@@ -89,6 +100,12 @@ final class SpineController {
             env["GINEXUS_MEDIA_BASE"] = "http://127.0.0.1:\(mediaPort)"
         } else {
             env.removeValue(forKey: "GINEXUS_MEDIA_BASE")
+        }
+        // Voice: advertise the audio base (registers the `speak` tool) only when voice is enabled.
+        if settings.voiceEnabled {
+            env["GINEXUS_AUDIO_BASE"] = audioBase
+        } else {
+            env.removeValue(forKey: "GINEXUS_AUDIO_BASE")
         }
         // Ollama endpoint override: only inject when the user set a non-default, valid, host-allowed
         // base (every tier + model management derive from it). Loopback default OR a blocked host
@@ -136,7 +153,31 @@ final class SpineController {
         do { try p.run(); mediaProcess = p } catch { /* sidecar optional */ }
     }
 
-    func shutdown() { process?.terminate(); appHost?.stop(); mediaProcess?.terminate() }
+    /// Launch the uv audio sidecar from the project dir (dev). Best-effort, same shape as the media
+    /// sidecar: needs `uv` + the sidecar sources; if the port is taken (already running) uvicorn just
+    /// exits — harmless. Preloads TTS + STT so the first conversational turn is warm.
+    private func startAudioSidecar() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dir = ProcessInfo.processInfo.environment["GINEXUS_AUDIO_SIDECAR_DIR"]
+            ?? "\(home)/Desktop/GINEXUS/app/audio-sidecar"
+        let uv = "\(home)/.local/bin/uv"
+        guard FileManager.default.fileExists(atPath: "\(dir)/server.py"),
+              FileManager.default.isExecutableFile(atPath: uv) else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: uv)
+        p.currentDirectoryURL = URL(fileURLWithPath: dir)
+        p.arguments = ["run", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "\(audioPort)"]
+        var env = ProcessInfo.processInfo.environment
+        env["GINEXUS_AUDIO_PRELOAD"] = "1"
+        p.environment = env
+        let audioLog = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GINEXUS/audio.log")
+        FileManager.default.createFile(atPath: audioLog.path, contents: nil)
+        if let h = try? FileHandle(forWritingTo: audioLog) { p.standardOutput = h; p.standardError = h }
+        do { try p.run(); audioProcess = p } catch { /* sidecar optional */ }
+    }
+
+    func shutdown() { process?.terminate(); appHost?.stop(); mediaProcess?.terminate(); audioProcess?.terminate() }
 
     /// Resolve the vault to inject: a user-chosen path (canonicalized, so a symlink into iCloud can't
     /// sneak past the check) if it's a real directory and NOT in iCloud, else fall back to auto-detect.

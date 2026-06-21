@@ -412,6 +412,7 @@ struct ContentView: View {
     // MARK: ── input bar ───────────────────────────────────────────────────────
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let vc = model.voiceController { VoiceStatusBar(controller: vc) }
             attachmentChip
             HStack(spacing: 10) {
                 HStack(spacing: 8) {
@@ -424,6 +425,7 @@ struct ContentView: View {
                 .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 10)) }
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+                voiceButton
                 Button(action: { model.send(model.chatInput) }) {
                     Text("SEND").font(Brand.mono(12, weight: .bold)).kerning(1.6)
                         .padding(.horizontal, 24).padding(.vertical, 14)
@@ -439,6 +441,22 @@ struct ContentView: View {
     private var canSend: Bool {
         model.connected && !model.sending &&
         (!model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.attachment != nil)
+    }
+
+    /// Mic toggle — starts/stops the hands-free voice conversation (SP-Voice).
+    private var voiceButton: some View {
+        Button(action: model.toggleVoice) {
+            Image(systemName: model.voiceActive ? "waveform" : "mic.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(model.voiceActive ? Brand.ember500 : Brand.bone200)
+                .frame(width: 46, height: 46)
+                .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(model.voiceActive ? Brand.ember500.opacity(0.6) : Brand.line1, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.connected)
+        .help(model.voiceActive ? "Stop voice conversation" : "Talk to GINEXUS (hands-free)")
     }
 
     /// The "+" menu inside the input row: capabilities that act on your message, plus attachments.
@@ -786,6 +804,63 @@ struct ContentView: View {
 
 // MARK: - streaming answer text with a blinking ember cursor (matches the EXECUTE accent)
 // MARK: - token usage gauge (Context rail) — REAL counts only, honest empty state ("—")
+/// Live voice state above the composer: pulsing dot + state + mic level + last transcript.
+private struct VoiceStatusBar: View {
+    @ObservedObject var controller: VoiceConversationController
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(dotColor).frame(width: 8, height: 8)
+                .shadow(color: dotColor.opacity(0.7), radius: controller.state == .listening ? 5 : 0)
+            Text(label).font(Brand.mono(11, weight: .bold)).kerning(1.6).foregroundStyle(Brand.bone200)
+            level
+            if !controller.lastTranscript.isEmpty {
+                Text("“\(controller.lastTranscript)”")
+                    .font(Brand.mono(11)).foregroundStyle(Brand.bone300).lineLimit(1).truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+            if let err = controller.errorText {
+                Text(err).font(Brand.mono(10)).foregroundStyle(Brand.hi500).lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.ember600.opacity(0.4), lineWidth: 1))
+    }
+
+    /// A small 5-bar level meter driven by the mic RMS.
+    private var level: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<5, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Float(i) < controller.level * 40 ? Brand.ember500 : Brand.ink500)
+                    .frame(width: 3, height: 4 + CGFloat(i) * 2)
+            }
+        }
+        .frame(height: 14)
+        .opacity(controller.state == .listening ? 1 : 0.35)
+    }
+
+    private var label: String {
+        switch controller.state {
+        case .idle: return "VOICE OFF"
+        case .listening: return "LISTENING"
+        case .transcribing: return "HEARD YOU"
+        case .thinking: return "THINKING"
+        case .speaking: return "SPEAKING"
+        }
+    }
+
+    private var dotColor: Color {
+        switch controller.state {
+        case .listening: return Brand.ember500
+        case .speaking: return Brand.ember400
+        case .thinking, .transcribing: return Brand.bone300
+        case .idle: return Brand.ink500
+        }
+    }
+}
+
 private struct TokenUsageGauge: View {
     let usage: TokenUsage?
     var body: some View {

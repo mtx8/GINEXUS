@@ -62,6 +62,7 @@ targets:
         NSHighResolutionCapable: true
         NSCalendarsFullAccessUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
         NSCalendarsUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
+        NSMicrophoneUsageDescription: "GINEXUS uses the microphone for hands-free voice conversation — your speech is transcribed locally on this Mac and never leaves the device."
     settings:
       base:
         PRODUCT_NAME: GINEXUS
