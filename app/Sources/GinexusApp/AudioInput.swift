@@ -56,7 +56,12 @@ final class AudioInput {
         engine.prepare()
         try engine.start()
         running = true
+        VoiceLog.log("mic engine started: inputSR=\(inputSR), tapFormat=\(hwFormat)")
     }
+
+    // Diagnostics: track peak level between throttled log lines so we can see if audio is arriving.
+    private var diagPeak: Float = 0
+    private var diagCount = 0
 
     func stop() {
         guard running else { return }
@@ -86,6 +91,14 @@ final class AudioInput {
 
     private func consume(frame: [Float], rms: Float) {
         onLevel?(rms)
+        // Throttled diagnostics (~ every 2s at 21ms/frame): peak level + armed/threshold so we can
+        // tell "no audio reaching mic" from "audio present but below VAD threshold".
+        diagPeak = max(diagPeak, rms); diagCount += 1
+        if diagCount >= 96 {
+            VoiceLog.log(String(format: "mic level: peak=%.4f thresh=%.4f armed=%@ sawSpeech=%@",
+                                diagPeak, energyThreshold, armed ? "Y" : "N", sawSpeech ? "Y" : "N"))
+            diagPeak = 0; diagCount = 0
+        }
         guard armed else { return }
         let voiced = rms > energyThreshold
         buffer.append(contentsOf: frame)
@@ -119,6 +132,7 @@ final class AudioInput {
         resetVAD()
         guard !samples.isEmpty else { return }
         let wav = WAVUtil.wav(fromFloat: samples, sampleRate: sr)
+        VoiceLog.log("emitUtterance: \(samples.count) samples @ \(sr)Hz -> \(wav.count) bytes")
         onUtterance?(wav)
     }
 }

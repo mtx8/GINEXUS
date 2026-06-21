@@ -37,9 +37,13 @@ final class VoiceConversationController: ObservableObject {
 
     func start() async {
         guard state == .idle else { return }
+        VoiceLog.log("start() called; audioBase=\(client.base.absoluteString)")
         let granted = await Self.requestMic()
+        VoiceLog.log("mic permission granted=\(granted)")
         guard granted else { errorText = "Microphone access denied. Enable it in System Settings › Privacy."; return }
+        VoiceLog.log("warming sidecar…")
         await client.warmup()
+        VoiceLog.log("warmup done")
 
         input.onLevel = { [weak self] in self?.level = $0 }
         input.onSpeechStart = { [weak self] in self?.handleSpeechStart() }
@@ -50,7 +54,9 @@ final class VoiceConversationController: ObservableObject {
 
         do {
             try input.start()
+            VoiceLog.log("AudioInput.start() ok")
         } catch {
+            VoiceLog.log("AudioInput.start() FAILED: \(error)")
             errorText = "Couldn't start the microphone: \(error.localizedDescription)"
             return
         }
@@ -86,12 +92,14 @@ final class VoiceConversationController: ObservableObject {
     }
 
     private func handleUtterance(_ wav: Data) {
+        VoiceLog.log("utterance received: \(wav.count) bytes, state=\(state.rawValue)")
         guard state == .listening else { return }   // ignore mic while transcribing/thinking
         input.disarm()
         state = .transcribing
         Task {
             do {
                 let text = try await client.transcribe(wav: wav)
+                VoiceLog.log("transcribed: \(text.prefix(80))")
                 guard active else { return }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty {

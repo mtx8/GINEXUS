@@ -145,51 +145,69 @@ final class SpineController {
         process = p
     }
 
-    /// Launch the uv media sidecar from the project dir (dev). Best-effort: needs `uv` + the
-    /// sidecar sources; if the port is taken (already running) uvicorn just exits — harmless.
-    private func startMediaSidecar() {
+    /// Launch a Python sidecar (media or audio) from its project dir. ROBUST under a Finder/`open`
+    /// launch: it runs the project's OWN venv interpreter (`.venv/bin/python -m uvicorn`) so it does
+    /// NOT depend on `uv` resolving a Python in the minimal GUI environment — that resolution hangs
+    /// when launched from Finder (no shell PATH), which silently leaves the sidecar down. Falls back
+    /// to `uv run` only if the venv is missing. Best-effort; if the port is taken uvicorn just exits.
+    private func launchSidecar(dir: String, port: Int, preloadKey: String, logName: String) -> Process? {
+        guard FileManager.default.fileExists(atPath: "\(dir)/server.py") else { return nil }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dir = ProcessInfo.processInfo.environment["GINEXUS_MEDIA_SIDECAR_DIR"]
-            ?? "\(home)/Desktop/GINEXUS/app/media-sidecar"
+        let venvPython = "\(dir)/.venv/bin/python"
         let uv = "\(home)/.local/bin/uv"
-        guard FileManager.default.fileExists(atPath: "\(dir)/server.py"),
-              FileManager.default.isExecutableFile(atPath: uv) else { return }
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: uv)
         p.currentDirectoryURL = URL(fileURLWithPath: dir)
-        p.arguments = ["run", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "\(mediaPort)"]
+        let venvOK = FileManager.default.isExecutableFile(atPath: venvPython)
+        let uvOK = FileManager.default.isExecutableFile(atPath: uv)
+        VoiceLog.log("launchSidecar \(logName): dir=\(dir) venvPython=\(venvOK) uv=\(uvOK)")
+        if venvOK {
+            p.executableURL = URL(fileURLWithPath: venvPython)
+            p.arguments = ["-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "\(port)"]
+        } else if uvOK {
+            p.executableURL = URL(fileURLWithPath: uv)
+            p.arguments = ["run", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "\(port)"]
+        } else {
+            VoiceLog.log("launchSidecar \(logName): no launcher found")
+            return nil
+        }
         var env = ProcessInfo.processInfo.environment
-        env["GINEXUS_MEDIA_PRELOAD"] = "1"
+        env[preloadKey] = "1"
+        // Finder/`open` launches inherit a minimal PATH; give subprocesses the usual locations.
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\(home)/.local/bin:" + (env["PATH"] ?? "")
         p.environment = env
-        let mediaLog = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GINEXUS/media.log")
-        FileManager.default.createFile(atPath: mediaLog.path, contents: nil)
-        if let h = try? FileHandle(forWritingTo: mediaLog) { p.standardOutput = h; p.standardError = h }
-        do { try p.run(); mediaProcess = p } catch { /* sidecar optional */ }
+        let log = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GINEXUS/\(logName)")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        if let h = try? FileHandle(forWritingTo: log) { p.standardOutput = h; p.standardError = h }
+        do {
+            try p.run()
+            VoiceLog.log("launchSidecar \(logName): launched pid=\(p.processIdentifier)")
+            return p
+        } catch {
+            VoiceLog.log("launchSidecar \(logName): run() THREW: \(error)")
+            return nil
+        }
     }
 
-    /// Launch the uv audio sidecar from the project dir (dev). Best-effort, same shape as the media
-    /// sidecar: needs `uv` + the sidecar sources; if the port is taken (already running) uvicorn just
-    /// exits — harmless. Preloads TTS + STT so the first conversational turn is warm.
-    private func startAudioSidecar() {
+    /// Sidecars run from App Support, NOT ~/Desktop. A Finder-launched app has no TCC permission for
+    /// the Desktop, so a child Python whose venv lives under ~/Desktop hangs forever in an open()
+    /// during interpreter startup (getpath) waiting on a TCC gate it can't present. App Support is not
+    /// TCC-protected, so the sidecar's venv loads cleanly. (build_app.sh stages the sidecars here.)
+    private func sidecarDir(_ name: String, env: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dir = ProcessInfo.processInfo.environment["GINEXUS_AUDIO_SIDECAR_DIR"]
-            ?? "\(home)/Desktop/GINEXUS/app/audio-sidecar"
-        let uv = "\(home)/.local/bin/uv"
-        guard FileManager.default.fileExists(atPath: "\(dir)/server.py"),
-              FileManager.default.isExecutableFile(atPath: uv) else { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: uv)
-        p.currentDirectoryURL = URL(fileURLWithPath: dir)
-        p.arguments = ["run", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "\(audioPort)"]
-        var env = ProcessInfo.processInfo.environment
-        env["GINEXUS_AUDIO_PRELOAD"] = "1"
-        p.environment = env
-        let audioLog = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GINEXUS/audio.log")
-        FileManager.default.createFile(atPath: audioLog.path, contents: nil)
-        if let h = try? FileHandle(forWritingTo: audioLog) { p.standardOutput = h; p.standardError = h }
-        do { try p.run(); audioProcess = p } catch { /* sidecar optional */ }
+        return ProcessInfo.processInfo.environment[env]
+            ?? "\(home)/Library/Application Support/GINEXUS/\(name)"
+    }
+
+    private func startMediaSidecar() {
+        let dir = sidecarDir("media-sidecar", env: "GINEXUS_MEDIA_SIDECAR_DIR")
+        mediaProcess = launchSidecar(dir: dir, port: mediaPort, preloadKey: "GINEXUS_MEDIA_PRELOAD", logName: "media.log")
+    }
+
+    /// Preloads TTS + STT so the first conversational turn is warm.
+    private func startAudioSidecar() {
+        let dir = sidecarDir("audio-sidecar", env: "GINEXUS_AUDIO_SIDECAR_DIR")
+        audioProcess = launchSidecar(dir: dir, port: audioPort, preloadKey: "GINEXUS_AUDIO_PRELOAD", logName: "audio.log")
     }
 
     func shutdown() { process?.terminate(); appHost?.stop(); mediaProcess?.terminate(); audioProcess?.terminate() }
