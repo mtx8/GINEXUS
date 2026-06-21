@@ -36,22 +36,31 @@ final class AudioInput {
     func start() throws {
         guard !running else { return }
         let input = engine.inputNode
-        // Acoustic echo cancellation + noise suppression so GINEXUS's own speech (during playback)
-        // doesn't false-trigger barge-in, and background noise doesn't trip the VAD.
-        try? input.setVoiceProcessingEnabled(true)
+        // NOTE: voice-processing (AEC) is intentionally OFF — on multi-channel input devices it can
+        // deliver all-zero audio. Barge-in instead relies on disarming the VAD while speaking.
         let hwFormat = input.outputFormat(forBus: 0)
         inputSR = hwFormat.sampleRate
         // The tap fires on a realtime audio thread. It MUST be @Sendable (non-isolated) — if it
         // inherits this @MainActor class's isolation, Swift's runtime asserts the wrong executor and
         // crashes (EXC_BREAKPOINT). Do only thread-safe local work here, then hop to the main actor.
         input.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { @Sendable [weak self] buf, _ in
-            guard let ch = buf.floatChannelData?[0] else { return }
+            guard let chans = buf.floatChannelData else { return }
             let n = Int(buf.frameLength)
-            var sum: Float = 0
-            for i in 0..<n { let s = ch[i]; sum += s * s }
-            let rms = (n > 0) ? (sum / Float(n)).squareRoot() : 0
-            let frame = Array(UnsafeBufferPointer(start: ch, count: n))
-            Task { @MainActor [weak self] in self?.consume(frame: frame, rms: rms) }
+            let chCount = max(1, Int(buf.format.channelCount))
+            // Scan EVERY channel and keep the loudest — on a multi-channel / aggregate device the live
+            // mic may not be channel 0. Use that channel's samples for transcription.
+            var bestRMS: Float = 0
+            var bestCh = 0
+            for c in 0..<chCount {
+                let ch = chans[c]
+                var sum: Float = 0
+                for i in 0..<n { let s = ch[i]; sum += s * s }
+                let rms = (n > 0) ? (sum / Float(n)).squareRoot() : 0
+                if rms > bestRMS { bestRMS = rms; bestCh = c }
+            }
+            let frame = Array(UnsafeBufferPointer(start: chans[bestCh], count: n))
+            let rms = bestRMS
+            Task { @MainActor [weak self] in self?.consume(frame: frame, rms: rms, channels: chCount) }
         }
         engine.prepare()
         try engine.start()
@@ -89,14 +98,14 @@ final class AudioInput {
         buffer.removeAll(keepingCapacity: true)
     }
 
-    private func consume(frame: [Float], rms: Float) {
+    private func consume(frame: [Float], rms: Float, channels: Int = 1) {
         onLevel?(rms)
-        // Throttled diagnostics (~ every 2s at 21ms/frame): peak level + armed/threshold so we can
-        // tell "no audio reaching mic" from "audio present but below VAD threshold".
+        // Throttled diagnostics (~ every 2s at 21ms/frame): peak level + channel count so we can tell
+        // "no audio reaching mic" from "audio present but below VAD threshold".
         diagPeak = max(diagPeak, rms); diagCount += 1
         if diagCount >= 96 {
-            VoiceLog.log(String(format: "mic level: peak=%.4f thresh=%.4f armed=%@ sawSpeech=%@",
-                                diagPeak, energyThreshold, armed ? "Y" : "N", sawSpeech ? "Y" : "N"))
+            VoiceLog.log(String(format: "mic level: peak=%.4f thresh=%.4f ch=%d armed=%@ sawSpeech=%@",
+                                diagPeak, energyThreshold, channels, armed ? "Y" : "N", sawSpeech ? "Y" : "N"))
             diagPeak = 0; diagCount = 0
         }
         guard armed else { return }
