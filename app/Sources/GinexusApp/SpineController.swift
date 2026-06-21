@@ -194,13 +194,14 @@ final class SpineController {
     }
 
     /// Resolve symlinks so an iCloud target can't hide behind a non-iCloud path string.
-    static func canonical(_ path: String) -> String {
+    /// `nonisolated` so the app-host (background thread) can reuse it for the PDF iCloud guard.
+    nonisolated static func canonical(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 
     /// True if a (preferably canonicalized) path lives under iCloud (hard rule #1: never touch
     /// ~/Library/Mobile Documents). Callers should pass a symlink-resolved path.
-    static func isICloudPath(_ path: String) -> Bool {
+    nonisolated static func isICloudPath(_ path: String) -> Bool {
         let p = canonical(path)
         return p.contains("Mobile Documents") || p.contains("com~apple~CloudDocs")
     }

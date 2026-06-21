@@ -139,6 +139,39 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
             false, // copies an already-created file into a standard folder → not destructive
         ),
         bridge_tool(
+            sock.clone(),
+            token.clone(),
+            "read_pdf_fields",
+            "Read the fillable form fields of an EXISTING PDF (AcroForm). Returns JSON: each field's \
+             name, type (text/button/choice), current value, page, and any options. Call this FIRST, \
+             before fill_pdf_form, to learn the exact field names to map the user's data onto. `src` = \
+             a local path to the PDF (~ allowed; never iCloud). If it reports no fields, the PDF is \
+             flat/scanned or XFA and can't be filled in place.",
+            json!({"type": "object",
+                   "properties": {"src": {"type": "string", "description": "path to the PDF (local, ~ allowed)"}},
+                   "required": ["src"]}),
+            false, // read-only
+        ),
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
+            "fill_pdf_form",
+            "Fill an EXISTING fillable PDF form IN PLACE and save it — the real file, not a regenerated \
+             one (a timestamped backup of the original is kept automatically). Call read_pdf_fields \
+             first to get the exact field names, then map the user's data onto them. `src` = path to \
+             the PDF; `fields` = object { fieldName: value } (plain text; for a checkbox use a truthy \
+             value like \"Yes\"/\"On\", or a radio's export name). Set `new_copy: true` to write a \
+             \"<name>-filled.pdf\" beside the original instead of editing in place. NEVER recreate or \
+             regenerate the PDF; do NOT paste the absolute path or the username in your reply.",
+            json!({"type": "object",
+                   "properties": {
+                       "src": {"type": "string", "description": "path to the existing fillable PDF (local, ~ allowed)"},
+                       "fields": {"type": "object", "description": "{ fieldName: value } using names from read_pdf_fields"},
+                       "new_copy": {"type": "boolean", "description": "write a -filled.pdf copy instead of editing in place"}},
+                   "required": ["src", "fields"]}),
+            true, // HITL-gated: writes/overwrites a user file
+        ),
+        bridge_tool(
             sock,
             token,
             "pages_write",
@@ -208,6 +241,9 @@ mod tests {
         assert!(tools.iter().find(|t| t.name == "pages_write").unwrap().irreversible);
         // save_to_folder just copies an already-created file → autonomous (not HITL)
         assert!(!tools.iter().find(|t| t.name == "save_to_folder").unwrap().irreversible);
+        // SP-Docs PDF tools: reading fields is autonomous; filling (writes the file) is HITL-gated.
+        assert!(!tools.iter().find(|t| t.name == "read_pdf_fields").unwrap().irreversible);
+        assert!(tools.iter().find(|t| t.name == "fill_pdf_form").unwrap().irreversible);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

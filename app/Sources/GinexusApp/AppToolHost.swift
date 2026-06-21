@@ -9,6 +9,7 @@ import Foundation
 import Darwin
 import EventKit
 import IOKit.ps
+import PDFKit
 
 final class AppToolHost {
     let socketPath: String
@@ -99,6 +100,8 @@ final class AppToolHost {
         case "shortcuts_run":   return shortcutsRun(args)
         case "save_to_folder":  return saveToFolder(args)
         case "pages_write":     return pagesWrite(args)
+        case "read_pdf_fields": return readPdfFields(args)
+        case "fill_pdf_form":   return fillPdfForm(args)
         default:                return fail("unknown tool '\(tool)'")
         }
     }
@@ -289,6 +292,126 @@ final class AppToolHost {
             return fail("Pages export failed — make sure Pages is installed and allow GINEXUS to control it if macOS asks. \(r.out)")
         }
         return ok("Created in Apple Pages and saved to \(tildeShown(dest.path))")
+    }
+
+    // MARK: - PDF forms (SP-Docs Flow B — native PDFKit, TCC-correct, never iCloud)
+
+    private enum PDFOpen { case ok(PDFDocument, String); case err(Data) }
+
+    /// Open a PDF and resolve its source path, refusing iCloud + missing files. Shared by both PDF tools.
+    private func openPDF(_ a: [String: Any]) -> PDFOpen {
+        guard let srcRaw = (a["src"] as? String), !srcRaw.isEmpty else { return .err(fail("'src' required")) }
+        let src = SpineController.canonical((srcRaw as NSString).expandingTildeInPath)
+        if SpineController.isICloudPath(src) {
+            return .err(fail("refusing to touch iCloud (\(tildeShown(src))) — move the PDF to a local folder like ~/GINEXUS-Docs"))
+        }
+        guard FileManager.default.fileExists(atPath: src) else { return .err(fail("PDF not found: \(tildeShown(src))")) }
+        guard let doc = PDFDocument(url: URL(fileURLWithPath: src)) else { return .err(fail("could not open PDF (corrupt or encrypted): \(tildeShown(src))")) }
+        return .ok(doc, src)
+    }
+
+    private func fieldTypeName(_ t: PDFAnnotationWidgetSubtype) -> String {
+        switch t {
+        case .text: return "text"
+        case .button: return "button"
+        case .choice: return "choice"
+        case .signature: return "signature"
+        default: return "unknown"
+        }
+    }
+
+    /// List the fillable AcroForm fields so the agent can map the user's data to them.
+    private func readPdfFields(_ a: [String: Any]) -> Data {
+        let doc: PDFDocument, src: String
+        switch openPDF(a) { case .err(let e): return e; case .ok(let d, let s): doc = d; src = s }
+
+        var fields: [[String: Any]] = []
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i) else { continue }
+            for ann in page.annotations where ann.fieldName != nil {
+                var f: [String: Any] = [
+                    "name": ann.fieldName ?? "",
+                    "type": fieldTypeName(ann.widgetFieldType),
+                    "page": i,
+                    "value": ann.widgetStringValue ?? "",
+                ]
+                if let choices = ann.choices, !choices.isEmpty { f["options"] = choices }
+                fields.append(f)
+            }
+        }
+        if fields.isEmpty {
+            return ok("This PDF has no fillable AcroForm fields — it may be a flat/scanned PDF or an XFA form, which can't be filled in place. (\(tildeShown(src)))")
+        }
+        let payload: [String: Any] = ["path": tildeShown(src), "field_count": fields.count, "fields": fields]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return fail("could not encode fields") }
+        return ok(json)
+    }
+
+    private static let truthy: Set<String> = ["on", "true", "yes", "y", "x", "1", "checked", "✓"]
+
+    /// Fill an existing AcroForm PDF in place (default) with an automatic timestamped backup, or to a
+    /// new copy when `new_copy` is set. `fields` is { fieldName: value }.
+    private func fillPdfForm(_ a: [String: Any]) -> Data {
+        let doc: PDFDocument, src: String
+        switch openPDF(a) { case .err(let e): return e; case .ok(let d, let s): doc = d; src = s }
+        guard let fields = a["fields"] as? [String: Any], !fields.isEmpty else { return fail("'fields' object required ({fieldName: value})") }
+
+        // Index widgets by field name.
+        var widgets: [String: PDFAnnotation] = [:]
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i) else { continue }
+            for ann in page.annotations { if let n = ann.fieldName { widgets[n] = ann } }
+        }
+        if widgets.isEmpty { return fail("no AcroForm fields to fill (flat/scanned or XFA PDF): \(tildeShown(src))") }
+
+        var filled: [String] = []
+        var missing: [String] = []
+        for (name, raw) in fields {
+            guard let ann = widgets[name] else { missing.append(name); continue }
+            let value = "\(raw)"
+            if ann.widgetFieldType == .button {
+                let on = Self.truthy.contains(value.lowercased())
+                ann.buttonWidgetState = on ? .onState : .offState
+                if on, ann.buttonWidgetStateString.isEmpty == false { /* keep export state */ }
+                // For radio groups the value may be an export name rather than a boolean.
+                if !on && !Self.truthy.contains(value.lowercased()) { ann.widgetStringValue = value }
+            } else {
+                ann.widgetStringValue = value
+            }
+            filled.append(name)
+        }
+
+        // Destination: in place (with backup) by default, or a new "-filled.pdf" copy.
+        let newCopy = (a["new_copy"] as? Bool) ?? false
+        let destPath: String
+        if newCopy {
+            let url = URL(fileURLWithPath: src)
+            let stem = url.deletingPathExtension().lastPathComponent
+            destPath = url.deletingLastPathComponent().appendingPathComponent("\(stem)-filled.pdf").path
+        } else {
+            if let backup = backupPath(for: src) {
+                try? FileManager.default.copyItem(atPath: src, toPath: backup)
+            }
+            destPath = src
+        }
+        guard doc.write(to: URL(fileURLWithPath: destPath)) else {
+            return fail("failed to write the filled PDF (grant GINEXUS access to that folder if macOS asks)")
+        }
+        var msg = "Filled \(filled.count) field(s) → \(tildeShown(destPath))."
+        if !newCopy { msg += " Original backed up." }
+        if !missing.isEmpty { msg += " Not found in the form: \(missing.sorted().joined(separator: ", "))." }
+        return ok(msg)
+    }
+
+    /// Timestamped backup path under App Support so an in-place fill is always reversible.
+    private func backupPath(for src: String) -> String? {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GINEXUS/backups", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let df = DateFormatter(); df.dateFormat = "yyyyMMdd-HHmmss"
+        let stem = (src as NSString).lastPathComponent
+        return base.appendingPathComponent("\(df.string(from: Date()))-\(stem)").path
     }
 
     private func run(_ path: String, _ args: [String]) -> (code: Int32, out: String) {
