@@ -232,8 +232,10 @@ final class AppModel: ObservableObject {
         return conversations.filter { $0.projectID == nil }
     }
 
-    /// Leave the current project back to loose chats.
-    func exitProject() { activeProjectID = nil; newChat() }
+    /// Switch the sidebar scope (nil = regular/non-project chats, else a project). Does NOT create a
+    /// chat or change the open conversation — just changes which thread list you're browsing. New
+    /// chats started afterward join this scope.
+    func setScope(_ id: UUID?) { activeProjectID = id }
 
     func updateProject(_ id: UUID, name: String? = nil, instructions: String? = nil) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }

@@ -104,19 +104,39 @@ struct ContentView: View {
             )
         ) {
             VStack(spacing: 0) {
-                // When inside a project, show which one + a way back to all chats.
-                if let proj = model.activeProject {
-                    HStack(spacing: 6) {
-                        Image(systemName: "folder.fill").font(.system(size: 10)).foregroundStyle(Brand.ember500)
-                        Text(proj.name).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.bone100).lineLimit(1)
-                        Spacer(minLength: 0)
-                        Button("ALL CHATS") { model.exitProject() }
-                            .buttonStyle(.plain).font(Brand.mono(9, weight: .bold)).foregroundStyle(Brand.bone300)
+                // Scope picker — one click to switch between regular chats and any project.
+                Menu {
+                    Button { model.setScope(nil) } label: {
+                        Label("All Chats", systemImage: model.activeProjectID == nil ? "checkmark" : "bubble.left.and.bubble.right")
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Brand.ember500.opacity(0.08))
-                    Divider().overlay(Brand.line1)
+                    if !model.projects.isEmpty {
+                        Divider()
+                        ForEach(model.projects) { p in
+                            Button { model.setScope(p.id) } label: {
+                                Label(p.name, systemImage: p.id == model.activeProjectID ? "checkmark" : "folder")
+                            }
+                        }
+                    }
+                    Divider()
+                    Button { model.openNewProjectSheet() } label: { Label("New project…", systemImage: "plus") }
+                    Button { model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id; model.projectsOpen = true } label: {
+                        Label("Manage projects…", systemImage: "folder.badge.gearshape")
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: model.activeProject != nil ? "folder.fill" : "bubble.left.and.bubble.right.fill")
+                            .font(.system(size: 11)).foregroundStyle(model.activeProject != nil ? Brand.ember500 : Brand.bone300)
+                        Text(model.activeProject?.name ?? "All Chats")
+                            .font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100).lineLimit(1)
+                        Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(Brand.bone400)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 9).contentShape(Rectangle())
                 }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize(horizontal: false, vertical: true)
+                .background(model.activeProject != nil ? Brand.ember500.opacity(0.07) : Color.clear)
+                Divider().overlay(Brand.line1)
+
                 if model.visibleConversations.isEmpty {
                     Text(model.activeProject != nil ? "No threads in this project yet — tap +" : "No conversations yet")
                         .font(Brand.mono(11)).foregroundStyle(Brand.bone400)
