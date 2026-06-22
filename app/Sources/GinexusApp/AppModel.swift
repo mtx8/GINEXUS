@@ -1036,6 +1036,39 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: memory browser
+    // Editing a core memory block (the custom profile is the main one). User-authored → trusted.
+    @Published var editingBlock: String?
+    @Published var blockDraft = ""
+
+    func beginEditBlock(_ name: String, value: String) { editingBlock = name; blockDraft = value }
+    func cancelEditBlock() { editingBlock = nil; blockDraft = "" }
+
+    /// Start authoring a profile from scratch (when none exists yet).
+    func newProfileBlock() {
+        editingBlock = "profile"
+        blockDraft = memBlocks.first(where: { $0.name == "profile" })?.value ?? ""
+    }
+
+    /// Persist the edited core block to the core (and reflect it locally). Always available — the
+    /// profile is meant to be hand-editable, not only auto-generated.
+    func saveBlock() {
+        guard let name = editingBlock else { return }
+        let value = blockDraft
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let body = try? JSONSerialization.data(withJSONObject: ["block": name, "value": value])
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/memory/block", token: tok, jsonBody: body)
+            }.value
+            if let i = memBlocks.firstIndex(where: { $0.name == name }) {
+                if value.isEmpty { memBlocks.remove(at: i) } else { memBlocks[i] = BlockKV(name: name, value: value) }
+            } else if !value.isEmpty {
+                memBlocks.append(BlockKV(name: name, value: value)); memBlocks.sort { $0.name < $1.name }
+            }
+            editingBlock = nil; blockDraft = ""
+        }
+    }
+
     func openMemory() {
         memoryOpen = true
         memLoading = true

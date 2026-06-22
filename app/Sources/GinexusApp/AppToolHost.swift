@@ -394,13 +394,30 @@ final class AppToolHost {
             filled.append(name)
         }
 
-        // Destination: in place (with backup) by default, or a new "-filled.pdf" copy.
+        // Destination, in priority order:
+        //   out_name → DUPLICATE the template into a named file in the same folder (template untouched)
+        //              — this is the "monthly report from a template" workflow.
+        //   new_copy → a "<stem>-filled.pdf" copy beside the original.
+        //   else     → fill in place, with an automatic timestamped backup.
+        let srcURL = URL(fileURLWithPath: src)
+        let dir = srcURL.deletingLastPathComponent()
+        let outName = (a["out_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
         let newCopy = (a["new_copy"] as? Bool) ?? false
+        var madeCopy = false
         let destPath: String
-        if newCopy {
-            let url = URL(fileURLWithPath: src)
-            let stem = url.deletingPathExtension().lastPathComponent
-            destPath = url.deletingLastPathComponent().appendingPathComponent("\(stem)-filled.pdf").path
+        if let outName, !outName.isEmpty {
+            var name = (outName as NSString).lastPathComponent           // single component, no traversal
+            if !name.lowercased().hasSuffix(".pdf") { name += ".pdf" }
+            var dest = dir.appendingPathComponent(name)
+            if dest.path == src {                                        // never overwrite the template
+                dest = dir.appendingPathComponent("\((name as NSString).deletingPathExtension) (copy).pdf")
+            }
+            destPath = dest.path
+            madeCopy = true
+        } else if newCopy {
+            let stem = srcURL.deletingPathExtension().lastPathComponent
+            destPath = dir.appendingPathComponent("\(stem)-filled.pdf").path
+            madeCopy = true
         } else {
             if let backup = backupPath(for: src) {
                 try? FileManager.default.copyItem(atPath: src, toPath: backup)
@@ -411,7 +428,7 @@ final class AppToolHost {
             return fail("failed to write the filled PDF (grant GINEXUS access to that folder if macOS asks)")
         }
         var msg = "Filled \(filled.count) field(s) → \(tildeShown(destPath))."
-        if !newCopy { msg += " Original backed up." }
+        if madeCopy { msg += " The template was left unchanged." } else { msg += " Original backed up." }
         if !missing.isEmpty { msg += " Not found in the form: \(missing.sorted().joined(separator: ", "))." }
         return ok(msg)
     }

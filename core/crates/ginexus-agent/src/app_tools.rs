@@ -156,17 +156,21 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
             sock.clone(),
             token.clone(),
             "fill_pdf_form",
-            "Fill an EXISTING fillable PDF form IN PLACE and save it — the real file, not a regenerated \
-             one (a timestamped backup of the original is kept automatically). Call read_pdf_fields \
-             first to get the exact field names, then map the user's data onto them. `src` = path to \
-             the PDF; `fields` = object { fieldName: value } (plain text; for a checkbox use a truthy \
-             value like \"Yes\"/\"On\", or a radio's export name). Set `new_copy: true` to write a \
-             \"<name>-filled.pdf\" beside the original instead of editing in place. NEVER recreate or \
-             regenerate the PDF; do NOT paste the absolute path or the username in your reply.",
+            "Fill an EXISTING fillable PDF form and save it — the real file filled, never a regenerated \
+             one. Call read_pdf_fields FIRST to get the exact field names, then map the user's data onto \
+             them. `src` = path to the PDF; `fields` = object { fieldName: value } (plain text; for a \
+             checkbox use a truthy value like \"Yes\"/\"On\", or a radio's export name). \
+             FOR A TEMPLATE YOU REUSE (e.g. a monthly report): set `out_name` to the new document's name \
+             (e.g. \"Monthly Report - June 2026\") — GINEXUS DUPLICATES the template into that named file \
+             in the same folder, fills it, and leaves the template untouched. Set the date-range field \
+             like any other field. Omit out_name to fill in place (auto-backup); or `new_copy:true` for a \
+             \"<name>-filled.pdf\" copy. NEVER recreate/regenerate the PDF; do not paste the absolute path \
+             or username in your reply.",
             json!({"type": "object",
                    "properties": {
-                       "src": {"type": "string", "description": "path to the existing fillable PDF (local, ~ allowed)"},
-                       "fields": {"type": "object", "description": "{ fieldName: value } using names from read_pdf_fields"},
+                       "src": {"type": "string", "description": "path to the existing fillable PDF / template (local, ~ allowed)"},
+                       "fields": {"type": "object", "description": "{ fieldName: value } using names from read_pdf_fields (one entry per section + the date field)"},
+                       "out_name": {"type": "string", "description": "save a NAMED duplicate (template preserved) — use for monthly/recurring reports, e.g. \"Monthly Report - June 2026\""},
                        "new_copy": {"type": "boolean", "description": "write a -filled.pdf copy instead of editing in place"}},
                    "required": ["src", "fields"]}),
             true, // HITL-gated: writes/overwrites a user file

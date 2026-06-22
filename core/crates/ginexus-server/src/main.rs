@@ -923,6 +923,19 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 .collect();
             json_ok(&mut stream, json!({"blocks": blocks, "facts_count": facts.len(), "recent": recent})).await;
         }
+        ("POST", "/v1/memory/block") => {
+            // Manually set/edit a CORE memory block (always-in-context), e.g. the custom profile.
+            // User-authored → trusted. Empty value clears the block.
+            let name = body.get("block").and_then(|b| b.as_str()).unwrap_or("").trim();
+            let value = body.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            if name.is_empty() {
+                err(&mut stream, 400, "Bad Request", "missing 'block'").await;
+            } else {
+                state.memory.set_block(name, value);
+                let _ = state.audit.record("memory_block_set", json!({"block": name, "len": value.len()}));
+                json_ok(&mut stream, json!({"status": "ok", "block": name})).await;
+            }
+        }
         ("POST", "/v1/memory/search") => {
             // Semantic search over archival memory (cosine when embeddings exist, else keyword).
             let q = body.get("query").and_then(|x| x.as_str()).unwrap_or("").trim();

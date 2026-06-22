@@ -770,13 +770,41 @@ struct ContentView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         if model.memBlocks.isEmpty {
-                            Text("Nothing learned about you yet. Tap BUILD PROFILE above to summarize what GINEXUS knows from your memory.")
-                                .font(Brand.mono(12)).foregroundStyle(Brand.bone300).fixedSize(horizontal: false, vertical: true)
+                            HStack {
+                                Text("Nothing learned about you yet — tap BUILD PROFILE, or")
+                                    .font(Brand.mono(12)).foregroundStyle(Brand.bone300)
+                                Button("WRITE ONE") { model.newProfileBlock() }
+                                    .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ember500)
+                            }.fixedSize(horizontal: false, vertical: true)
                         }
                         ForEach(model.memBlocks) { b in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Eyebrow(text: b.name, color: Brand.ember500)
-                                Text(b.value).font(Brand.body(13)).foregroundStyle(Brand.bone50).fixedSize(horizontal: false, vertical: true)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Eyebrow(text: b.name, color: Brand.ember500)
+                                    Spacer()
+                                    if model.editingBlock != b.name {
+                                        Button("EDIT") { model.beginEditBlock(b.name, value: b.value) }
+                                            .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
+                                    }
+                                }
+                                if model.editingBlock == b.name {
+                                    TextEditor(text: $model.blockDraft)
+                                        .font(Brand.body(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                                        .frame(minHeight: 120)
+                                        .padding(8).background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember600.opacity(0.5), lineWidth: 1))
+                                    HStack {
+                                        Spacer()
+                                        Button("CANCEL") { model.cancelEditBlock() }
+                                            .buttonStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                                        Button("SAVE") { model.saveBlock() }
+                                            .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ink900)
+                                            .padding(.horizontal, 14).padding(.vertical, 7)
+                                            .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 6))
+                                    }
+                                } else {
+                                    Text(b.value).font(Brand.body(13)).foregroundStyle(Brand.bone50).fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                             .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
