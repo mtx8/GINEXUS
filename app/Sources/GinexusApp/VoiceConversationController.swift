@@ -28,10 +28,18 @@ final class VoiceConversationController: ObservableObject {
     // Streaming-TTS pipeline: speak each sentence as soon as it completes in the reply stream, so
     // audio starts long before the full text answer is done.
     private var consumedLen = 0            // chars of the reply already turned into speech chunks
-    private var speechQueue: [String] = [] // pending sentence chunks to synthesize, in order
+    private var speechQueue: [String] = [] // pending speech chunks to synthesize, in order
     private var pumpRunning = false        // a synth/play pump is active
     private var pumpTask: Task<Void, Never>?
     private var replyFinal = false         // the LLM reply finished streaming
+    private var spokenFirst = false        // the first (fast) chunk has been queued
+
+    // First chunk flushes on the first sentence boundary (fast first-audio); after that we COALESCE
+    // up to ~this many chars before flushing, so we make few large /synthesize calls instead of many
+    // tiny cold-start ones (the dominant cause of inter-sentence gaps). Measured per-call overhead is
+    // ~0.4–0.6s, so fragmentation — not GPU contention — was the real stutter.
+    private let minChunkChars = 140
+    private var watchdog: Task<Void, Never>?   // recovers a turn that stalls (no final / wedged synth)
 
     init?(app: AppModel, audioBase: String) {
         guard let c = VoiceClient(base: audioBase) else { return nil }
@@ -70,6 +78,7 @@ final class VoiceConversationController: ObservableObject {
     }
 
     func stop() {
+        watchdog?.cancel(); watchdog = nil
         pumpTask?.cancel()
         pumpTask = nil
         speechQueue.removeAll()
@@ -83,8 +92,25 @@ final class VoiceConversationController: ObservableObject {
     // MARK: state transitions
 
     private func beginListening() {
+        watchdog?.cancel(); watchdog = nil
         state = .listening
         input.arm()
+    }
+
+    /// Safety net: if a turn never returns to listening (core disconnect, missing `final`, wedged
+    /// synth), recover after a generous bound so the mic never stays permanently closed.
+    private func startWatchdog() {
+        watchdog?.cancel()
+        watchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 90_000_000_000)
+            guard let self, !Task.isCancelled, self.active, self.state != .listening else { return }
+            VoiceLog.log("watchdog: turn stalled in \(self.state.rawValue) → recovering")
+            self.pumpTask?.cancel(); self.pumpRunning = false
+            self.speechQueue.removeAll()
+            self.output.stop()
+            self.errorText = "That turn stalled — listening again."
+            self.beginListening()
+        }
     }
 
     private func handleSpeechStart() {
@@ -99,7 +125,7 @@ final class VoiceConversationController: ObservableObject {
         Task {
             do {
                 let text = try await client.transcribe(wav: wav)
-                VoiceLog.log("transcribed: \(text.prefix(80))")
+                VoiceLog.log("transcribed: \(text.count) chars")   // length only — never log content
                 guard active else { return }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty {
@@ -109,11 +135,13 @@ final class VoiceConversationController: ObservableObject {
                 lastTranscript = trimmed
                 state = .thinking
                 // Reset the streaming-TTS pipeline for this turn, then fire the agent. The reply
-                // streams back via onReplyText and is spoken sentence-by-sentence.
+                // streams back via onReplyText and is spoken chunk-by-chunk.
                 consumedLen = 0
                 replyFinal = false
+                spokenFirst = false
                 speechQueue.removeAll()
                 app?.send(trimmed)
+                startWatchdog()
             } catch {
                 errorText = "Transcription failed: \(error.localizedDescription)"
                 beginListening()
@@ -125,23 +153,28 @@ final class VoiceConversationController: ObservableObject {
 
     private static let enders: Set<Character> = [".", "!", "?", "\n", "…", "。", "！", "？"]
 
-    /// Called with the growing reply text (final=false) and once at the end (final=true). Extracts
-    /// newly-completed sentences and queues them for synthesis immediately.
+    /// Called with the growing reply text (final=false) and once at the end (final=true). Flushes
+    /// the FIRST sentence immediately (fast first-audio), then coalesces to ~minChunkChars before
+    /// flushing each subsequent chunk, so we avoid many tiny cold-start /synthesize calls.
     private func onReplyText(_ text: String, final: Bool) {
         guard active else { return }
         let chars = Array(text)
-        if consumedLen > chars.count { consumedLen = 0 }   // reply text was reset (e.g. tool preamble)
-        var lastBoundary = consumedLen
+        if consumedLen > chars.count { consumedLen = 0; spokenFirst = false }  // text reset (tool preamble)
+        // Smallest chunk we'll flush mid-stream: the first one fires on the first boundary, the rest
+        // wait until enough text has accumulated.
+        let minLen = spokenFirst ? minChunkChars : 1
+        var flushTo = consumedLen
         var i = consumedLen
         while i < chars.count {
-            if Self.enders.contains(chars[i]) { lastBoundary = i + 1 }
+            if Self.enders.contains(chars[i]) && (i + 1 - consumedLen) >= minLen { flushTo = i + 1 }
             i += 1
         }
-        let end = final ? chars.count : lastBoundary
+        let end = final ? chars.count : flushTo
         if end > consumedLen {
-            let chunk = String(chars[consumedLen..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let raw = String(chars[consumedLen..<end])
             consumedLen = end
-            if !chunk.isEmpty { enqueueSpeech(chunk) }
+            let clean = Self.ttsClean(raw)
+            if !clean.isEmpty { spokenFirst = true; enqueueSpeech(clean) }
         }
         if final {
             replyFinal = true
@@ -151,6 +184,28 @@ final class VoiceConversationController: ObservableObject {
                 maybeFinishSpeaking()
             }
         }
+    }
+
+    /// Strip markdown + emoji before TTS so the voice doesn't read "asterisk asterisk" / emoji names
+    /// and so prosody is clean. (Also keeps the spoken text free of formatting noise.)
+    static func ttsClean(_ s: String) -> String {
+        var t = s
+        t = t.replacingOccurrences(of: #"\[([^\]]+)\]\([^)]+\)"#, with: "$1", options: .regularExpression) // [text](url)
+        t = t.replacingOccurrences(of: #"(?m)^\s{0,3}[#>]+\s*"#, with: "", options: .regularExpression)      // headings/quotes
+        t = t.replacingOccurrences(of: #"(?m)^\s{0,3}[-*+]\s+"#, with: "", options: .regularExpression)      // list bullets
+        t = t.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
+        t = t.replacingOccurrences(of: "`", with: "").replacingOccurrences(of: "*", with: "")
+        // Drop emoji / pictographs / dingbats / arrows / variation selectors.
+        var scalars = String.UnicodeScalarView()
+        for u in t.unicodeScalars {
+            let v = u.value
+            let drop = (0x1F000...0x1FAFF).contains(v) || (0x2600...0x27BF).contains(v)
+                || (0x2190...0x21FF).contains(v) || (0x2B00...0x2BFF).contains(v)
+                || (0x1F1E6...0x1F1FF).contains(v) || v == 0xFE0F || v == 0x200D
+            if !drop { scalars.append(u) }
+        }
+        t = String(scalars).replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func enqueueSpeech(_ s: String) {
@@ -170,7 +225,7 @@ final class VoiceConversationController: ObservableObject {
             while !speechQueue.isEmpty {
                 let s = speechQueue.removeFirst()
                 if Task.isCancelled { break }
-                VoiceLog.log("synth chunk: \(s.prefix(48))")
+                VoiceLog.log("synth chunk: \(s.count) chars")   // length only — never log spoken content
                 do {
                     for try await chunk in client.synthesizeStream(text: s, languageID: languageID, voiceRef: voiceRef) {
                         if Task.isCancelled || !self.active { break }
@@ -187,6 +242,7 @@ final class VoiceConversationController: ObservableObject {
     /// has actually drained (+ a short room-tail guard).
     private func maybeFinishSpeaking() {
         guard replyFinal, !pumpRunning, speechQueue.isEmpty, state == .speaking else { return }
+        output.flush()   // ensure a short final reply (under the prebuffer cushion) still plays
         output.whenDrained { [weak self] in
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 450_000_000)

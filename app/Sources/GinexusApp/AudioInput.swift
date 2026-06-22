@@ -71,6 +71,9 @@ final class AudioInput {
     // Diagnostics: track peak level between throttled log lines so we can see if audio is arriving.
     private var diagPeak: Float = 0
     private var diagCount = 0
+    // Throttle UI level updates to ~15 Hz (tap fires ~48 Hz) so the waveform doesn't thrash SwiftUI.
+    private var levelAccum: Float = 0
+    private var levelTick = 0
 
     func stop() {
         guard running else { return }
@@ -99,7 +102,8 @@ final class AudioInput {
     }
 
     private func consume(frame: [Float], rms: Float, channels: Int = 1) {
-        onLevel?(rms)
+        levelAccum = max(levelAccum, rms); levelTick += 1
+        if levelTick >= 3 { onLevel?(levelAccum); levelAccum = 0; levelTick = 0 }
         // Throttled diagnostics (~ every 2s at 21ms/frame): peak level + channel count so we can tell
         // "no audio reaching mic" from "audio present but below VAD threshold".
         diagPeak = max(diagPeak, rms); diagCount += 1

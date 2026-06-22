@@ -11,7 +11,18 @@ enum VoiceLog {
     }()
     private static let q = DispatchQueue(label: "ginexus.voicelog")
 
+    // Diagnostics are OFF unless this is a DEBUG build or GINEXUS_VOICE_DIAG=1 is set — a release
+    // build is silent. Content (transcripts, reply text) is NEVER logged here; only lengths/counts.
+    private static let enabled: Bool = {
+        #if DEBUG
+        return true
+        #else
+        return ProcessInfo.processInfo.environment["GINEXUS_VOICE_DIAG"] == "1"
+        #endif
+    }()
+
     static func log(_ msg: String) {
+        guard enabled else { return }
         q.async {
             let ts = ISO8601DateFormatter().string(from: Date())
             let line = "\(ts) \(msg)\n"
