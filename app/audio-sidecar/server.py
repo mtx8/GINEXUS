@@ -177,7 +177,11 @@ def transcribe_file(path: str) -> dict:
     def work():
         model = _load_stt()
         res = model.transcribe(path)
-        text = getattr(res, "text", None) or str(res)
+        # parakeet returns an AlignedResult; .text is "" for silence. NEVER str(res) — that leaks a
+        # repr like "AlignedResult(text='', sentences=[])" which would be sent to the LLM as input.
+        text = getattr(res, "text", "")
+        if not isinstance(text, str):
+            text = ""
         return {"text": text.strip()}
     return _mlx.submit(work).result(timeout=120)
 

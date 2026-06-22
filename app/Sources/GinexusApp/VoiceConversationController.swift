@@ -120,8 +120,11 @@ final class VoiceConversationController: ObservableObject {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard active, !clean.isEmpty else { if active { beginListening() }; return }
         state = .speaking
-        input.arm()                                   // listen for barge-in while speaking
-        bargeInArmAt = Date().addingTimeInterval(0.4) // ignore self-echo at the very start
+        // HALF-DUPLEX: the mic is DISARMED for the entire time GINEXUS speaks, so it can never
+        // capture or transcribe its own voice. (No AEC here, so listening-while-speaking would feed
+        // back.) We re-open the mic only after playback has fully drained + a short room-tail guard.
+        input.disarm()
+        VoiceLog.log("speak: \(clean.prefix(60))")
         let stream = client.synthesizeStream(text: clean, languageID: languageID, voiceRef: voiceRef)
         ttsTask = Task {
             do {
@@ -130,12 +133,18 @@ final class VoiceConversationController: ObservableObject {
                     output.enqueue(pcm16le: chunk)
                 }
             } catch {
-                // playback failed/cancelled — fall through to listening
+                // playback failed — fall through to listening
             }
-            if !Task.isCancelled, self.state == .speaking {
-                // Let the tail of the queued audio play, then return to listening.
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                if self.state == .speaking { self.beginListening() }
+            guard !Task.isCancelled, self.state == .speaking else { return }
+            // Wait until every queued buffer has actually played, THEN a guard for the room tail,
+            // and only then start listening again.
+            self.output.whenDrained { [weak self] in
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard let self, self.state == .speaking else { return }
+                    VoiceLog.log("playback drained → listening")
+                    self.beginListening()
+                }
             }
         }
     }

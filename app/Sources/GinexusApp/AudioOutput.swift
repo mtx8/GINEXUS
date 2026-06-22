@@ -11,6 +11,8 @@ final class AudioOutput {
     private let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                     sampleRate: VoiceClient.sampleRate, channels: 1, interleaved: false)!
     private var started = false
+    private var pending = 0                    // buffers scheduled but not yet finished playing
+    private var drainHandler: (() -> Void)?
 
     init() {
         engine.attach(player)
@@ -42,15 +44,32 @@ final class AudioOutput {
             }
         }
         start()
-        player.scheduleBuffer(buf, completionHandler: nil)
+        pending += 1
+        player.scheduleBuffer(buf, completionHandler: { [weak self] in
+            Task { @MainActor in self?.bufferCompleted() }
+        })
     }
 
-    /// Stop playback immediately and drop any queued audio (barge-in).
+    private func bufferCompleted() {
+        pending = max(0, pending - 1)
+        if pending == 0, let h = drainHandler { drainHandler = nil; h() }
+    }
+
+    /// Fire `completion` once all currently-queued audio has finished PLAYING. Call AFTER the last
+    /// chunk is enqueued. Used to re-open the mic only after GINEXUS has fully stopped speaking, so
+    /// it can never hear its own voice.
+    func whenDrained(_ completion: @escaping () -> Void) {
+        if pending == 0 { completion() } else { drainHandler = completion }
+    }
+
+    /// Stop playback immediately and drop any queued audio.
     func stop() {
         guard started else { return }
         player.stop()
         player.reset()
         player.play()   // keep the node ready for the next reply
+        pending = 0
+        drainHandler = nil
     }
 
     func shutdown() {

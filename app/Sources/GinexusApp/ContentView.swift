@@ -445,16 +445,23 @@ struct ContentView: View {
         (!model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.attachment != nil)
     }
 
-    /// Mic toggle — starts/stops the hands-free voice conversation (SP-Voice).
+    /// Mic toggle — starts/stops the hands-free voice conversation (SP-Voice). Animated waveform
+    /// when live; the ring + glow pulse with the brand ember.
     private var voiceButton: some View {
         Button(action: model.toggleVoice) {
-            Image(systemName: model.voiceActive ? "waveform" : "mic.fill")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(model.voiceActive ? Brand.ember500 : Brand.bone200)
-                .frame(width: 46, height: 46)
-                .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10)
-                    .stroke(model.voiceActive ? Brand.ember500.opacity(0.6) : Brand.line1, lineWidth: 1))
+            Group {
+                if model.voiceActive {
+                    VoiceWaveformIcon()
+                } else {
+                    Image(systemName: "mic.fill").font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Brand.bone200)
+                }
+            }
+            .frame(width: 46, height: 46)
+            .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(model.voiceActive ? Brand.ember500.opacity(0.75) : Brand.line1, lineWidth: 1))
+            .shadow(color: model.voiceActive ? Brand.ember500.opacity(0.45) : .clear, radius: 9)
         }
         .buttonStyle(.plain)
         .disabled(!model.connected)
@@ -933,6 +940,36 @@ private struct ProjectEditorSheet: View {
         }
         .padding(22).frame(width: 460)
         .background(Brand.ink850)
+    }
+}
+
+/// Animated, brand-styled waveform for the live voice button — a continuous traveling wave of
+/// chrome-ember capsules. Clean, modern, always-alive while voice mode is on.
+private struct VoiceWaveformIcon: View {
+    private let bars = 5
+
+    var body: some View {
+        TimelineView(.animation) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 2.5) {
+                ForEach(0..<bars, id: \.self) { i in
+                    Capsule()
+                        .fill(LinearGradient(colors: [Brand.ember300, Brand.ember600],
+                                             startPoint: .top, endPoint: .bottom))
+                        .frame(width: 3, height: height(i, t))
+                }
+            }
+            .frame(width: 26, height: 24)
+            .drawingGroup()   // smooth, GPU-composited
+        }
+    }
+
+    private func height(_ i: Int, _ t: Double) -> CGFloat {
+        // A traveling sine wave across the bars + a gentle global breathe — lively but not frantic.
+        let phase = Double(i) / Double(bars) * .pi * 2
+        let wave = 0.5 + 0.5 * sin(t * 7.0 + phase)
+        let breathe = 0.85 + 0.15 * sin(t * 2.2)
+        return 5 + CGFloat(wave * breathe) * 15   // ~5…20 pt
     }
 }
 
