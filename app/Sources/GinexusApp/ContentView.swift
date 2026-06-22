@@ -450,8 +450,8 @@ struct ContentView: View {
     private var voiceButton: some View {
         Button(action: model.toggleVoice) {
             Group {
-                if model.voiceActive {
-                    VoiceWaveformIcon()
+                if let vc = model.voiceController {
+                    VoiceWaveformIcon(controller: vc)
                 } else {
                     Image(systemName: "mic.fill").font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(Brand.bone200)
@@ -943,33 +943,40 @@ private struct ProjectEditorSheet: View {
     }
 }
 
-/// Animated, brand-styled waveform for the live voice button — a continuous traveling wave of
-/// chrome-ember capsules. Clean, modern, always-alive while voice mode is on.
+/// Brand-styled waveform for the live voice button that REACTS to the actual mic level — bars rise
+/// with sound and sit nearly flat in silence. A faint organic shimmer (scaled by level) keeps it
+/// from looking frozen, but the height is driven by the real RMS, not a canned loop.
 private struct VoiceWaveformIcon: View {
+    @ObservedObject var controller: VoiceConversationController
     private let bars = 5
 
     var body: some View {
         TimelineView(.animation) { tl in
             let t = tl.date.timeIntervalSinceReferenceDate
+            // Normalize raw mic RMS (~0…0.06 for speech) to 0…1, with a soft knee.
+            let level = min(1.0, CGFloat(controller.level) * 22.0)
             HStack(spacing: 2.5) {
                 ForEach(0..<bars, id: \.self) { i in
                     Capsule()
                         .fill(LinearGradient(colors: [Brand.ember300, Brand.ember600],
                                              startPoint: .top, endPoint: .bottom))
-                        .frame(width: 3, height: height(i, t))
+                        .frame(width: 3, height: height(i, t, level))
                 }
             }
             .frame(width: 26, height: 24)
-            .drawingGroup()   // smooth, GPU-composited
+            .animation(.easeOut(duration: 0.08), value: level)
+            .drawingGroup()
         }
     }
 
-    private func height(_ i: Int, _ t: Double) -> CGFloat {
-        // A traveling sine wave across the bars + a gentle global breathe — lively but not frantic.
+    private func height(_ i: Int, _ t: Double, _ level: CGFloat) -> CGFloat {
+        // Per-bar organic shape, but its AMPLITUDE is the live mic level → flat when silent, dancing
+        // when you speak. Center bars react a touch more, like a real meter.
         let phase = Double(i) / Double(bars) * .pi * 2
-        let wave = 0.5 + 0.5 * sin(t * 7.0 + phase)
-        let breathe = 0.85 + 0.15 * sin(t * 2.2)
-        return 5 + CGFloat(wave * breathe) * 15   // ~5…20 pt
+        let shape = 0.45 + 0.55 * (0.5 + 0.5 * sin(t * 9.0 + phase))
+        let center = 1.0 - abs(CGFloat(i) - CGFloat(bars - 1) / 2) / CGFloat(bars)  // ~0.6…1.0
+        let baseline: CGFloat = 3
+        return baseline + level * 17 * CGFloat(shape) * center
     }
 }
 
