@@ -22,10 +22,16 @@ final class VoiceConversationController: ObservableObject {
     private let client: VoiceClient
     private let input = AudioInput()
     private let output = AudioOutput()
-    private var ttsTask: Task<Void, Never>?
-    private var bargeInArmAt = Date.distantFuture   // ignore self-echo right after speaking starts
     private var languageID = "en"
     private var voiceRef: String?
+
+    // Streaming-TTS pipeline: speak each sentence as soon as it completes in the reply stream, so
+    // audio starts long before the full text answer is done.
+    private var consumedLen = 0            // chars of the reply already turned into speech chunks
+    private var speechQueue: [String] = [] // pending sentence chunks to synthesize, in order
+    private var pumpRunning = false        // a synth/play pump is active
+    private var pumpTask: Task<Void, Never>?
+    private var replyFinal = false         // the LLM reply finished streaming
 
     init?(app: AppModel, audioBase: String) {
         guard let c = VoiceClient(base: audioBase) else { return nil }
@@ -49,8 +55,8 @@ final class VoiceConversationController: ObservableObject {
         input.onSpeechStart = { [weak self] in self?.handleSpeechStart() }
         input.onUtterance = { [weak self] wav in self?.handleUtterance(wav) }
 
-        // Speak finished agent replies (set the hook only while voice is live).
-        app?.onTurnComplete = { [weak self] text in self?.speak(text) }
+        // Stream the reply to speech sentence-by-sentence (set the hook only while voice is live).
+        app?.onAssistantText = { [weak self] text, final in self?.onReplyText(text, final: final) }
 
         do {
             try input.start()
@@ -64,11 +70,12 @@ final class VoiceConversationController: ObservableObject {
     }
 
     func stop() {
-        ttsTask?.cancel()
-        ttsTask = nil
+        pumpTask?.cancel()
+        pumpTask = nil
+        speechQueue.removeAll()
         input.stop()
         output.shutdown()
-        if app?.onTurnComplete != nil { app?.onTurnComplete = nil }
+        app?.onAssistantText = nil
         state = .idle
         level = 0
     }
@@ -81,19 +88,12 @@ final class VoiceConversationController: ObservableObject {
     }
 
     private func handleSpeechStart() {
-        // Barge-in: only meaningful while GINEXUS is speaking, and only after a short guard so its
-        // own audio (despite AEC) can't interrupt itself.
-        guard state == .speaking, Date() >= bargeInArmAt else { return }
-        ttsTask?.cancel()
-        ttsTask = nil
-        output.stop()
-        // Stay armed; the in-progress utterance will arrive via onUtterance as the next turn.
-        state = .listening
+        // Barge-in is disabled in half-duplex (mic is off while speaking), so this is inert.
     }
 
     private func handleUtterance(_ wav: Data) {
         VoiceLog.log("utterance received: \(wav.count) bytes, state=\(state.rawValue)")
-        guard state == .listening else { return }   // ignore mic while transcribing/thinking
+        guard state == .listening else { return }   // ignore mic while transcribing/thinking/speaking
         input.disarm()
         state = .transcribing
         Task {
@@ -108,7 +108,12 @@ final class VoiceConversationController: ObservableObject {
                 }
                 lastTranscript = trimmed
                 state = .thinking
-                app?.send(trimmed)   // streams the reply; onTurnComplete → speak()
+                // Reset the streaming-TTS pipeline for this turn, then fire the agent. The reply
+                // streams back via onReplyText and is spoken sentence-by-sentence.
+                consumedLen = 0
+                replyFinal = false
+                speechQueue.removeAll()
+                app?.send(trimmed)
             } catch {
                 errorText = "Transcription failed: \(error.localizedDescription)"
                 beginListening()
@@ -116,35 +121,78 @@ final class VoiceConversationController: ObservableObject {
         }
     }
 
-    private func speak(_ text: String) {
-        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard active, !clean.isEmpty else { if active { beginListening() }; return }
-        state = .speaking
-        // HALF-DUPLEX: the mic is DISARMED for the entire time GINEXUS speaks, so it can never
-        // capture or transcribe its own voice. (No AEC here, so listening-while-speaking would feed
-        // back.) We re-open the mic only after playback has fully drained + a short room-tail guard.
-        input.disarm()
-        VoiceLog.log("speak: \(clean.prefix(60))")
-        let stream = client.synthesizeStream(text: clean, languageID: languageID, voiceRef: voiceRef)
-        ttsTask = Task {
-            do {
-                for try await chunk in stream {
-                    if Task.isCancelled { break }
-                    output.enqueue(pcm16le: chunk)
-                }
-            } catch {
-                // playback failed — fall through to listening
+    // MARK: streaming TTS — speak each sentence the moment it completes
+
+    private static let enders: Set<Character> = [".", "!", "?", "\n", "…", "。", "！", "？"]
+
+    /// Called with the growing reply text (final=false) and once at the end (final=true). Extracts
+    /// newly-completed sentences and queues them for synthesis immediately.
+    private func onReplyText(_ text: String, final: Bool) {
+        guard active else { return }
+        let chars = Array(text)
+        if consumedLen > chars.count { consumedLen = 0 }   // reply text was reset (e.g. tool preamble)
+        var lastBoundary = consumedLen
+        var i = consumedLen
+        while i < chars.count {
+            if Self.enders.contains(chars[i]) { lastBoundary = i + 1 }
+            i += 1
+        }
+        let end = final ? chars.count : lastBoundary
+        if end > consumedLen {
+            let chunk = String(chars[consumedLen..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            consumedLen = end
+            if !chunk.isEmpty { enqueueSpeech(chunk) }
+        }
+        if final {
+            replyFinal = true
+            if state == .thinking {            // nothing was spoken (empty reply) → resume listening
+                beginListening()
+            } else {
+                maybeFinishSpeaking()
             }
-            guard !Task.isCancelled, self.state == .speaking else { return }
-            // Wait until every queued buffer has actually played, THEN a guard for the room tail,
-            // and only then start listening again.
-            self.output.whenDrained { [weak self] in
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    guard let self, self.state == .speaking else { return }
-                    VoiceLog.log("playback drained → listening")
-                    self.beginListening()
-                }
+        }
+    }
+
+    private func enqueueSpeech(_ s: String) {
+        // HALF-DUPLEX: as soon as we begin speaking, the mic stays disarmed so GINEXUS never hears
+        // itself; it re-arms only after the whole reply has been spoken and playback has drained.
+        if state != .speaking { state = .speaking; input.disarm() }
+        speechQueue.append(s)
+        pumpSpeech()
+    }
+
+    /// Serial pump: synthesize queued sentences in order, streaming each into the player. Synthesis
+    /// (RTF < 1) runs ahead of playback, so speech is continuous.
+    private func pumpSpeech() {
+        guard !pumpRunning else { return }
+        pumpRunning = true
+        pumpTask = Task { @MainActor in
+            while !speechQueue.isEmpty {
+                let s = speechQueue.removeFirst()
+                if Task.isCancelled { break }
+                VoiceLog.log("synth chunk: \(s.prefix(48))")
+                do {
+                    for try await chunk in client.synthesizeStream(text: s, languageID: languageID, voiceRef: voiceRef) {
+                        if Task.isCancelled || !self.active { break }
+                        self.output.enqueue(pcm16le: chunk)
+                    }
+                } catch { /* skip this chunk */ }
+            }
+            pumpRunning = false
+            maybeFinishSpeaking()
+        }
+    }
+
+    /// Re-open the mic only once the reply is fully received, all chunks synthesized, and playback
+    /// has actually drained (+ a short room-tail guard).
+    private func maybeFinishSpeaking() {
+        guard replyFinal, !pumpRunning, speechQueue.isEmpty, state == .speaking else { return }
+        output.whenDrained { [weak self] in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                guard let self, self.state == .speaking, self.speechQueue.isEmpty, !self.pumpRunning else { return }
+                VoiceLog.log("reply done + drained → listening")
+                self.beginListening()
             }
         }
     }

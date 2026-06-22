@@ -1109,7 +1109,13 @@ final class AppModel: ObservableObject {
         renderSnapshot()
         // SP-Voice: let the conversation loop speak the finished reply (no-op in text mode).
         onTurnComplete?(finalText)
+        onAssistantText?(finalText, true)   // final flush for streaming-TTS (speaks the tail)
     }
+
+    /// SP-Voice: fired with the GROWING assistant text on every token (final=false) and once more at
+    /// turn end (final=true). The voice controller speaks each sentence as it completes so audio
+    /// starts well before the full reply is done. nil in text mode.
+    var onAssistantText: ((String, Bool) -> Void)?
 
     /// SP-Voice: fired with the final assistant text when an agent turn finishes streaming. The voice
     /// controller sets this to drive TTS; nil in normal typed use.
@@ -1135,6 +1141,7 @@ final class AppModel: ObservableObject {
             // activity card here — its minimum-visible timer (below) owns when it completes.
             if let tok = try? JSONDecoder().decode(String.self, from: Data(data.utf8)) {
                 chat[i].text += tok
+                onAssistantText?(chat[i].text, false)   // stream to voice as it grows
             }
         case "tool":
             if let d = data.data(using: .utf8),
