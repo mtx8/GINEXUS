@@ -131,9 +131,11 @@ struct ContentView: View {
                         Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(Brand.bone400)
                         Spacer(minLength: 0)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12).padding(.vertical, 9).contentShape(Rectangle())
                 }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize(horizontal: false, vertical: true)
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(model.activeProject != nil ? Brand.ember500.opacity(0.07) : Color.clear)
                 Divider().overlay(Brand.line1)
 
