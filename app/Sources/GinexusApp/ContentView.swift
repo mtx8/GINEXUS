@@ -104,14 +104,28 @@ struct ContentView: View {
             )
         ) {
             VStack(spacing: 0) {
-                if model.conversations.isEmpty {
-                    Text("No conversations yet").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                // When inside a project, show which one + a way back to all chats.
+                if let proj = model.activeProject {
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder.fill").font(.system(size: 10)).foregroundStyle(Brand.ember500)
+                        Text(proj.name).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.bone100).lineLimit(1)
+                        Spacer(minLength: 0)
+                        Button("ALL CHATS") { model.exitProject() }
+                            .buttonStyle(.plain).font(Brand.mono(9, weight: .bold)).foregroundStyle(Brand.bone300)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Brand.ember500.opacity(0.08))
+                    Divider().overlay(Brand.line1)
+                }
+                if model.visibleConversations.isEmpty {
+                    Text(model.activeProject != nil ? "No threads in this project yet — tap +" : "No conversations yet")
+                        .font(Brand.mono(11)).foregroundStyle(Brand.bone400)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.top, 14)
                     Spacer()
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 3) {
-                            ForEach(model.conversations) { c in
+                            ForEach(model.visibleConversations) { c in
                                 ConversationRow(
                                     c: c, selected: c.id == model.activeConversationID,
                                     disabled: model.sending && c.id != model.activeConversationID,
@@ -1091,11 +1105,18 @@ private struct ProjectDetail: View {
                 Spacer()
                 if model.activeProjectID == project.id {
                     Text("ACTIVE").font(Brand.mono(9, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ember500)
-                } else {
-                    Button("MAKE ACTIVE") { model.selectProject(project.id) }
-                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
                 }
             }
+
+            // The primary action: enter the project and start chatting in it.
+            Button { model.openProjectAndChat(project.id) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "bubble.left.and.text.bubble.right.fill").font(.system(size: 12))
+                    Text("OPEN — NEW CHAT IN THIS PROJECT").font(Brand.mono(11, weight: .bold)).kerning(1)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 11)
+                .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+            }.buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("CUSTOM INSTRUCTIONS — every thread in this project follows these")

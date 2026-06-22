@@ -215,8 +215,25 @@ final class AppModel: ObservableObject {
         }
         projects.insert(p, at: 0)
         activeProjectID = p.id
+        selectedProjectID = p.id   // so the Projects sheet opens straight into the new project
         projectStore.save(projects)
     }
+
+    /// Enter a project and start chatting in it: make it active, open a fresh thread, close the sheet.
+    func openProjectAndChat(_ id: UUID) {
+        selectProject(id)
+        newChat()
+        projectsOpen = false
+    }
+
+    /// The sidebar shows the active project's threads when inside one, else the loose (no-project) chats.
+    var visibleConversations: [ConversationMeta] {
+        if let pid = activeProjectID { return conversations.filter { $0.projectID == pid } }
+        return conversations.filter { $0.projectID == nil }
+    }
+
+    /// Leave the current project back to loose chats.
+    func exitProject() { activeProjectID = nil; newChat() }
 
     func updateProject(_ id: UUID, name: String? = nil, instructions: String? = nil) {
         guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
