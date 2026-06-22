@@ -767,6 +767,7 @@ struct ContentView: View {
                     Button("DONE") { model.memoryOpen = false }
                         .buttonStyle(.plain).font(Brand.display(12, weight: .bold)).foregroundStyle(Brand.bone300)
                 }
+                ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         if model.memBlocks.isEmpty {
@@ -803,27 +804,50 @@ struct ContentView: View {
                                             .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 6))
                                     }
                                 } else {
-                                    Text(b.value).font(Brand.body(13)).foregroundStyle(Brand.bone50).fixedSize(horizontal: false, vertical: true)
+                                    highlightedText(b.value, terms: model.memTerms, current: false)
+                                        .font(Brand.body(13)).foregroundStyle(Brand.bone50).fixedSize(horizontal: false, vertical: true)
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                             .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         Divider().overlay(Color.white.opacity(0.08))
-                        ForEach(model.memResults) { f in
+                        ForEach(Array(model.memResults.enumerated()), id: \.offset) { idx, f in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(f.origin == "untrusted" ? "DATA" : "·").font(Brand.mono(8, weight: .bold))
                                     .foregroundStyle(Brand.bone300).frame(width: 34, alignment: .leading)
-                                Text(f.text).font(Brand.body(12)).foregroundStyle(Brand.bone100).fixedSize(horizontal: false, vertical: true)
+                                highlightedText(f.text, terms: model.memTerms, current: idx == model.memMatchIndex)
+                                    .font(Brand.body(12)).foregroundStyle(Brand.bone100).fixedSize(horizontal: false, vertical: true)
                             }
+                            .padding(.vertical, 4).padding(.horizontal, 6)
+                            .background(idx == model.memMatchIndex && !model.memTerms.isEmpty ? Brand.ember500.opacity(0.10) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .id(idx)
                         }
                     }
                 }
+                .onChange(of: model.memMatchIndex) { _, new in
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(new, anchor: .center) }
+                }
+                }   // ScrollViewReader
                 HStack(spacing: 8) {
-                    TextField("Search memory…", text: $model.memQuery)
-                        .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50)
-                        .padding(10).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
-                        .onSubmit { model.searchMemory() }
+                    HStack(spacing: 8) {
+                        TextField("Search memory…", text: $model.memQuery)
+                            .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50)
+                            .onSubmit { model.searchMemory() }
+                        // Office-style match counter + prev/next, shown once there are results.
+                        if !model.memResults.isEmpty {
+                            Text("\(model.memMatchIndex + 1) of \(model.memResults.count)")
+                                .font(Brand.mono(11)).monospacedDigit().foregroundStyle(Brand.bone300)
+                            Button(action: model.memPrev) {
+                                Image(systemName: "chevron.up").font(.system(size: 11, weight: .bold)).foregroundStyle(Brand.bone200)
+                            }.buttonStyle(.plain).keyboardShortcut(.upArrow, modifiers: []).help("Previous match")
+                            Button(action: model.memNext) {
+                                Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Brand.bone200)
+                            }.buttonStyle(.plain).keyboardShortcut(.downArrow, modifiers: []).help("Next match")
+                        }
+                    }
+                    .padding(10).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
                     Button(action: { model.searchMemory() }) {
                         Text("SEARCH").font(Brand.display(12, weight: .bold)).kerning(1)
                             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -969,6 +993,25 @@ private struct ProjectEditorSheet: View {
         .padding(22).frame(width: 460)
         .background(Brand.ink850)
     }
+}
+
+/// Office-style match highlighting: emphasize each search term in `text`; tint the CURRENT match.
+fileprivate func highlightedText(_ text: String, terms: [String], current: Bool) -> Text {
+    guard !terms.isEmpty else { return Text(text) }
+    var attr = AttributedString(text)
+    for term in terms {
+        var start = text.startIndex
+        while start < text.endIndex,
+              let r = text.range(of: term, options: .caseInsensitive, range: start..<text.endIndex) {
+            if let ar = Range(r, in: attr) {
+                attr[ar].foregroundColor = Brand.ember500
+                attr[ar].inlinePresentationIntent = .stronglyEmphasized
+                if current { attr[ar].backgroundColor = Brand.ember500.opacity(0.28) }
+            }
+            start = r.upperBound
+        }
+    }
+    return Text(attr)
 }
 
 /// Brand-styled waveform for the live voice button that REACTS to the actual mic level — bars rise

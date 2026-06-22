@@ -123,6 +123,14 @@ final class AppModel: ObservableObject {
     @Published var memFactsCount = 0
     @Published var memResults: [MemFact] = []
     @Published var memQuery = ""
+    @Published var memMatchIndex = 0   // Office-style find: which result is "current"
+
+    /// The active search terms (≥2 chars) used to highlight matches in the memory browser.
+    var memTerms: [String] {
+        memQuery.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 2 }
+    }
+    func memNext() { guard !memResults.isEmpty else { return }; memMatchIndex = (memMatchIndex + 1) % memResults.count }
+    func memPrev() { guard !memResults.isEmpty else { return }; memMatchIndex = (memMatchIndex - 1 + memResults.count) % memResults.count }
     @Published var memLoading = false
 
     /// File/image attached to the next message via the "+" menu (nil when none).
@@ -1102,6 +1110,7 @@ final class AppModel: ObservableObject {
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
             let facts = (o["facts"] as? [[String: Any]]) ?? []
             memResults = facts.map { MemFact(text: ($0["text"] as? String) ?? "", origin: ($0["origin"] as? String) ?? "") }
+            memMatchIndex = 0   // Office-style find: reset to the first match
         }
     }
 
