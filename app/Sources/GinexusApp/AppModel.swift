@@ -235,6 +235,67 @@ final class AppModel: ObservableObject {
     /// Switch the active project; new chats join it. Does not move existing threads.
     func selectProject(_ id: UUID?) { activeProjectID = id }
 
+    // MARK: project files — add files / local paths so GINEXUS's project threads can use them
+    @Published var projectsOpen = false
+    @Published var selectedProjectID: UUID?   // which project the Projects sheet is viewing
+
+    /// Files currently in a project's folder (the documents GINEXUS can read for that project).
+    func projectFiles(_ id: UUID) -> [URL] {
+        guard let p = projects.first(where: { $0.id == id }), let path = p.folderPath else { return [] }
+        let url = URL(fileURLWithPath: path)
+        let items = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+        return items.filter { !$0.lastPathComponent.hasPrefix(".") }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Pick file(s) and COPY them into the project's folder (so they live with the project).
+    func addFilesToProject(_ id: UUID) {
+        guard let p = projects.first(where: { $0.id == id }), let folder = p.folderPath else { return }
+        if SpineController.isICloudPath(folder) { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK else { return }
+        for src in panel.urls {
+            if SpineController.isICloudPath(src.path) { continue }   // never pull from iCloud
+            let dest = URL(fileURLWithPath: folder).appendingPathComponent(src.lastPathComponent)
+            try? FileManager.default.removeItem(at: dest)
+            try? FileManager.default.copyItem(at: src, to: dest)
+        }
+        touchProject(id)
+    }
+
+    /// Add a whole local folder's files into the project (copies them in). iCloud refused.
+    func addFolderToProject(_ id: UUID) {
+        guard let p = projects.first(where: { $0.id == id }), let folder = p.folderPath else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        guard panel.runModal() == .OK, let dir = panel.url, !SpineController.isICloudPath(dir.path) else { return }
+        let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        for src in items where !src.hasDirectoryPath {
+            let dest = URL(fileURLWithPath: folder).appendingPathComponent(src.lastPathComponent)
+            try? FileManager.default.removeItem(at: dest)
+            try? FileManager.default.copyItem(at: src, to: dest)
+        }
+        touchProject(id)
+    }
+
+    func removeProjectFile(_ id: UUID, _ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        touchProject(id)
+    }
+
+    func revealProjectFolderFor(_ id: UUID) {
+        guard let path = projects.first(where: { $0.id == id })?.folderPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    private func touchProject(_ id: UUID) {
+        if let i = projects.firstIndex(where: { $0.id == id }) { projects[i].updatedAt = Date(); projectStore.save(projects) }
+        objectWillChange.send()
+    }
+
     // Project editor sheet (create / edit name + instructions).
     @Published var projectSheetOpen = false
     @Published var projectDraftName = ""
@@ -754,10 +815,18 @@ final class AppModel: ObservableObject {
         // SP-Projects: prepend the active project's custom instructions as a system message so every
         // thread in the project is steered by them (user-authored → trusted).
         if let proj = activeProject {
+            var ctx = "Project: \(proj.name)"
             let instr = proj.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !instr.isEmpty {
-                msgs.insert(["role": "system",
-                             "content": "Project: \(proj.name)\nProject instructions:\n\(instr)"], at: 0)
+            if !instr.isEmpty { ctx += "\nProject instructions:\n\(instr)" }
+            let files = projectFiles(proj.id)
+            if !files.isEmpty, let folder = proj.folderPath {
+                let home = FileManager.default.homeDirectoryForCurrentUser.path
+                let tildeFolder = folder.hasPrefix(home) ? "~" + folder.dropFirst(home.count) : folder
+                let list = files.map { "- \(tildeFolder)/\($0.lastPathComponent)" }.joined(separator: "\n")
+                ctx += "\nThis project has these files. Use the read_document tool with the path to read any you need:\n\(list)"
+            }
+            if !instr.isEmpty || !files.isEmpty {
+                msgs.insert(["role": "system", "content": ctx], at: 0)
             }
         }
         let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "mode": modeString])

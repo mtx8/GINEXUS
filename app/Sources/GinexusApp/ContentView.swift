@@ -39,6 +39,7 @@ struct ContentView: View {
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model, store: model.settings) }
         .sheet(isPresented: $model.projectSheetOpen) { ProjectEditorSheet(model: model) }
         .sheet(isPresented: $model.connectionsOpen) { ConnectionsSheet(model: model) }
+        .sheet(isPresented: $model.projectsOpen) { ProjectsSheet(model: model) }
     }
 
     // MARK: ── far-left icon rail ───────────────────────────────────────────────
@@ -46,6 +47,10 @@ struct ContentView: View {
         VStack(spacing: 6) {
             GlyphMark(size: 38, spinning: model.sending).padding(.top, 16).padding(.bottom, 12)
             railIcon("square.and.pencil", "New conversation", enabled: model.connected && !model.sending) { model.newChat() }
+            railIcon("folder", "Projects — folders, files, custom instructions", enabled: model.connected) {
+                model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id
+                model.projectsOpen = true
+            }
             railIcon("brain", "Memory — what GINEXUS knows", enabled: model.connected) { model.openMemory() }
             railIcon("cube.box", "Models — download / manage", enabled: model.connected, animating: model.pulling) { model.openModels() }
             railIcon("gearshape", "Settings") { model.openSettings() }   // always reachable (recovery)
@@ -994,6 +999,163 @@ private struct ProjectEditorSheet: View {
         }
         .padding(22).frame(width: 460)
         .background(Brand.ink850)
+    }
+}
+
+/// Projects workspace — create projects (folders), set custom instructions, and add files / local
+/// paths that GINEXUS can read in that project's chats. Discoverable from the left rail (folder icon).
+private struct ProjectsSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Left: project list
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("PROJECTS").font(Brand.mono(12, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+                    Spacer()
+                    Button(action: model.openNewProjectSheet) {
+                        Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.ember500)
+                    }.buttonStyle(.plain).help("New project")
+                }
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(model.projects) { p in
+                            Button { model.selectedProjectID = p.id } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "folder.fill").font(.system(size: 11))
+                                        .foregroundStyle(p.id == model.activeProjectID ? Brand.ember500 : Brand.bone300)
+                                    Text(p.name).font(Brand.mono(12)).foregroundStyle(Brand.bone50).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.vertical, 7).padding(.horizontal, 8)
+                                .background(p.id == model.selectedProjectID ? Brand.ink600 : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            }.buttonStyle(.plain)
+                        }
+                        if model.projects.isEmpty {
+                            Text("No projects yet — tap +").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                        }
+                    }
+                }
+            }
+            .frame(width: 196).padding(14).background(Brand.ink850)
+
+            Rectangle().fill(Brand.line1).frame(width: 1)
+
+            // Right: detail
+            Group {
+                if let pid = model.selectedProjectID, let p = model.projects.first(where: { $0.id == pid }) {
+                    ProjectDetail(model: model, project: p).id(p.id)
+                } else {
+                    VStack(spacing: 12) {
+                        Text("Select a project, or create one.").font(Brand.mono(13)).foregroundStyle(Brand.bone300)
+                        Button("NEW PROJECT") { model.openNewProjectSheet() }
+                            .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ink900)
+                            .padding(.horizontal, 18).padding(.vertical, 10).background(Brand.ember500)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+        .frame(width: 640, height: 470)
+        .background(Brand.ink900)
+        .overlay(alignment: .topTrailing) {
+            Button("DONE") { model.projectsOpen = false }
+                .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.bone300).padding(12)
+        }
+    }
+}
+
+/// One project's editable detail: name, custom instructions, and its files.
+private struct ProjectDetail: View {
+    @ObservedObject var model: AppModel
+    let project: Project
+    @State private var name: String
+    @State private var instr: String
+
+    init(model: AppModel, project: Project) {
+        self.model = model
+        self.project = project
+        _name = State(initialValue: project.name)
+        _instr = State(initialValue: project.instructions)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                TextField("Project name", text: $name)
+                    .textFieldStyle(.plain).font(Brand.display(16, weight: .bold)).foregroundStyle(Brand.bone50)
+                    .onSubmit { model.updateProject(project.id, name: name) }
+                Spacer()
+                if model.activeProjectID == project.id {
+                    Text("ACTIVE").font(Brand.mono(9, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ember500)
+                } else {
+                    Button("MAKE ACTIVE") { model.selectProject(project.id) }
+                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("CUSTOM INSTRUCTIONS — every thread in this project follows these")
+                    .font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.bone300)
+                TextEditor(text: $instr)
+                    .font(Brand.body(12)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                    .frame(height: 90)
+                    .padding(8).background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.line1, lineWidth: 1))
+                HStack {
+                    Spacer()
+                    Button("SAVE INSTRUCTIONS") { model.updateProject(project.id, name: name, instructions: instr) }
+                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
+                }
+            }
+
+            HStack {
+                Text("FILES — GINEXUS can read these in this project")
+                    .font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.bone300)
+                Spacer()
+                Button("ADD FILE") { model.addFilesToProject(project.id) }
+                    .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
+                Button("ADD FOLDER") { model.addFolderToProject(project.id) }
+                    .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
+                Button { model.revealProjectFolderFor(project.id) } label: {
+                    Image(systemName: "arrow.up.forward.app").font(.system(size: 11))
+                }.buttonStyle(.plain).foregroundStyle(Brand.bone300).help("Reveal folder in Finder")
+            }
+            ScrollView {
+                VStack(spacing: 4) {
+                    let files = model.projectFiles(project.id)
+                    if files.isEmpty {
+                        Text("No files yet. Add files or a folder — they're copied into the project and GINEXUS can read them.")
+                            .font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                            .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach(files, id: \.self) { f in
+                        HStack(spacing: 8) {
+                            Image(systemName: "doc").font(.system(size: 11)).foregroundStyle(Brand.bone300)
+                            Text(f.lastPathComponent).font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
+                            Spacer(minLength: 0)
+                            Button { model.removeProjectFile(project.id, f) } label: {
+                                Image(systemName: "trash").font(.system(size: 10))
+                            }.buttonStyle(.plain).foregroundStyle(Brand.bone400).help("Remove from project")
+                        }.padding(8).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+            HStack {
+                Spacer()
+                Button("Delete project") {
+                    model.deleteProject(project.id)
+                    model.selectedProjectID = model.projects.first?.id
+                }.buttonStyle(.plain).font(Brand.mono(10)).foregroundStyle(Brand.hi500)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
