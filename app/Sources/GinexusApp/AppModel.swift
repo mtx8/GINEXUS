@@ -111,6 +111,22 @@ final class AppModel: ObservableObject {
         didSet { if autonomous != oldValue { settings.update { $0.defaultMode = autonomous ? "autonomous" : "hitl" } } }
     }
     private var modeString: String { autonomous ? "autonomous" : "hitl" }
+
+    /// Injected for typed chat turns: clean, brand-correct formatting (no emoji).
+    static let chatFormatPrompt = """
+    Format replies cleanly for a chat interface: clear prose in short paragraphs; use a heading or a \
+    list ONLY when it genuinely aids scanning (don't over-structure a simple answer); keep code in \
+    fenced code blocks. Never use emoji. Don't restate the user's question before answering.
+    """
+
+    /// Injected only for voice turns so GINEXUS speaks like a human in conversation.
+    static let voiceSystemPrompt = """
+    You are in a live VOICE conversation — your reply will be spoken aloud. Talk like a real person, \
+    not like you are reading a document. Be natural, warm, and brief: usually one to three sentences. \
+    Do NOT use markdown, headings, bullet points, numbered lists, code blocks, tables, or emoji. Do not \
+    restate or repeat the user's question back to them. Just answer conversationally and get to the \
+    point. Only give a longer, structured answer if the user explicitly asks for detail or a list.
+    """
     /// HITL: when set, an irreversible/OS action is waiting on the biometric approval sheet.
     @Published var pending: PendingAction?
 
@@ -726,6 +742,14 @@ final class AppModel: ObservableObject {
                 }
                 msgs[last]["content"] = content
             }
+        }
+        // SP-Voice: when speaking aloud, GINEXUS must TALK like a person, not read a formatted
+        // document. Steer to short, natural, spoken replies — no markdown, lists, or restating the
+        // question. (This also keeps replies short → snappier voice.)
+        if voiceActive {
+            msgs.insert(["role": "system", "content": Self.voiceSystemPrompt], at: 0)
+        } else {
+            msgs.insert(["role": "system", "content": Self.chatFormatPrompt], at: 0)
         }
         // SP-Projects: prepend the active project's custom instructions as a system message so every
         // thread in the project is steered by them (user-authored → trusted).

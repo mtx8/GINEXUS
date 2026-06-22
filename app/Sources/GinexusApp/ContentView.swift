@@ -329,7 +329,9 @@ struct ContentView: View {
                     GlyphMark(size: 22, spinning: msg.streaming)
                     VStack(alignment: .leading, spacing: 10) {
                         if msg.streaming {
-                            StreamingText(text: msg.text)
+                            // Render Markdown WHILE streaming too, so the user never sees raw ###/**/```.
+                            if msg.text.isEmpty { StreamingText(text: msg.text) }
+                            else { MarkdownReply(text: msg.text) }
                         } else {
                             MarkdownReply(text: msg.text)
                             if let path = msg.imagePath { StreamImage(path: path) }

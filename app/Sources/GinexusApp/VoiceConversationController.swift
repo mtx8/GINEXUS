@@ -151,7 +151,16 @@ final class VoiceConversationController: ObservableObject {
 
     // MARK: streaming TTS — speak each sentence the moment it completes
 
-    private static let enders: Set<Character> = [".", "!", "?", "\n", "…", "。", "！", "？"]
+    // Sentence-FINAL punctuation only — a chunk is never spoken until a sentence actually ends.
+    // (Newlines/commas/colons do NOT end a sentence, so we never start reading a half sentence.)
+    private static let enders: Set<Character> = [".", "!", "?", "…", "。", "！", "？"]
+
+    private static func isSentenceEnd(_ chars: [Character], _ i: Int) -> Bool {
+        guard enders.contains(chars[i]) else { return false }
+        let next = i + 1
+        // Must be end-of-text or followed by whitespace — guards against "3.5", "U.S.", "etc."
+        return next >= chars.count || chars[next] == " " || chars[next] == "\n" || chars[next] == "\t"
+    }
 
     /// Called with the growing reply text (final=false) and once at the end (final=true). Flushes
     /// the FIRST sentence immediately (fast first-audio), then coalesces to ~minChunkChars before
@@ -162,11 +171,11 @@ final class VoiceConversationController: ObservableObject {
         if consumedLen > chars.count { consumedLen = 0; spokenFirst = false }  // text reset (tool preamble)
         // Smallest chunk we'll flush mid-stream: the first one fires on the first boundary, the rest
         // wait until enough text has accumulated.
-        let minLen = spokenFirst ? minChunkChars : 1
+        let minLen = spokenFirst ? minChunkChars : 8   // first chunk fast, but still a real sentence
         var flushTo = consumedLen
         var i = consumedLen
         while i < chars.count {
-            if Self.enders.contains(chars[i]) && (i + 1 - consumedLen) >= minLen { flushTo = i + 1 }
+            if Self.isSentenceEnd(chars, i) && (i + 1 - consumedLen) >= minLen { flushTo = i + 1 }
             i += 1
         }
         let end = final ? chars.count : flushTo

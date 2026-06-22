@@ -41,45 +41,55 @@ public struct VoiceClient: Sendable {
         return (obj?["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    /// Stream synthesized speech as int16-LE-mono-24 kHz PCM chunks, delivered as they generate so
-    /// playback can start before the whole reply is done. Cancel the consuming Task to abort (barge-in).
+    /// Stream synthesized speech as int16-LE-mono-24 kHz PCM, delivered as it generates so playback
+    /// can start before the whole reply is done. Uses a URLSession DATA delegate to receive Data
+    /// chunks — NOT `AsyncBytes`, which yields one UInt8 at a time and added ~30 s of per-byte async
+    /// overhead for a few hundred KB of PCM (that was the real cause of the audio stutter/lag).
     public func synthesizeStream(text: String, languageID: String = "en",
                                  voiceRef: String? = nil) -> AsyncThrowingStream<Data, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    var req = URLRequest(url: base.appendingPathComponent("synthesize"))
-                    req.httpMethod = "POST"
-                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    var body: [String: Any] = ["text": text, "language_id": languageID]
-                    if let voiceRef, !voiceRef.isEmpty { body["voice_ref"] = voiceRef }
-                    req.httpBody = try JSONSerialization.data(withJSONObject: body)
-                    req.timeoutInterval = 180
+            var req = URLRequest(url: base.appendingPathComponent("synthesize"))
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            var body: [String: Any] = ["text": text, "language_id": languageID]
+            if let voiceRef, !voiceRef.isEmpty { body["voice_ref"] = voiceRef }
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            req.timeoutInterval = 180
 
-                    let (bytes, resp) = try await URLSession.shared.bytes(for: req)
-                    guard let http = resp as? HTTPURLResponse else { throw VoiceError.badResponse }
-                    guard http.statusCode == 200 else { throw VoiceError.badStatus(http.statusCode) }
+            let delegate = PCMStreamDelegate(continuation: continuation)
+            let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+            let task = session.dataTask(with: req)
+            continuation.onTermination = { _ in task.cancel(); session.invalidateAndCancel() }
+            task.resume()
+        }
+    }
+}
 
-                    // Coalesce the byte stream into ~100 ms PCM frames (2400 samples * 2 bytes) so the
-                    // player schedules reasonably-sized buffers without stalling on first audio.
-                    var buf = Data()
-                    buf.reserveCapacity(9600)
-                    let flushAt = 4800
-                    for try await b in bytes {
-                        if Task.isCancelled { break }
-                        buf.append(b)
-                        if buf.count >= flushAt {
-                            continuation.yield(buf)
-                            buf.removeAll(keepingCapacity: true)
-                        }
-                    }
-                    if !buf.isEmpty && !Task.isCancelled { continuation.yield(buf) }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
+/// Receives the /synthesize response as Data chunks and forwards them to the AsyncThrowingStream.
+private final class PCMStreamDelegate: NSObject, URLSessionDataDelegate {
+    private let continuation: AsyncThrowingStream<Data, Error>.Continuation
+    init(continuation: AsyncThrowingStream<Data, Error>.Continuation) { self.continuation = continuation }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            continuation.finish(throwing: VoiceError.badStatus(http.statusCode))
+            completionHandler(.cancel)
+        } else {
+            completionHandler(.allow)
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        continuation.yield(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error, (error as NSError).code != NSURLErrorCancelled {
+            continuation.finish(throwing: error)
+        } else {
+            continuation.finish()
         }
     }
 }
