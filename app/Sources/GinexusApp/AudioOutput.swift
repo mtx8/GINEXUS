@@ -22,6 +22,7 @@ final class AudioOutput: @unchecked Sendable {
     private var pending = 0                 // buffers scheduled but not yet played
     private var queuedFrames = 0            // frames currently buffered ahead (jitter cushion)
     private var drainHandler: (() -> Void)?
+    private var residual = Data()           // a trailing odd byte carried to the next chunk (alignment)
     private let prebufferFrames = Int(VoiceClient.sampleRate * 0.28)   // ~280 ms cushion before play()
 
     init() {
@@ -38,14 +39,24 @@ final class AudioOutput: @unchecked Sendable {
     /// Append a chunk of int16-LE mono 24 kHz PCM. Conversion + scheduling happen off the main thread.
     func enqueue(pcm16le: Data) {
         q.async { [self] in
-            let frames = pcm16le.count / 2
+            // HTTP chunks are arbitrary-sized — an odd byte count would shift every following sample
+            // by one byte (= static). Carry the trailing odd byte to the next chunk so conversion is
+            // always 16-bit aligned, and read each sample little-endian byte-by-byte (no alignment risk).
+            var data = residual
+            data.append(pcm16le)
+            let usable = data.count - (data.count % 2)
+            residual = usable < data.count ? data.suffix(from: usable) : Data()
+            let frames = usable / 2
             guard frames > 0,
                   let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(frames)),
                   let out = buf.floatChannelData?[0] else { return }
             buf.frameLength = AVAudioFrameCount(frames)
-            pcm16le.withUnsafeBytes { raw in
-                let s = raw.bindMemory(to: Int16.self)
-                for i in 0..<frames { out[i] = Float(Int16(littleEndian: s[i])) / 32768.0 }
+            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                for i in 0..<frames {
+                    let lo = UInt16(raw[i * 2])
+                    let hi = UInt16(raw[i * 2 + 1])
+                    out[i] = Float(Int16(bitPattern: lo | (hi << 8))) / 32768.0
+                }
             }
             ensureEngineLocked()
             guard engineStarted else { return }
@@ -89,14 +100,14 @@ final class AudioOutput: @unchecked Sendable {
         q.async { [self] in
             guard engineStarted else { return }
             player.stop(); player.reset()
-            playing = false; pending = 0; queuedFrames = 0; drainHandler = nil
+            playing = false; pending = 0; queuedFrames = 0; drainHandler = nil; residual = Data()
         }
     }
 
     func shutdown() {
         q.async { [self] in
             player.stop(); engine.stop()
-            engineStarted = false; playing = false; pending = 0; queuedFrames = 0; drainHandler = nil
+            engineStarted = false; playing = false; pending = 0; queuedFrames = 0; drainHandler = nil; residual = Data()
         }
     }
 }
