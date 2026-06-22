@@ -1044,18 +1044,32 @@ private struct ProjectsSheet: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Left: project list
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("PROJECTS").font(Brand.mono(12, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
-                    Spacer()
-                    Button(action: model.openNewProjectSheet) {
-                        Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.ember500)
-                    }.buttonStyle(.plain).help("New project")
-                }
+        VStack(spacing: 0) {
+            // Top bar — title, NEW, and a clear close (no more overlap with the ACTIVE badge).
+            HStack(spacing: 10) {
+                Image(systemName: "folder.fill").font(.system(size: 12)).foregroundStyle(Brand.ember500)
+                Text("PROJECTS").font(Brand.mono(12, weight: .bold)).kerning(2).foregroundStyle(Brand.bone100)
+                Spacer()
+                Button(action: model.openNewProjectSheet) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "plus").font(.system(size: 10, weight: .bold))
+                        Text("NEW").font(Brand.mono(10, weight: .bold)).kerning(1)
+                    }
+                    .foregroundStyle(Brand.ink900).padding(.horizontal, 11).padding(.vertical, 6)
+                    .background(Brand.ember500).clipShape(Capsule())
+                }.buttonStyle(.plain).help("New project")
+                Button { model.projectsOpen = false } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Brand.bone300)
+                        .frame(width: 26, height: 26).background(Brand.ink700).clipShape(Circle())
+                }.buttonStyle(.plain).help("Close")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            Divider().overlay(Brand.line1)
+
+            HStack(spacing: 0) {
+                // Left: project list
                 ScrollView {
-                    VStack(spacing: 4) {
+                    VStack(spacing: 3) {
                         ForEach(model.projects) { p in
                             Button { model.selectedProjectID = p.id } label: {
                                 HStack(spacing: 8) {
@@ -1063,44 +1077,48 @@ private struct ProjectsSheet: View {
                                         .foregroundStyle(p.id == model.activeProjectID ? Brand.ember500 : Brand.bone300)
                                     Text(p.name).font(Brand.mono(12)).foregroundStyle(Brand.bone50).lineLimit(1)
                                     Spacer(minLength: 0)
+                                    if p.id == model.activeProjectID {
+                                        Circle().fill(Brand.ember500).frame(width: 5, height: 5)
+                                    }
                                 }
-                                .padding(.vertical, 7).padding(.horizontal, 8)
+                                .padding(.vertical, 8).padding(.horizontal, 10)
                                 .background(p.id == model.selectedProjectID ? Brand.ink600 : Color.clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
                             }.buttonStyle(.plain)
                         }
                         if model.projects.isEmpty {
-                            Text("No projects yet — tap +").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                            VStack(spacing: 8) {
+                                Image(systemName: "folder.badge.plus").font(.system(size: 22)).foregroundStyle(Brand.bone400)
+                                Text("No projects yet").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                            }.frame(maxWidth: .infinity).padding(.top, 28)
                         }
+                    }.padding(10)
+                }
+                .frame(width: 200).background(Brand.ink850)
+
+                Rectangle().fill(Brand.line1).frame(width: 1)
+
+                // Right: detail
+                Group {
+                    if let pid = model.selectedProjectID, let p = model.projects.first(where: { $0.id == pid }) {
+                        ProjectDetail(model: model, project: p).id(p.id)
+                    } else {
+                        VStack(spacing: 14) {
+                            Image(systemName: "folder").font(.system(size: 34)).foregroundStyle(Brand.bone400)
+                            Text("Select a project, or create one").font(Brand.mono(13)).foregroundStyle(Brand.bone300)
+                            Button { model.openNewProjectSheet() } label: {
+                                HStack(spacing: 6) { Image(systemName: "plus"); Text("NEW PROJECT").kerning(1) }
+                                    .font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ink900)
+                                    .padding(.horizontal, 18).padding(.vertical, 10).background(Brand.ember500)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }.buttonStyle(.plain)
+                        }.frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
             }
-            .frame(width: 196).padding(14).background(Brand.ink850)
-
-            Rectangle().fill(Brand.line1).frame(width: 1)
-
-            // Right: detail
-            Group {
-                if let pid = model.selectedProjectID, let p = model.projects.first(where: { $0.id == pid }) {
-                    ProjectDetail(model: model, project: p).id(p.id)
-                } else {
-                    VStack(spacing: 12) {
-                        Text("Select a project, or create one.").font(Brand.mono(13)).foregroundStyle(Brand.bone300)
-                        Button("NEW PROJECT") { model.openNewProjectSheet() }
-                            .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ink900)
-                            .padding(.horizontal, 18).padding(.vertical, 10).background(Brand.ember500)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
         }
-        .frame(width: 640, height: 470)
+        .frame(width: 680, height: 510)
         .background(Brand.ink900)
-        .overlay(alignment: .topTrailing) {
-            Button("DONE") { model.projectsOpen = false }
-                .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.bone300).padding(12)
-        }
     }
 }
 
@@ -1120,17 +1138,19 @@ private struct ProjectDetail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
+            // Name + ACTIVE pill (inline — no longer colliding with a close button).
+            HStack(spacing: 8) {
                 TextField("Project name", text: $name)
-                    .textFieldStyle(.plain).font(Brand.display(16, weight: .bold)).foregroundStyle(Brand.bone50)
+                    .textFieldStyle(.plain).font(Brand.display(17, weight: .bold)).foregroundStyle(Brand.bone50)
                     .onSubmit { model.updateProject(project.id, name: name) }
-                Spacer()
                 if model.activeProjectID == project.id {
-                    Text("ACTIVE").font(Brand.mono(9, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ember500)
+                    Text("ACTIVE").font(Brand.mono(8, weight: .bold)).kerning(1).foregroundStyle(Brand.ember500)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .overlay(Capsule().stroke(Brand.ember500.opacity(0.55), lineWidth: 1))
                 }
             }
 
-            // The primary action: enter the project and start chatting in it.
+            // Primary action: enter the project and start chatting.
             Button { model.openProjectAndChat(project.id) } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "bubble.left.and.text.bubble.right.fill").font(.system(size: 12))
@@ -1140,65 +1160,92 @@ private struct ProjectDetail: View {
                 .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
             }.buttonStyle(.plain)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("CUSTOM INSTRUCTIONS — every thread in this project follows these")
-                    .font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.bone300)
+            // Custom instructions
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "text.alignleft").font(.system(size: 9)).foregroundStyle(Brand.bone300)
+                    Text("CUSTOM INSTRUCTIONS").font(Brand.mono(9, weight: .bold)).kerning(1.4).foregroundStyle(Brand.bone300)
+                    Spacer()
+                    Button { model.updateProject(project.id, name: name, instructions: instr) } label: {
+                        HStack(spacing: 4) { Image(systemName: "checkmark"); Text("SAVE") }
+                            .font(Brand.mono(9, weight: .bold)).foregroundStyle(Brand.ember500)
+                    }.buttonStyle(.plain).help("Save instructions")
+                }
+                Text("Every thread in this project follows these.").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
                 TextEditor(text: $instr)
                     .font(Brand.body(12)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
-                    .frame(height: 90)
+                    .frame(height: 80)
                     .padding(8).background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.line1, lineWidth: 1))
-                HStack {
+            }
+
+            // Files
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.on.doc").font(.system(size: 9)).foregroundStyle(Brand.bone300)
+                    Text("FILES").font(Brand.mono(9, weight: .bold)).kerning(1.4).foregroundStyle(Brand.bone300)
                     Spacer()
-                    Button("SAVE INSTRUCTIONS") { model.updateProject(project.id, name: name, instructions: instr) }
-                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
+                    fileIconButton("doc.badge.plus", "Add file") { model.addFilesToProject(project.id) }
+                    fileIconButton("folder.badge.plus", "Add folder") { model.addFolderToProject(project.id) }
+                    fileIconButton("arrow.up.forward.app", "Reveal in Finder") { model.revealProjectFolderFor(project.id) }
                 }
+                Text("GINEXUS can read these in this project's chats.").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                ScrollView {
+                    VStack(spacing: 4) {
+                        let files = model.projectFiles(project.id)
+                        if files.isEmpty {
+                            VStack(spacing: 7) {
+                                Image(systemName: "tray").font(.system(size: 20)).foregroundStyle(Brand.bone400)
+                                Text("No files yet — add files or a folder.").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                            }.frame(maxWidth: .infinity).padding(.vertical, 16)
+                        }
+                        ForEach(files, id: \.self) { f in
+                            HStack(spacing: 8) {
+                                Image(systemName: Self.icon(for: f)).font(.system(size: 11)).foregroundStyle(Brand.ember500.opacity(0.85))
+                                Text(f.lastPathComponent).font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Button { model.removeProjectFile(project.id, f) } label: {
+                                    Image(systemName: "trash").font(.system(size: 10))
+                                }.buttonStyle(.plain).foregroundStyle(Brand.bone400).help("Remove from project")
+                            }.padding(.vertical, 7).padding(.horizontal, 9).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                }.frame(maxHeight: .infinity)
             }
 
             HStack {
-                Text("FILES — GINEXUS can read these in this project")
-                    .font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.bone300)
                 Spacer()
-                Button("ADD FILE") { model.addFilesToProject(project.id) }
-                    .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
-                Button("ADD FOLDER") { model.addFolderToProject(project.id) }
-                    .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
-                Button { model.revealProjectFolderFor(project.id) } label: {
-                    Image(systemName: "arrow.up.forward.app").font(.system(size: 11))
-                }.buttonStyle(.plain).foregroundStyle(Brand.bone300).help("Reveal folder in Finder")
-            }
-            ScrollView {
-                VStack(spacing: 4) {
-                    let files = model.projectFiles(project.id)
-                    if files.isEmpty {
-                        Text("No files yet. Add files or a folder — they're copied into the project and GINEXUS can read them.")
-                            .font(Brand.mono(11)).foregroundStyle(Brand.bone400)
-                            .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    ForEach(files, id: \.self) { f in
-                        HStack(spacing: 8) {
-                            Image(systemName: "doc").font(.system(size: 11)).foregroundStyle(Brand.bone300)
-                            Text(f.lastPathComponent).font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
-                            Spacer(minLength: 0)
-                            Button { model.removeProjectFile(project.id, f) } label: {
-                                Image(systemName: "trash").font(.system(size: 10))
-                            }.buttonStyle(.plain).foregroundStyle(Brand.bone400).help("Remove from project")
-                        }.padding(8).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                }
-            }
-
-            Spacer(minLength: 0)
-            HStack {
-                Spacer()
-                Button("Delete project") {
+                Button {
                     model.deleteProject(project.id)
                     model.selectedProjectID = model.projects.first?.id
-                }.buttonStyle(.plain).font(Brand.mono(10)).foregroundStyle(Brand.hi500)
+                } label: {
+                    HStack(spacing: 4) { Image(systemName: "trash"); Text("Delete project") }
+                        .font(Brand.mono(10)).foregroundStyle(Brand.hi500)
+                }.buttonStyle(.plain).help("Delete this project")
             }
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func fileIconButton(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 13)).foregroundStyle(Brand.ember500)
+                .frame(width: 28, height: 24).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 6))
+        }.buttonStyle(.plain).help(help)
+    }
+
+    private static func icon(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "pdf": return "doc.richtext"
+        case "doc", "docx": return "doc.text"
+        case "png", "jpg", "jpeg", "gif", "heic", "webp": return "photo"
+        case "csv", "xlsx", "numbers", "tsv": return "tablecells"
+        case "md", "markdown", "txt", "rtf": return "doc.plaintext"
+        case "mp4", "mov", "m4v": return "film"
+        case "zip", "tar", "gz": return "doc.zipper"
+        default: return "doc"
+        }
     }
 }
 
