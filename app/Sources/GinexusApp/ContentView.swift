@@ -1014,9 +1014,41 @@ private struct ProjectEditorSheet: View {
                     .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
                 TextEditor(text: $model.projectDraftInstructions)
                     .font(Brand.mono(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
-                    .frame(minHeight: 140)
+                    .frame(minHeight: 100)
                     .padding(8).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }
+            // Files — works for a brand-new project (staged, copied on Create) and an existing one.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Files").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                    Spacer()
+                    Button("Add file…") {
+                        if let id = model.editingProjectID { model.addFilesToProject(id) } else { model.addFilesToDraft() }
+                    }.buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ember500)
+                    Button("Add folder…") {
+                        if let id = model.editingProjectID { model.addFolderToProject(id) } else { model.addFolderToDraft() }
+                    }.buttonStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                }
+                let files: [URL] = model.editingProjectID.map { model.projectFiles($0) } ?? model.projectDraftFiles
+                if files.isEmpty {
+                    Text("Optional — GINEXUS can read files you add in this project's chats.")
+                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                } else {
+                    VStack(spacing: 3) {
+                        ForEach(files, id: \.self) { f in
+                            HStack(spacing: 8) {
+                                Image(systemName: "doc").font(.system(size: 10)).foregroundStyle(Brand.bone300)
+                                Text(f.lastPathComponent).font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Button {
+                                    if let id = model.editingProjectID { model.removeProjectFile(id, f) } else { model.removeDraftFile(f) }
+                                } label: { Image(systemName: "xmark").font(.system(size: 9)) }
+                                    .buttonStyle(.plain).foregroundStyle(Brand.bone400)
+                            }
+                        }
+                    }
+                }
             }
             HStack {
                 Spacer()
@@ -1052,15 +1084,12 @@ private struct ProjectsSheet: View {
                 Spacer()
                 Button(action: model.openNewProjectSheet) {
                     HStack(spacing: 5) {
-                        Image(systemName: "plus").font(.system(size: 10, weight: .bold))
+                        Image(systemName: "plus").font(.system(size: 11, weight: .bold))
                         Text("NEW").font(Brand.mono(10, weight: .bold)).kerning(1)
-                    }
-                    .foregroundStyle(Brand.ink900).padding(.horizontal, 11).padding(.vertical, 6)
-                    .background(Brand.ember500).clipShape(Capsule())
+                    }.foregroundStyle(Brand.ember500)
                 }.buttonStyle(.plain).help("New project")
                 Button { model.projectsOpen = false } label: {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Brand.bone300)
-                        .frame(width: 26, height: 26).background(Brand.ink700).clipShape(Circle())
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.bone300)
                 }.buttonStyle(.plain).help("Close")
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
@@ -1144,9 +1173,7 @@ private struct ProjectDetail: View {
                     .textFieldStyle(.plain).font(Brand.display(17, weight: .bold)).foregroundStyle(Brand.bone50)
                     .onSubmit { model.updateProject(project.id, name: name) }
                 if model.activeProjectID == project.id {
-                    Text("ACTIVE").font(Brand.mono(8, weight: .bold)).kerning(1).foregroundStyle(Brand.ember500)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .overlay(Capsule().stroke(Brand.ember500.opacity(0.55), lineWidth: 1))
+                    Text("• ACTIVE").font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.ember500)
                 }
             }
 
@@ -1162,14 +1189,11 @@ private struct ProjectDetail: View {
 
             // Custom instructions
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "text.alignleft").font(.system(size: 9)).foregroundStyle(Brand.bone300)
+                HStack {
                     Text("CUSTOM INSTRUCTIONS").font(Brand.mono(9, weight: .bold)).kerning(1.4).foregroundStyle(Brand.bone300)
                     Spacer()
-                    Button { model.updateProject(project.id, name: name, instructions: instr) } label: {
-                        HStack(spacing: 4) { Image(systemName: "checkmark"); Text("SAVE") }
-                            .font(Brand.mono(9, weight: .bold)).foregroundStyle(Brand.ember500)
-                    }.buttonStyle(.plain).help("Save instructions")
+                    Button("SAVE") { model.updateProject(project.id, name: name, instructions: instr) }
+                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500).help("Save instructions")
                 }
                 Text("Every thread in this project follows these.").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
                 TextEditor(text: $instr)
@@ -1181,13 +1205,16 @@ private struct ProjectDetail: View {
 
             // Files
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "doc.on.doc").font(.system(size: 9)).foregroundStyle(Brand.bone300)
+                HStack(spacing: 12) {
                     Text("FILES").font(Brand.mono(9, weight: .bold)).kerning(1.4).foregroundStyle(Brand.bone300)
                     Spacer()
-                    fileIconButton("doc.badge.plus", "Add file") { model.addFilesToProject(project.id) }
-                    fileIconButton("folder.badge.plus", "Add folder") { model.addFolderToProject(project.id) }
-                    fileIconButton("arrow.up.forward.app", "Reveal in Finder") { model.revealProjectFolderFor(project.id) }
+                    Button("ADD FILE") { model.addFilesToProject(project.id) }
+                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
+                    Button("ADD FOLDER") { model.addFolderToProject(project.id) }
+                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
+                    Button { model.revealProjectFolderFor(project.id) } label: {
+                        Image(systemName: "arrow.up.forward.app").font(.system(size: 12)).foregroundStyle(Brand.bone300)
+                    }.buttonStyle(.plain).help("Reveal folder in Finder")
                 }
                 Text("GINEXUS can read these in this project's chats.").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
                 ScrollView {
@@ -1226,13 +1253,6 @@ private struct ProjectDetail: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private func fileIconButton(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon).font(.system(size: 13)).foregroundStyle(Brand.ember500)
-                .frame(width: 28, height: 24).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 6))
-        }.buttonStyle(.plain).help(help)
     }
 
     private static func icon(for url: URL) -> String {

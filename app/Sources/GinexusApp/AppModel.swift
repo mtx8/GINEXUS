@@ -319,12 +319,14 @@ final class AppModel: ObservableObject {
     @Published var projectSheetOpen = false
     @Published var projectDraftName = ""
     @Published var projectDraftInstructions = ""
+    @Published var projectDraftFiles: [URL] = []   // files staged for a NEW project (copied on create)
     @Published var editingProjectID: UUID?
 
     func openNewProjectSheet() {
         editingProjectID = nil
         projectDraftName = ""
         projectDraftInstructions = ""
+        projectDraftFiles = []
         projectSheetOpen = true
     }
 
@@ -333,8 +335,29 @@ final class AppModel: ObservableObject {
         editingProjectID = id
         projectDraftName = p.name
         projectDraftInstructions = p.instructions
+        projectDraftFiles = []
         projectSheetOpen = true
     }
+
+    /// Stage file(s) for a project being created (copied into its folder once it exists).
+    func addFilesToDraft() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true; panel.canChooseFiles = true; panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        for u in panel.urls where !SpineController.isICloudPath(u.path) {
+            if !projectDraftFiles.contains(u) { projectDraftFiles.append(u) }
+        }
+    }
+
+    func addFolderToDraft() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        guard panel.runModal() == .OK, let dir = panel.url, !SpineController.isICloudPath(dir.path) else { return }
+        let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        for u in items where !u.hasDirectoryPath && !projectDraftFiles.contains(u) { projectDraftFiles.append(u) }
+    }
+
+    func removeDraftFile(_ u: URL) { projectDraftFiles.removeAll { $0 == u } }
 
     func saveProjectSheet() {
         let name = projectDraftName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -343,7 +366,16 @@ final class AppModel: ObservableObject {
             updateProject(id, name: name, instructions: projectDraftInstructions)
         } else {
             createProject(name: name, instructions: projectDraftInstructions)
+            // copy the staged files into the new project's folder
+            if let folder = activeProject?.folderPath {
+                for src in projectDraftFiles where !SpineController.isICloudPath(src.path) {
+                    let dest = URL(fileURLWithPath: folder).appendingPathComponent(src.lastPathComponent)
+                    try? FileManager.default.removeItem(at: dest)
+                    try? FileManager.default.copyItem(at: src, to: dest)
+                }
+            }
         }
+        projectDraftFiles = []
         projectSheetOpen = false
     }
 
