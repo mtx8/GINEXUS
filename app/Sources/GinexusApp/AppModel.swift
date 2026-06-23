@@ -38,6 +38,81 @@ struct MemFact: Identifiable, Sendable {
     let origin: String   // "trusted" | "untrusted"
 }
 
+/// A scheduled task (cron job) that runs unattended on a cadence. Mirrors the core's `/v1/schedule`
+/// record. `attachments` are the basenames of files the task reads each run.
+struct ScheduledTask: Identifiable, Sendable {
+    let id: String
+    var name: String
+    var prompt: String
+    var everySecs: Int
+    var enabled: Bool
+    var attachments: [String]
+    var runs: Int
+    var lastRunMs: Int64
+    var nextRunMs: Int64
+    var lastResult: String
+
+    /// Friendly title — the task's name, or the first line of its instructions if unnamed.
+    var displayTitle: String {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !n.isEmpty { return n }
+        let firstLine = prompt.split(separator: "\n").first.map(String.init) ?? prompt
+        return firstLine.isEmpty ? "Untitled task" : String(firstLine.prefix(60))
+    }
+
+    /// Human cadence label from the interval (e.g. "Every hour", "Daily").
+    var cadenceLabel: String { ScheduleCadence.label(forSeconds: everySecs) }
+
+    var lastRunLabel: String {
+        guard lastRunMs > 0 else { return "Never run" }
+        let d = Date(timeIntervalSince1970: Double(lastRunMs) / 1000)
+        let f = RelativeDateTimeFormatter(); f.unitsStyle = .abbreviated
+        return "Ran \(f.localizedString(for: d, relativeTo: Date()))"
+    }
+
+    var nextRunLabel: String {
+        guard enabled else { return "Paused" }
+        let d = Date(timeIntervalSince1970: Double(nextRunMs) / 1000)
+        if d <= Date() { return "Due now" }
+        let f = RelativeDateTimeFormatter(); f.unitsStyle = .abbreviated
+        return "Next \(f.localizedString(for: d, relativeTo: Date()))"
+    }
+}
+
+/// The preset cadences offered in the editor — clean, intuitive choices mapped to the core's
+/// interval engine. (The core floors anything below 30s.)
+enum ScheduleCadence: Int, CaseIterable, Identifiable {
+    case every15min = 900
+    case hourly = 3600
+    case every6h = 21600
+    case daily = 86400
+    case weekly = 604800
+
+    var id: Int { rawValue }
+    var label: String {
+        switch self {
+        case .every15min: return "Every 15 minutes"
+        case .hourly: return "Every hour"
+        case .every6h: return "Every 6 hours"
+        case .daily: return "Daily"
+        case .weekly: return "Weekly"
+        }
+    }
+
+    /// Shorter label for list rows.
+    static func label(forSeconds s: Int) -> String {
+        switch s {
+        case ..<60: return "Every \(s)s"
+        case ..<3600: return "Every \(s / 60) min"
+        case 3600: return "Every hour"
+        case ..<86400: return "Every \(s / 3600) h"
+        case 86400: return "Daily"
+        case 604800: return "Weekly"
+        default: return "Every \(s / 86400) days"
+        }
+    }
+}
+
 /// A model actually installed in the local runtime (from Ollama /api/tags).
 struct InstalledModel: Identifiable, Sendable {
     let id: String      // model name (e.g. "qwen3-vl:30b-a3b-instruct")
@@ -1281,6 +1356,129 @@ final class AppModel: ObservableObject {
             memResults = facts.map { MemFact(text: ($0["text"] as? String) ?? "", origin: ($0["origin"] as? String) ?? "") }
             memMatchIndex = 0   // Office-style find: reset to the first match
         }
+    }
+
+    // MARK: scheduled tasks (cron jobs) — routine automation that runs unattended on a cadence
+    @Published var schedulesOpen = false
+    @Published var schedules: [ScheduledTask] = []
+    @Published var schedLoading = false
+
+    /// Open the Scheduled Tasks sheet and load the current tasks from the core.
+    func openSchedules() {
+        schedulesOpen = true
+        refreshSchedules()
+    }
+
+    func refreshSchedules() {
+        schedLoading = true
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/schedule", token: tok, jsonBody: nil)
+            }.value
+            schedLoading = false
+            guard case .success(let r) = res, let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let arr = o["schedules"] as? [[String: Any]] else { return }
+            schedules = arr.map { Self.parseSchedule($0) }
+                .sorted { $0.nextRunMs < $1.nextRunMs }
+        }
+    }
+
+    private static func parseSchedule(_ o: [String: Any]) -> ScheduledTask {
+        ScheduledTask(
+            id: (o["id"] as? String) ?? "",
+            name: (o["name"] as? String) ?? "",
+            prompt: (o["prompt"] as? String) ?? "",
+            everySecs: (o["every_secs"] as? Int) ?? 3600,
+            enabled: (o["enabled"] as? Bool) ?? true,
+            attachments: (o["attachments"] as? [String]) ?? [],
+            runs: (o["runs"] as? Int) ?? 0,
+            lastRunMs: (o["last_run_ms"] as? Int64) ?? Int64((o["last_run_ms"] as? Int) ?? 0),
+            nextRunMs: (o["next_run_ms"] as? Int64) ?? Int64((o["next_run_ms"] as? Int) ?? 0),
+            lastResult: (o["last_result"] as? String) ?? ""
+        )
+    }
+
+    /// Create a scheduled task. Files are read on the APP side (the sidecar can't reach TCC-protected
+    /// folders) and sent as base64 — the core stores a copy this task owns. iCloud paths are refused.
+    func createSchedule(name: String, prompt: String, everySecs: Int, files: [URL]) {
+        let p = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return }
+        var attachments: [[String: String]] = []
+        for url in files {
+            if SpineController.isICloudPath(url.path) { continue } // HARD RULE #1: never touch iCloud
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url) else { continue }
+            attachments.append(["filename": url.lastPathComponent, "content_b64": data.base64EncodedString()])
+        }
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: [
+            "name": name, "prompt": p, "every_secs": everySecs, "attachments": attachments,
+        ])
+        Task {
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/schedule", token: tok, jsonBody: body)
+            }.value
+            refreshSchedules()
+        }
+    }
+
+    /// Pause or resume a task (optimistic local update, then persist to the core).
+    func toggleSchedule(_ id: String, enabled: Bool) {
+        if let i = schedules.firstIndex(where: { $0.id == id }) { schedules[i].enabled = enabled }
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["id": id, "enabled": enabled])
+        Task {
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/schedule/toggle", token: tok, jsonBody: body)
+            }.value
+            refreshSchedules()
+        }
+    }
+
+    func removeSchedule(_ id: String) {
+        schedules.removeAll { $0.id == id }
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["id": id])
+        Task {
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/schedule/remove", token: tok, jsonBody: body)
+            }.value
+            refreshSchedules()
+        }
+    }
+
+    // The "New task" editor's draft state.
+    @Published var scheduleSheetOpen = false
+    @Published var schedDraftName = ""
+    @Published var schedDraftPrompt = ""
+    @Published var schedDraftEverySecs = ScheduleCadence.daily.rawValue
+    @Published var schedDraftFiles: [URL] = []
+
+    func openNewScheduleSheet() {
+        schedDraftName = ""; schedDraftPrompt = ""
+        schedDraftEverySecs = ScheduleCadence.daily.rawValue; schedDraftFiles = []
+        scheduleSheetOpen = true
+    }
+
+    func addFilesToScheduleDraft() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true; panel.canChooseFiles = true; panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        for u in panel.urls where !SpineController.isICloudPath(u.path) {
+            if !schedDraftFiles.contains(u) { schedDraftFiles.append(u) }
+        }
+    }
+
+    func removeScheduleDraftFile(_ u: URL) { schedDraftFiles.removeAll { $0 == u } }
+
+    func saveScheduleSheet() {
+        let p = schedDraftPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return }
+        createSchedule(name: schedDraftName, prompt: p, everySecs: schedDraftEverySecs, files: schedDraftFiles)
+        scheduleSheetOpen = false
     }
 
     /// Streaming /v1/agent/stream round-trip. A placeholder assistant bubble is appended and grows

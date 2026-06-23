@@ -40,6 +40,8 @@ struct ContentView: View {
         .sheet(isPresented: $model.projectSheetOpen) { ProjectEditorSheet(model: model) }
         .sheet(isPresented: $model.connectionsOpen) { ConnectionsSheet(model: model) }
         .sheet(isPresented: $model.projectsOpen) { ProjectsSheet(model: model) }
+        .sheet(isPresented: $model.schedulesOpen) { ScheduledTasksSheet(model: model) }
+        .sheet(isPresented: $model.scheduleSheetOpen) { ScheduleEditorSheet(model: model) }
     }
 
     // MARK: ── far-left icon rail ───────────────────────────────────────────────
@@ -51,6 +53,7 @@ struct ContentView: View {
                 model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id
                 model.projectsOpen = true
             }
+            railIcon("clock.arrow.circlepath", "Scheduled tasks — routine automation", enabled: model.connected) { model.openSchedules() }
             railIcon("brain", "Memory — what GINEXUS knows", enabled: model.connected) { model.openMemory() }
             railIcon("cube.box", "Models — download / manage", enabled: model.connected, animating: model.pulling) { model.openModels() }
             railIcon("gearshape", "Settings") { model.openSettings() }   // always reachable (recovery)
@@ -929,6 +932,203 @@ struct ContentView: View {
 // MARK: - token usage gauge (Context rail) — REAL counts only, honest empty state ("—")
 /// SP-Connect: manage external MCP integrations. Notion has a one-paste preset; others can be added
 /// as a raw stdio command. Secrets go to the Keychain; changes apply on the next app restart.
+/// Scheduled tasks (cron jobs) — routine automation that runs unattended on a cadence. Each task
+/// carries its own custom instructions and optional attached files. Discoverable from the left rail.
+private struct ScheduledTasksSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "clock.arrow.circlepath").font(.system(size: 12)).foregroundStyle(Brand.ember500)
+                Text("SCHEDULED TASKS").font(Brand.mono(12, weight: .bold)).kerning(2).foregroundStyle(Brand.bone100)
+                Spacer()
+                Button(action: model.openNewScheduleSheet) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "plus").font(.system(size: 11, weight: .bold))
+                        Text("NEW").font(Brand.mono(10, weight: .bold)).kerning(1)
+                    }.foregroundStyle(Brand.ember500)
+                }.buttonStyle(.plain).help("New scheduled task")
+                Button { model.schedulesOpen = false } label: {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.bone300)
+                }.buttonStyle(.plain).help("Close")
+            }
+            .padding(.horizontal, 18).padding(.vertical, 13)
+            Divider().overlay(Brand.line1)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Tasks run on their own in the background. Each one follows your instructions and can read files you attach. Read-only by default — anything irreversible waits for your approval.")
+                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+
+                    if model.schedules.isEmpty {
+                        emptyState
+                    } else {
+                        ForEach(model.schedules) { task in taskCard(task) }
+                    }
+                }
+                .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 20)
+            }
+        }
+        .frame(width: 540, height: 600)
+        .background(Brand.ink850)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "clock.badge.questionmark").font(.system(size: 30)).foregroundStyle(Brand.bone400)
+            Text("No scheduled tasks yet").font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone200)
+            Text("Create one to run routine work automatically — a morning digest, a weekly report, a recurring check.")
+                .font(Brand.mono(10)).foregroundStyle(Brand.bone400).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: model.openNewScheduleSheet) {
+                Text("NEW TASK").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
+                    .padding(.horizontal, 18).padding(.vertical, 10)
+                    .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+            }.buttonStyle(.plain).padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 40)
+    }
+
+    private func taskCard(_ task: ScheduledTask) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(task.displayTitle).font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone100).lineLimit(1)
+                Spacer(minLength: 8)
+                Toggle("", isOn: Binding(get: { task.enabled }, set: { model.toggleSchedule(task.id, enabled: $0) }))
+                    .labelsHidden().toggleStyle(.switch).tint(Brand.ember500).help(task.enabled ? "Pause" : "Resume")
+                Button(role: .destructive) { model.removeSchedule(task.id) } label: {
+                    Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(Brand.bone300)
+                }.buttonStyle(.plain).help("Delete task")
+            }
+
+            // Cadence · next run · run count — at-a-glance status.
+            HStack(spacing: 8) {
+                metaChip("clock", task.cadenceLabel)
+                metaChip("calendar", task.nextRunLabel)
+                if task.runs > 0 { metaChip("checkmark.circle", "\(task.runs) run\(task.runs == 1 ? "" : "s")") }
+            }
+
+            if task.prompt.trimmingCharacters(in: .whitespacesAndNewlines) != task.displayTitle {
+                Text(task.prompt).font(Brand.mono(10)).foregroundStyle(Brand.bone300).lineLimit(2)
+            }
+
+            if !task.attachments.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "paperclip").font(.system(size: 9)).foregroundStyle(Brand.bone400)
+                    Text(task.attachments.joined(separator: ", "))
+                        .font(Brand.mono(9)).foregroundStyle(Brand.bone400).lineLimit(1)
+                }
+            }
+
+            if !task.lastResult.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("LAST RESULT").font(Brand.mono(8, weight: .bold)).kerning(1).foregroundStyle(Brand.bone400)
+                    Text(task.lastResult).font(Brand.mono(10)).foregroundStyle(Brand.bone300).lineLimit(4)
+                }
+                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+        .opacity(task.enabled ? 1 : 0.6)
+    }
+
+    private func metaChip(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 8))
+            Text(text).font(Brand.mono(9))
+        }
+        .foregroundStyle(Brand.bone300)
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(Brand.ink900).clipShape(Capsule())
+    }
+}
+
+/// Create a scheduled task: a name, the instructions GINEXUS follows each run, a cadence, and any
+/// files to attach. Files are read app-side and copied to the task (the sidecar can't reach iCloud /
+/// TCC folders); iCloud paths are refused.
+private struct ScheduleEditorSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("NEW SCHEDULED TASK").font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Name").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                TextField("e.g. Morning news digest", text: $model.schedDraftName)
+                    .textFieldStyle(.plain).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
+                    .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Instructions").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Text("What GINEXUS should do each time this runs. Be specific.")
+                    .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                TextEditor(text: $model.schedDraftPrompt)
+                    .font(Brand.mono(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                    .frame(minHeight: 96)
+                    .padding(8).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Runs").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Picker("", selection: $model.schedDraftEverySecs) {
+                    ForEach(ScheduleCadence.allCases) { c in Text(c.label).tag(c.rawValue) }
+                }
+                .labelsHidden().pickerStyle(.menu).tint(Brand.ember500)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Files").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                    Spacer()
+                    Button("Add file…", action: model.addFilesToScheduleDraft)
+                        .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ember500)
+                }
+                if model.schedDraftFiles.isEmpty {
+                    Text("Optional — attach documents the task should read each run.")
+                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                } else {
+                    VStack(spacing: 3) {
+                        ForEach(model.schedDraftFiles, id: \.self) { f in
+                            HStack(spacing: 8) {
+                                Image(systemName: "doc").font(.system(size: 10)).foregroundStyle(Brand.bone300)
+                                Text(f.lastPathComponent).font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Button { model.removeScheduleDraftFile(f) } label: {
+                                    Image(systemName: "xmark").font(.system(size: 9))
+                                }.buttonStyle(.plain).foregroundStyle(Brand.bone400)
+                            }
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { model.scheduleSheetOpen = false }
+                    .buttonStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone200)
+                    .padding(.horizontal, 18).padding(.vertical, 10)
+                Button(action: model.saveScheduleSheet) {
+                    Text("CREATE").font(Brand.mono(12, weight: .bold)).kerning(1.4).foregroundStyle(Brand.ink900)
+                        .padding(.horizontal, 22).padding(.vertical, 12)
+                        .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.schedDraftPrompt.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(22).frame(width: 480)
+        .background(Brand.ink850)
+    }
+}
+
 private struct ConnectionsSheet: View {
     @ObservedObject var model: AppModel
 

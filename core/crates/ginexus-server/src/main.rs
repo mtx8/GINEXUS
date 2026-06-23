@@ -6,9 +6,11 @@
 //!   POST /v1/agent       {model?, difficulty?, messages, grants?, mode?}       → JSON (HITL loop)
 //!   POST /v1/consolidate {block?}  → distill long-term memory into a durable core profile block
 //!   POST /v1/ingest      {data|path, include_assistant?}  → import export → quarantined memory
-//!   POST /v1/schedule    {prompt, every_secs?}  → create an unattended scheduled task (heartbeat)
-//!   GET  /v1/schedule    → list schedules + last results
-//!   POST /v1/schedule/remove {id}  → remove a schedule
+//!   POST /v1/schedule    {name?, prompt, every_secs?, attachments?:[{filename,content_b64}]}
+//!                          → create an unattended scheduled task (heartbeat); files stored per-task
+//!   GET  /v1/schedule    → list schedules (name, cadence, enabled, attachments, last result)
+//!   POST /v1/schedule/toggle {id, enabled}  → pause / resume a task
+//!   POST /v1/schedule/remove {id}  → remove a schedule (and its attachment copies)
 //!   GET  /v1/admin/killswitch          → {engaged, tier, boot_id}
 //!   POST /v1/admin/killswitch/engage   {tier, reason}
 //!   POST /v1/admin/killswitch/reset    {token, nonce, expiry_ms, boot_id, reason}  (approval-gated)
@@ -122,6 +124,143 @@ fn rand_hex(n: usize) -> String {
         let _ = f.read_exact(&mut buf);
     }
     hex::encode(buf)
+}
+
+/// Decode standard base64 (RFC 4648, with `=` padding) — self-contained so attachment uploads add no
+/// new dependency to the supply chain (PSS: fewer deps to audit). Whitespace is ignored; any other
+/// invalid character fails the whole decode.
+fn b64_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut quad = [0u8; 4];
+    let mut n = 0;
+    let mut pads = 0;
+    for &c in input.as_bytes() {
+        if c.is_ascii_whitespace() {
+            continue;
+        }
+        if c == b'=' {
+            pads += 1;
+            quad[n] = 0;
+            n += 1;
+        } else if pads > 0 {
+            return Err("base64: data after padding".into());
+        } else {
+            quad[n] = val(c).ok_or("base64: invalid character")?;
+            n += 1;
+        }
+        if n == 4 {
+            out.push((quad[0] << 2) | (quad[1] >> 4));
+            if pads < 2 {
+                out.push((quad[1] << 4) | (quad[2] >> 2));
+            }
+            if pads < 1 {
+                out.push((quad[2] << 6) | quad[3]);
+            }
+            n = 0;
+        }
+    }
+    if n != 0 {
+        return Err("base64: truncated input".into());
+    }
+    Ok(out)
+}
+
+/// Caps on scheduled-task attachments (DoS / disk-abuse guard).
+const SCHED_MAX_FILES: usize = 8;
+const SCHED_MAX_FILE_BYTES: usize = 10 * 1024 * 1024; // 10 MB per file
+
+/// A scheduled task as JSON for the app. Attachments are shown as basenames only (never the absolute
+/// stored path) — privacy-by-default, matching the rest of the API.
+fn schedule_json(s: &scheduler::Schedule) -> Value {
+    let files: Vec<String> = s
+        .attachments
+        .iter()
+        .map(|p| std::path::Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or(p).to_string())
+        .collect();
+    json!({
+        "id": s.id, "name": s.name, "prompt": s.prompt, "every_secs": s.every_secs,
+        "enabled": s.enabled, "attachments": files, "runs": s.runs,
+        "last_run_ms": s.last_run_ms, "next_run_ms": s.next_run_ms, "last_result": s.last_result,
+    })
+}
+
+/// Sanitize an uploaded filename to a safe basename inside the task's folder (no traversal).
+fn safe_basename(name: &str) -> Result<String, String> {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    if base.is_empty() || base == "." || base == ".." || base.contains('\0') {
+        return Err("invalid attachment filename".into());
+    }
+    Ok(base.chars().take(128).collect())
+}
+
+/// Decode `[{filename, content_b64}]` and write each to the task's own folder under App Support.
+/// Returns the absolute stored paths. The sidecar CAN write here (App Support is not TCC-protected).
+fn store_schedule_attachments(
+    store: &scheduler::ScheduleStore,
+    id: &str,
+    attachments: Option<&Value>,
+) -> Result<Vec<String>, String> {
+    let arr = match attachments.and_then(|a| a.as_array()) {
+        Some(a) if !a.is_empty() => a,
+        _ => return Ok(vec![]),
+    };
+    if arr.len() > SCHED_MAX_FILES {
+        return Err(format!("too many attachments (max {SCHED_MAX_FILES})"));
+    }
+    let dir = store.files_dir(id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create attachment dir: {e}"))?;
+    let mut paths = Vec::new();
+    for item in arr {
+        let fname = safe_basename(item.get("filename").and_then(|f| f.as_str()).unwrap_or(""))?;
+        let bytes = b64_decode(item.get("content_b64").and_then(|c| c.as_str()).unwrap_or(""))?;
+        if bytes.len() > SCHED_MAX_FILE_BYTES {
+            return Err(format!("attachment '{fname}' exceeds {SCHED_MAX_FILE_BYTES} bytes"));
+        }
+        let dest = dir.join(&fname);
+        std::fs::write(&dest, &bytes).map_err(|e| format!("write attachment: {e}"))?;
+        paths.push(dest.to_string_lossy().to_string());
+    }
+    Ok(paths)
+}
+
+/// Build the context preamble injected ahead of a scheduled task's prompt: inline readable text
+/// attachments (capped), and reference non-text files by path so the agent can open them with its
+/// read tools. Returns an empty string when the task has no attachments.
+fn attachment_context(attachments: &[String]) -> String {
+    const INLINE_CAP: usize = 100 * 1024; // inline up to 100 KB of text per file
+    if attachments.is_empty() {
+        return String::new();
+    }
+    let mut ctx = format!("This task has {} attached file(s):\n", attachments.len());
+    for path in attachments {
+        let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path);
+        match std::fs::read(path) {
+            Ok(bytes) => match std::str::from_utf8(&bytes) {
+                Ok(text) => {
+                    let shown: String = text.chars().take(INLINE_CAP).collect();
+                    let trunc = if text.len() > shown.len() { "\n…[truncated]" } else { "" };
+                    ctx.push_str(&format!("\n--- FILE: {name} ---\n{shown}{trunc}\n--- END FILE ---\n"));
+                }
+                Err(_) => {
+                    // Binary (PDF, image, .docx): hand the agent the path to read with its own tools.
+                    ctx.push_str(&format!("\n--- FILE: {name} (binary; read it at {path}) ---\n"));
+                }
+            },
+            Err(_) => ctx.push_str(&format!("\n--- FILE: {name} (unavailable) ---\n")),
+        }
+    }
+    ctx.push('\n');
+    ctx
 }
 
 fn key_from_env(name: &str) -> Option<Vec<u8>> {
@@ -548,31 +687,50 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
         }
         ("POST", "/v1/schedule") => {
             // Create an unattended scheduled task. First run fires on the next heartbeat tick.
+            // Attachments arrive as [{filename, content_b64}] — the app sends bytes (the sidecar can't
+            // read TCC-protected dirs), and we store a copy this task owns under App Support.
+            let name = body.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
             let prompt = body.get("prompt").and_then(|p| p.as_str()).unwrap_or("").to_string();
             let every = body.get("every_secs").and_then(|e| e.as_i64()).unwrap_or(3600);
-            match state.schedules.add(prompt, every, now_ms(), rand_hex(6)) {
-                Ok(s) => {
-                    let _ = state.audit.record("schedule_add", json!({"id": s.id, "every_secs": s.every_secs}));
-                    json_ok(&mut stream, json!({"id": s.id, "prompt": s.prompt,
-                                                "every_secs": s.every_secs, "next_run_ms": s.next_run_ms})).await;
-                }
+            let id = rand_hex(6);
+            match store_schedule_attachments(&state.schedules, &id, body.get("attachments")) {
+                Ok(paths) => match state.schedules.add(name, prompt, every, paths, now_ms(), id.clone()) {
+                    Ok(s) => {
+                        let _ = state.audit.record(
+                            "schedule_add",
+                            json!({"id": s.id, "every_secs": s.every_secs, "attachments": s.attachments.len()}),
+                        );
+                        json_ok(&mut stream, schedule_json(&s)).await;
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_dir_all(state.schedules.files_dir(&id)); // no orphan copies
+                        err(&mut stream, 400, "Bad Request", &e).await;
+                    }
+                },
                 Err(e) => err(&mut stream, 400, "Bad Request", &e).await,
             }
         }
         ("GET", "/v1/schedule") => {
-            let items: Vec<Value> = state
-                .schedules
-                .list()
-                .into_iter()
-                .map(|s| json!({"id": s.id, "prompt": s.prompt, "every_secs": s.every_secs,
-                                "runs": s.runs, "last_run_ms": s.last_run_ms, "next_run_ms": s.next_run_ms,
-                                "last_result": s.last_result}))
-                .collect();
+            let items: Vec<Value> = state.schedules.list().iter().map(schedule_json).collect();
             json_ok(&mut stream, json!({"schedules": items})).await;
+        }
+        ("POST", "/v1/schedule/toggle") => {
+            let id = body.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let enabled = body.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true);
+            let ok = state.schedules.set_enabled(id, enabled);
+            if ok {
+                let _ = state.audit.record("schedule_toggle", json!({"id": id, "enabled": enabled}));
+            }
+            json_ok(&mut stream, json!({"ok": ok, "enabled": enabled})).await;
         }
         ("POST", "/v1/schedule/remove") => {
             let id = body.get("id").and_then(|i| i.as_str()).unwrap_or("");
-            json_ok(&mut stream, json!({"removed": state.schedules.remove(id)})).await;
+            let removed = state.schedules.remove(id);
+            if removed {
+                let _ = std::fs::remove_dir_all(state.schedules.files_dir(id)); // drop the task's files
+                let _ = state.audit.record("schedule_remove", json!({"id": id}));
+            }
+            json_ok(&mut stream, json!({"removed": removed})).await;
         }
         ("GET", "/v1/models") => {
             // Roster for the app's model picker. "auto" is the implicit policy-routed default.
@@ -1062,20 +1220,23 @@ async fn heartbeat(state: Arc<AppState>) {
         if blocked {
             continue;
         }
-        for (id, prompt) in state.schedules.take_due(now_ms()) {
+        for sched in state.schedules.take_due(now_ms()) {
             let readonly = state.registry.readonly();
             let model = state.gateway.select(None, "reason", "normal", false);
             let bound = BoundModel { gateway: &state.gateway, model };
             let agent =
                 AgentLoop { model: &bound, registry: &readonly, hitl: &state.hitl, max_iters: 6, depth: 0,
                             mode: ginexus_agent::Mode::Hitl };
-            let msgs = with_memory(&state.memory, vec![json!({"role": "user", "content": prompt})]);
+            // Attached files become context the task can act on; then the task's own instructions.
+            let ctx = attachment_context(&sched.attachments);
+            let content = if ctx.is_empty() { sched.prompt.clone() } else { format!("{ctx}\n{}", sched.prompt) };
+            let msgs = with_memory(&state.memory, vec![json!({"role": "user", "content": content})]);
             let res = agent.run(msgs, &[], None, now_ms()).await;
             let _ = state.audit.record(
                 "schedule_run",
-                json!({"id": id, "status": format!("{:?}", res.status), "out_len": res.answer.len()}),
+                json!({"id": sched.id, "status": format!("{:?}", res.status), "out_len": res.answer.len()}),
             );
-            state.schedules.record_result(&id, now_ms(), &res.answer);
+            state.schedules.record_result(&sched.id, now_ms(), &res.answer);
         }
     }
 }
@@ -1144,5 +1305,30 @@ mod conductor_tests {
         assert!(sys.contains("CONDUCTOR"));
         assert!(sys.to_lowercase().contains("casual conversation"));
         assert!(sys.contains(CONDUCTOR_BRIEF), "the wrapped system message must embed the full brief");
+    }
+}
+
+#[cfg(test)]
+mod b64_tests {
+    use super::b64_decode;
+
+    #[test]
+    fn round_trips_known_vectors() {
+        assert_eq!(b64_decode("").unwrap(), b"");
+        assert_eq!(b64_decode("Zg==").unwrap(), b"f");
+        assert_eq!(b64_decode("Zm8=").unwrap(), b"fo");
+        assert_eq!(b64_decode("Zm9v").unwrap(), b"foo");
+        assert_eq!(b64_decode("aGVsbG8sIHdvcmxk").unwrap(), b"hello, world");
+        // whitespace (newlines from chunked encoders) is ignored
+        assert_eq!(b64_decode("Zm9v\nYmFy").unwrap(), b"foobar");
+        // a non-text byte (0xFF 0x00) survives
+        assert_eq!(b64_decode("/wA=").unwrap(), vec![0xFF, 0x00]);
+    }
+
+    #[test]
+    fn rejects_malformed() {
+        assert!(b64_decode("Zg=").is_err()); // truncated
+        assert!(b64_decode("Zm9v!!!").is_err()); // invalid char
+        assert!(b64_decode("Zg==Zg==").is_err()); // data after padding
     }
 }
