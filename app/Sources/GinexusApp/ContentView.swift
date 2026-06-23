@@ -1465,33 +1465,45 @@ private struct ConversationRow: View {
     let onRequestRename: () -> Void
     let onRequestDelete: () -> Void
     @State private var hover = false
+    @FocusState private var focused: Bool
     private var isRenaming: Bool { renamingID == c.id }
 
     var body: some View {
-        Button(action: onSelect) {
+        if isRenaming {
+            // Editable row — NOT inside a Button, so the TextField actually receives clicks + focus.
             VStack(alignment: .leading, spacing: 2) {
-                if isRenaming {
-                    TextField("Title", text: $renameText)
-                        .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50).tint(Brand.ember500)
-                        .padding(.horizontal, 6).padding(.vertical, 3)
-                        .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 6))
-                        .onSubmit(onCommitRename).onExitCommand { renamingID = nil }
-                } else {
-                    Text(c.title).font(Brand.mono(13)).foregroundStyle(selected ? Brand.ember500 : Brand.bone50).lineLimit(1)
-                }
-                Text("\(relativeTime(c.updatedAt)) · \(c.messageCount)").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                TextField("Title", text: $renameText)
+                    .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50).tint(Brand.ember500)
+                    .focused($focused)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember500.opacity(0.6), lineWidth: 1))
+                    .onSubmit(onCommitRename)
+                    .onExitCommand { renamingID = nil }
+                Text("Enter to save · Esc to cancel").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Brand.ink700 : Color.white.opacity(hover ? 0.04 : 0))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain).disabled(disabled)
-        .onHover { h in withAnimation(Brand.ease) { hover = h } }
-        .contextMenu {
-            Button("Rename", action: onRequestRename)
-            Button("Delete", role: .destructive, action: onRequestDelete)
+            .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
+            .onAppear { DispatchQueue.main.async { focused = true } }
+        } else {
+            Button(action: onSelect) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(c.title).font(Brand.mono(13)).foregroundStyle(selected ? Brand.ember500 : Brand.bone50).lineLimit(1)
+                    Text("\(relativeTime(c.updatedAt)) · \(c.messageCount)").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(selected ? Brand.ink700 : Color.white.opacity(hover ? 0.04 : 0))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(disabled)
+            .onHover { h in withAnimation(Brand.ease) { hover = h } }
+            .contextMenu {
+                Button("Rename", action: onRequestRename)
+                Button("Delete", role: .destructive, action: onRequestDelete)
+            }
         }
     }
 }
