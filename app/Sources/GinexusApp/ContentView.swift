@@ -473,6 +473,7 @@ struct ContentView: View {
                 .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 10)) }
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+                researchButton
                 voiceButton
                 Button(action: { model.send(model.chatInput) }) {
                     Text("SEND").font(Brand.mono(12, weight: .bold)).kerning(1.6)
@@ -489,6 +490,22 @@ struct ContentView: View {
     private var canSend: Bool {
         model.connected && !model.sending &&
         (!model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.attachment != nil)
+    }
+
+    /// Deep Research — hands the current message to the GINEXUS research team (Nexus RND/STR): it
+    /// searches the web for current sources, cross-checks, and returns a cited report. Enabled once
+    /// you've typed something.
+    private var researchButton: some View {
+        Button(action: model.runResearch) {
+            Image(systemName: "binoculars.fill").font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(model.canQuickAction ? Brand.bone200 : Brand.bone400)
+                .frame(width: 46, height: 46)
+                .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.connected || !model.canQuickAction)
+        .help("Deep Research — search the web and produce a cited report")
     }
 
     /// Mic toggle — starts/stops the hands-free voice conversation (SP-Voice). Animated waveform

@@ -176,8 +176,8 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
             true, // HITL-gated: writes/overwrites a user file
         ),
         bridge_tool(
-            sock,
-            token,
+            sock.clone(),
+            token.clone(),
             "pages_write",
             "Create a real document USING Apple Pages and save it to the user's folder. Pages renders \
              the text and exports it; needs Pages installed + a one-time automation consent. Prefer \
@@ -194,6 +194,45 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
                        "filename": {"type": "string"}},
                    "required": ["content", "filename"]}),
             true, // HITL-gated: writes a user-facing file + drives another app
+        ),
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
+            "mcp_list",
+            "List the MCP integrations currently configured in GINEXUS (each server's name and whether \
+             it is enabled). Call this when the user asks what's connected, or before connecting \
+             something new so you don't duplicate an existing one.",
+            json!({"type": "object", "properties": {}}),
+            false, // read-only
+        ),
+        bridge_tool(
+            sock,
+            token,
+            "connect_mcp",
+            "Connect an external MCP server so its tools become available inside GINEXUS — use this to \
+             fulfill a request like \"connect me to Notion\" or \"add the Shopify MCP\" directly in chat. \
+             Provide `name` (a short lowercase slug), `command` (the server's stdio launch command), and \
+             — for services that need auth — `token` plus `token_env` (the env var the server reads). \
+             The secret is stored in the macOS Keychain, never in plaintext. \
+             KNOWN SERVERS (use these exact commands): \
+             Notion → command `npx -y @notionhq/notion-mcp-server`, token_env `NOTION_TOKEN` (ask the user \
+             for their Notion internal integration token, starts `ntn_`/`secret_`); \
+             GitHub → `npx -y @modelcontextprotocol/server-github`, token_env `GITHUB_PERSONAL_ACCESS_TOKEN` \
+             (a personal access token, `ghp_`/`github_pat_`); \
+             Shopify dev docs → `npx -y @shopify/dev-mcp` (no token). \
+             For any OTHER MCP server, pass its documented stdio command (and token if it needs one). \
+             SAFETY: only connect servers the user explicitly trusts — this launches an external process. \
+             If a credential is required and the user hasn't given it, ASK for it first; don't invent one. \
+             The connection saves immediately and becomes active the next time GINEXUS is restarted — tell \
+             the user to relaunch to start using it.",
+            json!({"type": "object",
+                   "properties": {
+                       "name": {"type": "string", "description": "short lowercase slug, e.g. \"notion\""},
+                       "command": {"type": "string", "description": "stdio launch command, e.g. \"npx -y @notionhq/notion-mcp-server\""},
+                       "token": {"type": "string", "description": "the secret/credential (optional; stored in Keychain)"},
+                       "token_env": {"type": "string", "description": "env var the server reads the token from (e.g. NOTION_TOKEN)"}},
+                   "required": ["name", "command"]}),
+            true, // HITL-gated: adds an external integration that can run/exfiltrate — user approves each
         ),
     ]
 }
@@ -248,6 +287,10 @@ mod tests {
         // SP-Docs PDF tools: reading fields is autonomous; filling (writes the file) is HITL-gated.
         assert!(!tools.iter().find(|t| t.name == "read_pdf_fields").unwrap().irreversible);
         assert!(tools.iter().find(|t| t.name == "fill_pdf_form").unwrap().irreversible);
+        // SP-Connect-in-chat: listing connections is autonomous; connecting one (external integration)
+        // is HITL-gated so the user approves every server before it's added.
+        assert!(!tools.iter().find(|t| t.name == "mcp_list").unwrap().irreversible);
+        assert!(tools.iter().find(|t| t.name == "connect_mcp").unwrap().irreversible);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

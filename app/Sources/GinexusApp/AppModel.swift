@@ -1253,7 +1253,9 @@ final class AppModel: ObservableObject {
         send("\(directive)\n\n\(t)")
     }
     func runCouncil()  { quick("Convene a council to deliberate on this, then give me the synthesized verdict:") }
-    func runResearch() { quick("Do deep research on this and produce a clear, cited report:") }
+    /// Deep Research — route to the GINEXUS research team (Nexus RND/STR) via deep_research: search the
+    /// web for current, reputable sources, cross-check, and produce a clear report with cited URLs.
+    func runResearch() { quick("Run a DEEP RESEARCH investigation with the research team: use deep_research to search the web for current, reputable sources, cross-check the facts, and produce a clear, well-structured report that cites the source URLs. Topic:") }
     func runImage()    { quick("Generate an image:") }
 
     /// Build/refresh the durable self-model from long-term memory (POST /v1/consolidate). Appends the

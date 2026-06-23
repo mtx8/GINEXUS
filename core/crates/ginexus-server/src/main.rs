@@ -71,7 +71,11 @@ FILE LOCATION: image_generate and write_document save into GINEXUS's own interna
 NOT put the file in Downloads/Desktop/Documents. So whenever the user asks for a generated image or \
 document IN a specific folder, you MUST, right after creating it, call save_to_folder with that \
 file's path (from the create-tool's result) and the requested location, and report THAT saved path. \
-Never claim a file is in Downloads/Desktop/Documents unless you actually called save_to_folder.";
+Never claim a file is in Downloads/Desktop/Documents unless you actually called save_to_folder. \
+CONNECTING TOOLS: you can connect external services right here in chat — Notion, GitHub, Shopify, or \
+any MCP server. When the user asks to connect one, call connect_mcp (use mcp_list first to see what's \
+already connected); if it needs a credential, ASK the user for it before connecting, never invent one. \
+Tell them the connection activates after they restart GINEXUS.";
 
 /// The Nexus Enterprise Conductor brief — bundled into the binary (no runtime ~/Desktop dependency)
 /// so GINEXUS *is* the Conductor by default and routes tasks to the right department/team via OSRO.
@@ -334,6 +338,7 @@ async fn main() {
     };
     let mut registry = ginexus_agent::tools::notes_registry(sd.join("notes"));
     registry.register(ginexus_gateway::web::web_fetch_tool()); // SP4: read-only web research
+    registry.register(ginexus_gateway::web::web_search_tool()); // SP-Research: discover sources (keyless, PSS-safe)
     registry.register(ginexus_agent::documents::write_document_tool(sd.join("documents"), app_host.clone())); // PDF/Word (HITL)
     // SP-Robotics (Phase 1+2): design → fabricate. cad_generate (OpenSCAD DSL → STL, file-refs rejected)
     // + cad_slice (PrusaSlicer external CLI → G-code). Autonomous (produce files, no hardware). Only

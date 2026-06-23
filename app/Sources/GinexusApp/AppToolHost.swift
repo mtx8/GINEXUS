@@ -10,6 +10,7 @@ import Darwin
 import EventKit
 import IOKit.ps
 import PDFKit
+import GinexusCore
 
 final class AppToolHost {
     let socketPath: String
@@ -103,6 +104,8 @@ final class AppToolHost {
         case "read_pdf_fields": return readPdfFields(args)
         case "fill_pdf_form":   return fillPdfForm(args)
         case "read_pdf_text":   return readPdfText(args)
+        case "mcp_list":        return mcpList()
+        case "connect_mcp":     return connectMcp(args)
         default:                return fail("unknown tool '\(tool)'")
         }
     }
@@ -450,5 +453,48 @@ final class AppToolHost {
         p.waitUntilExit()
         let d = pipe.fileHandleForReading.readDataToEndOfFile()
         return (p.terminationStatus, String(data: d, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+    }
+
+    // MARK: MCP integrations — connect external servers from within a chat (SP-Connect-in-chat).
+    // Persistence goes through SettingsStore.shared (the single settings.json writer) on the main
+    // actor; the secret lands in the Keychain, never plaintext. The server activates on next restart.
+
+    private func mcpList() -> Data {
+        let servers = DispatchQueue.main.sync { MainActor.assumeIsolated { SettingsStore.shared.settings.mcpServers } }
+        if servers.isEmpty { return ok("No MCP integrations are connected yet.") }
+        let lines = servers.map { s -> String in
+            let state = s.enabled ? "enabled" : "disabled"
+            let cred = (s.tokenEnv?.isEmpty == false) ? " · uses a Keychain credential" : ""
+            return "- \(s.name): \(state)\(cred)"
+        }
+        return ok("Connected MCP servers:\n" + lines.joined(separator: "\n"))
+    }
+
+    private func connectMcp(_ a: [String: Any]) -> Data {
+        let slug = (a["name"] as? String ?? "")
+            .lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        let command = (a["command"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !slug.isEmpty else { return fail("a short name is required") }
+        guard !command.isEmpty else { return fail("the server's launch command is required") }
+        let tokenEnv = (a["token_env"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = a["token"] as? String
+        var ref: String? = nil
+        if let tokenEnv, !tokenEnv.isEmpty, let token, !token.isEmpty {
+            let r = "mcp.\(slug).token"
+            _ = Keychain.set(token, for: r)
+            ref = r
+        }
+        let cfg = McpServerConfig(name: slug, command: command, enabled: true,
+                                  tokenEnv: (tokenEnv?.isEmpty == false) ? tokenEnv : nil, credentialRef: ref)
+        DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                SettingsStore.shared.update { s in
+                    s.mcpServers.removeAll { $0.name == slug }
+                    s.mcpServers.append(cfg)
+                }
+            }
+        }
+        return ok("Connected “\(slug)”. It activates the next time GINEXUS is restarted — relaunch the app to start using its tools.")
     }
 }

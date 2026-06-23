@@ -440,6 +440,15 @@ impl<'a> AgentLoop<'a> {
     async fn run_workers(
         &self, tasks: &[String], sub_registry: &ToolRegistry, now_ms: i64,
     ) -> (Vec<String>, Usage) {
+        // System brief for every fan-out worker — the dedicated GINEXUS research agents (Nexus RND/STR).
+        // Drives safe, source-grounded investigation: discover with web_search, read with web_fetch,
+        // prefer primary/official sources, cite URLs, never fabricate. (PSS: factual, no invented cites.)
+        const WORKER_SYSTEM: &str =
+            "You are a GINEXUS research worker — one of the Nexus research agents (RND/STR). Investigate \
+             your task rigorously: call web_search to find current, reputable sources, then web_fetch to \
+             read the most relevant ones; prefer primary/official sources and cross-check key claims. Be \
+             concise and factual, list the source URLs you actually used, and flag uncertainty honestly. \
+             Never fabricate facts or citations.";
         // One worker AgentLoop per task, kept in a Vec that outlives the join so each worker future
         // can borrow its loop (run takes &self) across the concurrent await.
         let subs: Vec<AgentLoop> = (0..tasks.len())
@@ -456,7 +465,10 @@ impl<'a> AgentLoop<'a> {
             .iter()
             .zip(tasks.iter())
             .map(|(sub, task)| {
-                let msgs = vec![json!({"role": "user", "content": task})];
+                let msgs = vec![
+                    json!({"role": "system", "content": WORKER_SYSTEM}),
+                    json!({"role": "user", "content": task}),
+                ];
                 Box::pin(async move {
                     let res = sub.run(msgs, &[], None, now_ms).await;
                     (res.answer.trim().to_string(), res.total_usage)
