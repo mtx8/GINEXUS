@@ -71,10 +71,28 @@ document IN a specific folder, you MUST, right after creating it, call save_to_f
 file's path (from the create-tool's result) and the requested location, and report THAT saved path. \
 Never claim a file is in Downloads/Desktop/Documents unless you actually called save_to_folder.";
 
-/// Agent message stack: base guidance + memory preamble + the conversation.
+/// The Nexus Enterprise Conductor brief — bundled into the binary (no runtime ~/Desktop dependency)
+/// so GINEXUS *is* the Conductor by default and routes tasks to the right department/team via OSRO.
+const CONDUCTOR_BRIEF: &str = include_str!("../../../resources/conductor-core.md");
+
+/// Wraps the bundled brief with an activation guard so the Conductor protocol applies to operational /
+/// multi-step / enterprise tasks — not to casual chat (no "briefing" for "hello").
+fn conductor_system() -> String {
+    format!(
+        "You operate as the CONDUCTOR of the Principal's Nexus Enterprise. Apply the Conductor protocol \
+         below to operational, multi-step, or enterprise tasks — engineering, security, research, AI/ML, \
+         robotics, finance, tax, legal, content, merch, data, product, trading, logistics, jobs, ops. Run \
+         OSRO: identify the owning department(s)/team(s), and for anything irreversible, external, or \
+         involving spend, present a Conductor Briefing and get the Principal's go-ahead before executing. \
+         For a simple question or casual conversation, just answer normally — do NOT force a briefing.\n\n{CONDUCTOR_BRIEF}"
+    )
+}
+
+/// Agent message stack: Conductor role + base guidance + memory preamble + the conversation.
 fn agent_messages(memory: &MemoryStore, raw: Vec<Value>) -> Vec<Value> {
     let mut messages = with_memory(memory, raw);
     messages.insert(0, json!({"role": "system", "content": AGENT_GUIDANCE}));
+    messages.insert(0, json!({"role": "system", "content": conductor_system()}));
     messages
 }
 
@@ -1101,4 +1119,30 @@ fn ct_eq(a: &str, b: &str) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+#[cfg(test)]
+mod conductor_tests {
+    use super::{conductor_system, CONDUCTOR_BRIEF};
+
+    #[test]
+    fn brief_is_bundled_and_complete() {
+        // The Conductor roster is compiled into the binary — no runtime ~/Desktop dependency.
+        assert!(CONDUCTOR_BRIEF.contains("OSRO"), "brief must carry the OSRO protocol");
+        assert!(CONDUCTOR_BRIEF.contains("Department Routing Table"), "brief must carry the routing table");
+        assert!(CONDUCTOR_BRIEF.contains("CONDUCTOR BRIEFING"), "brief must carry the briefing format");
+        // Spot-check department codes so a truncated roster fails loudly.
+        for code in ["ENG", "SEC", "AIL", "FIN", "MRC", "ITO"] {
+            assert!(CONDUCTOR_BRIEF.contains(code), "routing table missing {code}");
+        }
+    }
+
+    #[test]
+    fn activation_guard_excuses_casual_chat() {
+        let sys = conductor_system();
+        // Guard keeps GINEXUS from issuing a briefing for "hello" — protocol applies to ops work only.
+        assert!(sys.contains("CONDUCTOR"));
+        assert!(sys.to_lowercase().contains("casual conversation"));
+        assert!(sys.contains(CONDUCTOR_BRIEF), "the wrapped system message must embed the full brief");
+    }
 }
