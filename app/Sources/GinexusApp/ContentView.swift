@@ -933,63 +933,114 @@ private struct ConnectionsSheet: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("CONNECTIONS").font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
-            Text("Connect external tools over MCP. Tool calls are approval-gated; writes need your biometric OK. Changes apply after restarting GINEXUS.")
-                .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
-
-            // Notion preset
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Notion").font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
-                Text("Paste an internal integration token (starts with “ntn_” / “secret_”).")
-                    .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
-                HStack(spacing: 8) {
-                    SecureField("Notion integration token", text: $model.notionTokenDraft)
-                        .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
-                        .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
-                    Button(action: model.connectNotion) {
-                        Text("CONNECT").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
-                            .padding(.horizontal, 16).padding(.vertical, 11)
-                            .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.notionTokenDraft.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("CONNECTIONS").font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+                Spacer()
+                Button { model.connectionsOpen = false } label: {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.bone300)
+                }.buttonStyle(.plain)
             }
+            .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 10)
 
-            Divider().overlay(Brand.line1)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Connect external tools over MCP. Tool calls are approval-gated; writes need your biometric OK. Changes apply after restarting GINEXUS.")
+                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
 
-            // Configured servers
-            Text("CONFIGURED").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
-            if model.mcpServers.isEmpty {
-                Text("No connections yet.").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
-            } else {
-                ForEach(model.mcpServers) { s in
-                    HStack(spacing: 10) {
-                        Circle().fill(s.enabled ? Brand.ember500 : Brand.ink500).frame(width: 7, height: 7)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(s.name).font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
-                            Text(s.command).font(Brand.mono(9)).foregroundStyle(Brand.bone400).lineLimit(1)
+                    presetRow("Notion", hint: "Internal integration token (“ntn_” / “secret_”).",
+                              placeholder: "Notion integration token", token: $model.notionTokenDraft, connect: model.connectNotion)
+                    presetRow("GitHub", hint: "Personal access token (repo / issues scopes).",
+                              placeholder: "GitHub PAT (ghp_… / github_pat_…)", token: $model.githubTokenDraft, connect: model.connectGitHub)
+
+                    Divider().overlay(Brand.line1)
+
+                    // Generic add-any-server form (Shopify, etc.)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("ADD A SERVER").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
+                        Text("Any MCP server with a stdio command — e.g. Shopify: npx -y @shopify/dev-mcp")
+                            .font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                        field("Name (e.g. shopify)", $model.mcpCustomName)
+                        field("Command (e.g. npx -y @shopify/dev-mcp)", $model.mcpCustomCommand)
+                        HStack(spacing: 8) {
+                            field("Token env var (optional)", $model.mcpCustomTokenEnv)
+                            secure("Token (optional)", $model.mcpCustomToken)
                         }
-                        Spacer()
-                        Toggle("", isOn: Binding(get: { s.enabled }, set: { model.setMcpEnabled(s.id, $0) }))
-                            .labelsHidden().toggleStyle(.switch).tint(Brand.ember500)
-                        Button(role: .destructive) { model.removeMcpServer(s.id) } label: {
-                            Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(Brand.bone300)
-                        }.buttonStyle(.plain)
+                        HStack {
+                            Spacer()
+                            Button(action: model.addCustomMcp) {
+                                Text("ADD SERVER").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
+                                    .padding(.horizontal, 16).padding(.vertical, 10)
+                                    .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                            }.buttonStyle(.plain)
+                            .disabled(model.mcpCustomName.trimmingCharacters(in: .whitespaces).isEmpty
+                                      || model.mcpCustomCommand.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
                     }
+
+                    Divider().overlay(Brand.line1)
+
+                    Text("CONFIGURED").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
+                    if model.mcpServers.isEmpty {
+                        Text("No connections yet.").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                    } else {
+                        ForEach(model.mcpServers) { s in
+                            HStack(spacing: 10) {
+                                Circle().fill(s.enabled ? Brand.ember500 : Brand.ink500).frame(width: 7, height: 7)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(s.name).font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
+                                    Text(s.command).font(Brand.mono(9)).foregroundStyle(Brand.bone400).lineLimit(1)
+                                }
+                                Spacer()
+                                Toggle("", isOn: Binding(get: { s.enabled }, set: { model.setMcpEnabled(s.id, $0) }))
+                                    .labelsHidden().toggleStyle(.switch).tint(Brand.ember500)
+                                Button(role: .destructive) { model.removeMcpServer(s.id) } label: {
+                                    Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(Brand.bone300)
+                                }.buttonStyle(.plain)
+                            }
+                            .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+                        }
+                    }
+                }
+                .padding(.horizontal, 20).padding(.bottom, 18)
+            }
+        }
+        .frame(width: 500, height: 560)
+        .background(Brand.ink850)
+    }
+
+    private func presetRow(_ title: String, hint: String, placeholder: String,
+                           token: Binding<String>, connect: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
+            Text(hint).font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+            HStack(spacing: 8) {
+                SecureField(placeholder, text: token)
+                    .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
                     .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+                Button(action: connect) {
+                    Text("CONNECT").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
+                        .padding(.horizontal, 16).padding(.vertical, 11)
+                        .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
                 }
+                .buttonStyle(.plain).disabled(token.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-
-            HStack { Spacer(); Button("Done") { model.connectionsOpen = false }
-                .buttonStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone200)
-                .padding(.horizontal, 18).padding(.vertical, 10) }
         }
-        .padding(22).frame(width: 480)
-        .background(Brand.ink850)
+    }
+
+    private func field(_ ph: String, _ text: Binding<String>) -> some View {
+        TextField(ph, text: text)
+            .textFieldStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone50)
+            .padding(9).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
+    }
+    private func secure(_ ph: String, _ text: Binding<String>) -> some View {
+        SecureField(ph, text: text)
+            .textFieldStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone50)
+            .padding(9).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
     }
 }
 

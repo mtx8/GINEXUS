@@ -427,6 +427,31 @@ final class AppModel: ObservableObject {
         notionTokenDraft = ""
     }
 
+    @Published var githubTokenDraft = ""
+    /// Preset: GitHub's official MCP server with a personal access token.
+    func connectGitHub() {
+        let tok = githubTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tok.isEmpty else { return }
+        addMcpServer(name: "github", command: "npx -y @modelcontextprotocol/server-github",
+                     tokenEnv: "GITHUB_PERSONAL_ACCESS_TOKEN", token: tok)
+        githubTokenDraft = ""
+    }
+
+    // Generic "add any MCP server" form — covers Shopify and anything with a stdio MCP server.
+    @Published var mcpCustomName = ""
+    @Published var mcpCustomCommand = ""
+    @Published var mcpCustomTokenEnv = ""
+    @Published var mcpCustomToken = ""
+    func addCustomMcp() {
+        let name = mcpCustomName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cmd = mcpCustomCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !cmd.isEmpty else { return }
+        let env = mcpCustomTokenEnv.trimmingCharacters(in: .whitespacesAndNewlines)
+        addMcpServer(name: name, command: cmd, tokenEnv: env.isEmpty ? nil : env,
+                     token: mcpCustomToken.isEmpty ? nil : mcpCustomToken)
+        mcpCustomName = ""; mcpCustomCommand = ""; mcpCustomTokenEnv = ""; mcpCustomToken = ""
+    }
+
     /// SP-Voice: the hands-free conversation loop. Non-nil while voice mode is active; the overlay
     /// observes it for live state (listening / thinking / speaking) and the mic level.
     @Published var voiceController: VoiceConversationController?
