@@ -178,6 +178,14 @@ async fn main() {
     let mut registry = ginexus_agent::tools::notes_registry(sd.join("notes"));
     registry.register(ginexus_gateway::web::web_fetch_tool()); // SP4: read-only web research
     registry.register(ginexus_agent::documents::write_document_tool(sd.join("documents"), app_host.clone())); // PDF/Word (HITL)
+    // SP-Robotics (Phase 1+2): design → fabricate. cad_generate (OpenSCAD DSL → STL, file-refs rejected)
+    // + cad_slice (PrusaSlicer external CLI → G-code). Autonomous (produce files, no hardware). Only
+    // useful on macOS where the verified OpenSCAD/PrusaSlicer binaries are installed.
+    {
+        let robo = sd.join("robotics");
+        registry.register(ginexus_agent::robotics::cad_generate_tool(robo.clone()));
+        registry.register(ginexus_agent::robotics::cad_slice_tool(robo));
+    }
     // SP6: local image generation — registered only when the app launched the media sidecar and
     // injected its base URL. Generation is autonomous (writes only into the media dir).
     if let Ok(base) = std::env::var("GINEXUS_MEDIA_BASE") {
