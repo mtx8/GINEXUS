@@ -130,6 +130,38 @@ fn rand_hex(n: usize) -> String {
     hex::encode(buf)
 }
 
+/// Split a command line into tokens, honoring double-quoted spans so a program PATH containing spaces
+/// (e.g. a binary under ".../Application Support/...") survives intact. Minimal: double quotes only,
+/// no escape sequences — enough for our own preset commands and `npx …` server commands.
+fn shell_split(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_q = false;
+    let mut started = false; // a token has begun (so an empty "" still yields a token)
+    for c in s.chars() {
+        match c {
+            '"' => {
+                in_q = !in_q;
+                started = true;
+            }
+            c if c.is_whitespace() && !in_q => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
+}
+
 /// Decode standard base64 (RFC 4648, with `=` padding) — self-contained so attachment uploads add no
 /// new dependency to the supply chain (PSS: fewer deps to audit). Whitespace is ignored; any other
 /// invalid character fails the whole decode.
@@ -282,8 +314,23 @@ fn state_dir() -> PathBuf {
     PathBuf::from(home).join("Library/Application Support/GINEXUS")
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Subcommand: run as the bundled Printful MCP server (blocking JSON-RPC over stdio) instead of the
+    // HTTP core. This reuses the already-signed core binary — the MCP host spawns `<core> --printful-mcp`
+    // — so there's no second binary to stage or notarize. reqwest::blocking must run OUTSIDE a tokio
+    // runtime, hence the branch happens before the runtime is built.
+    if std::env::args().skip(1).any(|a| a == "--printful-mcp") {
+        ginexus_gateway::printful::run_stdio();
+        return;
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime")
+        .block_on(run_server());
+}
+
+async fn run_server() {
     let mut args = std::env::args().skip(1);
     let mut uds = state_dir().join("run/ginexus.sock");
     while let Some(a) = args.next() {
@@ -408,7 +455,7 @@ async fn main() {
     ));
     // MCP host: import an external MCP server's tools (default-deny / HITL-gated) when configured.
     if let Ok(cmd) = std::env::var("GINEXUS_MCP_CMD") {
-        let parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+        let parts = shell_split(&cmd);
         if let Some((prog, rest)) = parts.split_first() {
             match ginexus_mcp::McpClient::spawn(prog, rest) {
                 Ok(client) => {
@@ -433,7 +480,7 @@ async fn main() {
                 if name.is_empty() || cmd.is_empty() {
                     continue;
                 }
-                let parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+                let parts = shell_split(cmd);
                 let Some((prog, rest)) = parts.split_first() else { continue };
                 match ginexus_mcp::McpClient::spawn(prog, rest) {
                     Ok(client) => {
@@ -1335,5 +1382,22 @@ mod b64_tests {
         assert!(b64_decode("Zg=").is_err()); // truncated
         assert!(b64_decode("Zm9v!!!").is_err()); // invalid char
         assert!(b64_decode("Zg==Zg==").is_err()); // data after padding
+    }
+}
+
+#[cfg(test)]
+mod shell_split_tests {
+    use super::shell_split;
+
+    #[test]
+    fn splits_plain_and_quoted() {
+        assert_eq!(shell_split("npx -y @shopify/dev-mcp"), vec!["npx", "-y", "@shopify/dev-mcp"]);
+        // A quoted program path with a space survives as ONE token (the Printful preset case).
+        assert_eq!(
+            shell_split("\"/Users/x/Library/Application Support/GINEXUS/core\" --printful-mcp"),
+            vec!["/Users/x/Library/Application Support/GINEXUS/core", "--printful-mcp"]
+        );
+        assert_eq!(shell_split("   spaced   out  "), vec!["spaced", "out"]);
+        assert!(shell_split("").is_empty());
     }
 }
