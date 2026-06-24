@@ -461,6 +461,7 @@ struct ContentView: View {
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let vc = model.voiceController { VoiceStatusBar(controller: vc) }
+            if model.deepResearchMode { deepResearchHint }
             attachmentChip
             HStack(spacing: 10) {
                 HStack(spacing: 8) {
@@ -492,20 +493,41 @@ struct ContentView: View {
         (!model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.attachment != nil)
     }
 
-    /// Deep Research — hands the current message to the GINEXUS research team (Nexus RND/STR): it
-    /// searches the web for current sources, cross-checks, and returns a cited report. Enabled once
-    /// you've typed something.
+    /// Deep Research toggle — arm it, then send your question and the GINEXUS research team (Nexus
+    /// RND/STR) searches the web, cross-checks, and returns a cited report. Always clickable when
+    /// connected; lights up ember when armed; disarms after one message.
     private var researchButton: some View {
-        Button(action: model.runResearch) {
+        Button(action: model.toggleDeepResearch) {
             Image(systemName: "binoculars.fill").font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(model.canQuickAction ? Brand.bone200 : Brand.bone400)
+                .foregroundStyle(model.deepResearchMode ? Brand.ink900 : Brand.bone200)
                 .frame(width: 46, height: 46)
-                .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+                .background(model.deepResearchMode ? AnyShapeStyle(Brand.ember500) : AnyShapeStyle(Brand.cardFill))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(model.deepResearchMode ? Brand.ember500 : Brand.line1, lineWidth: 1))
+                .shadow(color: model.deepResearchMode ? Brand.ember500.opacity(0.45) : .clear, radius: 9)
         }
         .buttonStyle(.plain)
-        .disabled(!model.connected || !model.canQuickAction)
-        .help("Deep Research — search the web and produce a cited report")
+        .disabled(!model.connected)
+        .help(model.deepResearchMode
+              ? "Deep Research armed — your next message gets researched. Click to cancel."
+              : "Deep Research — search the web and return a cited report")
+    }
+
+    /// Banner shown above the composer while Deep Research is armed, so the feature is unmistakable.
+    private var deepResearchHint: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "binoculars.fill").font(.system(size: 11)).foregroundStyle(Brand.ember500)
+            Text("Deep Research armed — your next message will be searched, cross-checked, and returned as a cited report.")
+                .font(Brand.mono(10)).foregroundStyle(Brand.bone200).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button { model.deepResearchMode = false } label: {
+                Image(systemName: "xmark").font(.system(size: 9)).foregroundStyle(Brand.bone400)
+            }.buttonStyle(.plain).help("Cancel Deep Research")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Brand.ember500.opacity(0.10)).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.ember500.opacity(0.4), lineWidth: 1))
     }
 
     /// Mic toggle — starts/stops the hands-free voice conversation (SP-Voice). Animated waveform

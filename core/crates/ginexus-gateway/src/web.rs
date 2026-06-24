@@ -81,56 +81,13 @@ pub fn web_fetch_tool() -> Tool {
 }
 
 // ── web_search (SP-Research) ────────────────────────────────────────────────────────────────────
-// Discover sources for research. Keyless + privacy-respecting: queries DuckDuckGo's HTML endpoint
-// (only the query string leaves the machine — never the user's data), parses the result links, and
-// hands back {title, url}. The agent then web_fetch's a result (which re-applies the SSRF guard).
-// PSS: read-only, https-only, results on private/loopback hosts are dropped, output is capped.
-
-/// Percent-decode (for DuckDuckGo's `uddg` redirect param). Bad escapes pass through unchanged.
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'%' if i + 2 < b.len() => {
-                let hi = (b[i + 1] as char).to_digit(16);
-                let lo = (b[i + 2] as char).to_digit(16);
-                if let (Some(h), Some(l)) = (hi, lo) {
-                    out.push((h * 16 + l) as u8);
-                    i += 3;
-                } else {
-                    out.push(b[i]);
-                    i += 1;
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).to_string()
-}
-
-/// Strip HTML tags and collapse whitespace (for result titles/snippets).
-fn strip_tags(s: &str) -> String {
-    let mut out = String::new();
-    let mut in_tag = false;
-    for c in s.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
+// Discover sources for research. Privacy-respecting: only the query leaves the machine, never the
+// user's data. Two providers, tried in order:
+//   1. Brave Search API (full, live web results) when BRAVE_SEARCH_API_KEY is set — the real thing.
+//   2. DuckDuckGo Instant Answer API (keyless, JSON) as a fallback — definitions + related topics.
+// (DuckDuckGo's HTML scraping endpoint now bot-blocks non-browser requests, so it is NOT used.)
+// The agent then web_fetch's a result url (re-applying the SSRF guard). PSS: read-only, https-only,
+// results on private/loopback hosts are dropped, output capped, no API key required to function.
 
 /// Encode a query for a URL (`application/x-www-form-urlencoded` style; space → '+').
 fn q_encode(s: &str) -> String {
@@ -143,47 +100,101 @@ fn q_encode(s: &str) -> String {
         .collect()
 }
 
-/// Parse DuckDuckGo HTML into (title, url) results. Pulled out so it's testable without a network.
-fn parse_ddg_results(body: &str, max: usize) -> Vec<(String, String)> {
-    let mut results: Vec<(String, String)> = Vec::new();
-    for (idx, _) in body.match_indices("uddg=") {
-        let after = &body[idx + 5..];
-        let end = after.find(['&', '"']).unwrap_or(after.len());
-        let url = percent_decode(&after[..end]);
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            continue;
-        }
-        match host_of(&url) {
-            Some(h) if is_blocked_host(&h) => continue, // never surface a private/loopback host
-            None => continue,
-            _ => {}
-        }
-        // Title: the anchor text right after the href closes (`">` … `</a>`).
-        let title = after
-            .find("\">")
-            .and_then(|gt| {
-                let rest = &after[gt + 2..];
-                rest.find("</a>").map(|c| strip_tags(&rest[..c]))
-            })
-            .unwrap_or_default();
-        if results.iter().any(|(_, u)| u == &url) {
-            continue; // dedup
-        }
-        results.push((title, url));
-        if results.len() >= max {
-            break;
+/// Keep a result only if its URL is http(s) and not a private/loopback host.
+fn usable_result_url(url: &str) -> bool {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return false;
+    }
+    matches!(host_of(url), Some(h) if !is_blocked_host(&h))
+}
+
+/// Parse a Brave Search API JSON response into {title, url, snippet} results.
+fn parse_brave(body: &str, max: usize) -> Vec<(String, String, String)> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let mut out = Vec::new();
+    if let Some(arr) = v.get("web").and_then(|w| w.get("results")).and_then(|r| r.as_array()) {
+        for r in arr {
+            let url = r.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+            if !usable_result_url(&url) {
+                continue;
+            }
+            let title = r.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let snippet = r.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
+            out.push((title, url, snippet));
+            if out.len() >= max {
+                break;
+            }
         }
     }
-    results
+    out
+}
+
+/// Parse a DuckDuckGo Instant Answer JSON response into {title, url, snippet} results — the abstract
+/// (if any) plus flattened RelatedTopics (which may nest under `Topics`).
+fn parse_ddg_ia(body: &str, max: usize) -> Vec<(String, String, String)> {
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    let push = |title: String, url: String, snippet: String, out: &mut Vec<(String, String, String)>| {
+        if usable_result_url(&url) && !out.iter().any(|(_, u, _)| u == &url) {
+            out.push((title, url, snippet));
+        }
+    };
+    // The headline abstract, when present.
+    let abstract_url = v.get("AbstractURL").and_then(|u| u.as_str()).unwrap_or("");
+    if !abstract_url.is_empty() {
+        let heading = v.get("Heading").and_then(|h| h.as_str()).unwrap_or("").to_string();
+        let text = v.get("AbstractText").and_then(|t| t.as_str()).unwrap_or("").to_string();
+        push(heading, abstract_url.to_string(), text, &mut out);
+    }
+    // Related topics (each item has FirstURL + Text; some are groups with a nested `Topics` array).
+    fn walk(node: &serde_json::Value, out: &mut Vec<(String, String, String)>, max: usize) {
+        if let Some(arr) = node.as_array() {
+            for item in arr {
+                if out.len() >= max {
+                    return;
+                }
+                if let Some(topics) = item.get("Topics") {
+                    walk(topics, out, max);
+                } else if let (Some(url), Some(text)) = (
+                    item.get("FirstURL").and_then(|u| u.as_str()),
+                    item.get("Text").and_then(|t| t.as_str()),
+                ) {
+                    if usable_result_url(url) && !out.iter().any(|(_, u, _)| u == url) {
+                        out.push((text.to_string(), url.to_string(), text.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(rt) = v.get("RelatedTopics") {
+        walk(rt, &mut out, max);
+    }
+    out.truncate(max);
+    out
+}
+
+fn search_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("client error: {e}"))
 }
 
 pub fn web_search_tool() -> Tool {
     Tool::new(
         "web_search",
-        "Search the web (privacy-respecting, keyless, no tracking) and get back the top results as \
-         {title, url}. Use this to DISCOVER current sources for a question, then call web_fetch on a \
-         result's url to read it. Only your search query leaves the machine — never the user's private \
-         data. `query` is required; `max_results` (default 5, max 10) caps the list.",
+        "Search the web for CURRENT information and get back the top results as {title, url, snippet}. \
+         Use this to discover live sources (news, prices, docs, recent events), then call web_fetch on a \
+         result's url to read it in full. Only your search query leaves the machine — never the user's \
+         private data. `query` is required; `max_results` (default 5, max 10) caps the list. With a Brave \
+         Search API key configured these are full live web results; without one, results are keyless \
+         instant-answers (definitions + related topics) and may be limited.",
         json!({"type": "object",
                "properties": {"query": {"type": "string"},
                               "max_results": {"type": "integer", "minimum": 1, "maximum": 10}},
@@ -199,14 +210,51 @@ pub fn web_search_tool() -> Tool {
                 .and_then(|v| v.as_u64())
                 .map(|n| n.clamp(1, 10) as usize)
                 .unwrap_or(5);
-            let url = format!("https://html.duckduckgo.com/html/?q={}", q_encode(query));
-            let client = match reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).build() {
+            let client = match search_client() {
                 Ok(c) => c,
-                Err(e) => return ToolResult::err(format!("client error: {e}")),
+                Err(e) => return ToolResult::err(e),
             };
+
+            // 1 — Brave Search API (full live web results) when a key is configured.
+            if let Ok(key) = std::env::var("BRAVE_SEARCH_API_KEY") {
+                if !key.trim().is_empty() {
+                    let url = format!(
+                        "https://api.search.brave.com/res/v1/web/search?q={}&count={max}",
+                        q_encode(query)
+                    );
+                    match client
+                        .get(&url)
+                        .header("Accept", "application/json")
+                        .header("X-Subscription-Token", key.trim())
+                        .send()
+                        .and_then(|r| r.error_for_status())
+                        .and_then(|r| r.text())
+                    {
+                        Ok(body) => {
+                            let items = parse_brave(&body, max);
+                            if !items.is_empty() {
+                                let arr: Vec<_> = items
+                                    .iter()
+                                    .map(|(t, u, s)| json!({"title": t, "url": u, "snippet": s}))
+                                    .collect();
+                                return ToolResult::ok(
+                                    json!({"provider": "brave", "results": arr}).to_string(),
+                                );
+                            }
+                        }
+                        Err(e) => return ToolResult::err(format!("brave search failed: {e}")),
+                    }
+                }
+            }
+
+            // 2 — Keyless fallback: DuckDuckGo Instant Answer API (definitions + related topics).
+            let url = format!(
+                "https://api.duckduckgo.com/?q={}&format=json&no_html=1&no_redirect=1&t=ginexus",
+                q_encode(query)
+            );
             let body = match client
                 .get(&url)
-                .header("User-Agent", "Mozilla/5.0 (compatible; GINEXUS/0.1; +local-agent)")
+                .header("User-Agent", "GINEXUS/0.1 (local research agent)")
                 .send()
                 .and_then(|r| r.error_for_status())
                 .and_then(|r| r.text())
@@ -214,12 +262,24 @@ pub fn web_search_tool() -> Tool {
                 Ok(b) => b,
                 Err(e) => return ToolResult::err(format!("search failed: {e}")),
             };
-            let results = parse_ddg_results(&body, max);
-            if results.is_empty() {
-                return ToolResult::ok(json!({"results": [], "note": "no results"}).to_string());
+            let items = parse_ddg_ia(&body, max);
+            if items.is_empty() {
+                return ToolResult::ok(
+                    json!({"provider": "duckduckgo", "results": [],
+                           "note": "No keyless results for this query. For full live web search (news, \
+                                    prices, recent events), add a Brave Search API key in Settings → \
+                                    Connections."})
+                    .to_string(),
+                );
             }
-            let items: Vec<_> = results.iter().map(|(t, u)| json!({"title": t, "url": u})).collect();
-            ToolResult::ok(json!({"results": items}).to_string())
+            let arr: Vec<_> =
+                items.iter().map(|(t, u, s)| json!({"title": t, "url": u, "snippet": s})).collect();
+            ToolResult::ok(
+                json!({"provider": "duckduckgo", "results": arr,
+                       "note": "Keyless instant-answer results. For full live web search, add a Brave \
+                                Search API key in Settings → Connections."})
+                .to_string(),
+            )
         }),
     )
 }
@@ -229,26 +289,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn percent_decode_and_strip_tags() {
-        assert_eq!(percent_decode("https%3A%2F%2Fexample.com%2Fa+b"), "https://example.com/a b");
-        assert_eq!(percent_decode("plain"), "plain");
-        assert_eq!(strip_tags("<b>Hello</b>   <i>world</i>"), "Hello world");
+    fn q_encode_basic() {
         assert_eq!(q_encode("rust lang"), "rust+lang");
+        assert_eq!(q_encode("a&b=c"), "a%26b%3Dc");
     }
 
     #[test]
-    fn parses_ddg_html_and_drops_private_hosts() {
-        // Two real-looking result anchors + one pointing at a private host (must be dropped).
-        let html = r#"
-          <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdoc&rut=x">Example <b>Doc</b></a>
-          <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Frust-lang.org%2F&rut=y">Rust Lang</a>
-          <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=http%3A%2F%2F127.0.0.1%2Fx&rut=z">Loopback</a>
-        "#;
-        let r = parse_ddg_results(html, 10);
+    fn parses_brave_and_drops_private_hosts() {
+        let body = r#"{"web":{"results":[
+            {"title":"Example","url":"https://example.com/doc","description":"an example"},
+            {"title":"Loopback","url":"http://127.0.0.1/x","description":"nope"},
+            {"title":"Rust","url":"https://rust-lang.org/","description":"the language"}
+        ]}}"#;
+        let r = parse_brave(body, 10);
         assert_eq!(r.len(), 2, "private/loopback host must be dropped");
-        assert_eq!(r[0].0, "Example Doc");
+        assert_eq!(r[0].0, "Example");
         assert_eq!(r[0].1, "https://example.com/doc");
         assert_eq!(r[1].1, "https://rust-lang.org/");
+    }
+
+    #[test]
+    fn parses_ddg_instant_answer_abstract_and_related() {
+        let body = r#"{
+            "Heading":"Apple Inc.",
+            "AbstractText":"American tech company.",
+            "AbstractURL":"https://en.wikipedia.org/wiki/Apple_Inc.",
+            "RelatedTopics":[
+                {"FirstURL":"https://example.com/a","Text":"Topic A"},
+                {"Topics":[{"FirstURL":"https://example.com/b","Text":"Topic B"}]},
+                {"FirstURL":"http://10.0.0.1/x","Text":"private"}
+            ]
+        }"#;
+        let r = parse_ddg_ia(body, 10);
+        // abstract + Topic A + nested Topic B; private host dropped.
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0].1, "https://en.wikipedia.org/wiki/Apple_Inc.");
+        assert_eq!(r[1].1, "https://example.com/a");
+        assert_eq!(r[2].1, "https://example.com/b");
     }
 
     #[test]

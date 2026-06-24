@@ -927,6 +927,16 @@ final class AppModel: ObservableObject {
             }
         }
 
+        // Deep Research mode (one-shot): hand the next message to the research team — search the web,
+        // cross-check, and return a cited report. Wrap what the MODEL sees; tag the user's bubble.
+        if deepResearchMode, !text.isEmpty {
+            sendText = "Run a DEEP RESEARCH investigation with the research team: use deep_research to "
+                + "search the web for current, reputable sources, cross-check the facts, and produce a "
+                + "clear, well-structured report that cites the source URLs.\n\nTopic: " + sendText
+            displayText = (displayText.isEmpty ? text : displayText) + "  · deep research"
+            deepResearchMode = false
+        }
+
         chat.append(ChatMsg(role: "user", text: displayText, imagePath: userImage))
         chatInput = ""
         attachment = nil
@@ -1359,6 +1369,11 @@ final class AppModel: ObservableObject {
             memMatchIndex = 0   // Office-style find: reset to the first match
         }
     }
+
+    /// Deep Research mode: when armed, the next message you send is routed to the research team
+    /// (web search → cross-check → cited report). One-shot — it disarms after firing.
+    @Published var deepResearchMode = false
+    func toggleDeepResearch() { deepResearchMode.toggle() }
 
     // MARK: scheduled tasks (cron jobs) — routine automation that runs unattended on a cadence
     @Published var schedulesOpen = false
