@@ -1,0 +1,17 @@
+[project]
+name = "ginexus-audio-sidecar"
+version = "0.1.0"
+description = "GINEXUS local voice sidecar — Chatterbox Multilingual TTS + Parakeet STT on Apple MLX"
+requires-python = ">=3.11"
+# mlx-audio drives the multilingual Chatterbox MLX checkpoint (theoracleguy/...-v2). Loopback-only.
+dependencies = [
+    "mlx-audio>=0.2.0",
+    "parakeet-mlx>=0.3",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "soundfile>=0.12",
+    "numpy>=1.26",
+]
+
+[tool.uv]
+package = false

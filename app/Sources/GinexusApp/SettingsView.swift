@@ -13,6 +13,8 @@ struct SettingsView: View {
     /// The core-config values the running core was booted with; APPLY shows only when they differ
     /// (so reverting an edit hides it and avoids a no-op restart).
     @State private var baseline: GinexusSettings?
+    /// The Brave key lives in the Keychain (not settings), so track its change separately to drive APPLY.
+    @State private var braveDirty = false
 
     private var autonomousBinding: Binding<Bool> {
         Binding(get: { model.autonomous }, set: { model.autonomous = $0 })
@@ -25,6 +27,8 @@ struct SettingsView: View {
         return s.ollamaBase != b.ollamaBase
             || s.obsidianVaultPath != b.obsidianVaultPath
             || s.mediaSidecarEnabled != b.mediaSidecarEnabled
+            || s.mcpServers != b.mcpServers   // a new/removed/toggled connection needs a core restart
+            || braveDirty
     }
 
     /// Block APPLY while a reply streams, or when the endpoint was changed to an invalid/blocked value.
@@ -44,11 +48,12 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         defaultsSection
+                        connectionsSection
                         runtimeSection
                         importSection
                         privacySection
-                        Text("Saved to ~/Library/Application Support/GINEXUS/settings.json")
-                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(Brand.muted)
+                        Text("Saved to ~/Library/Application Support/GINEXUS/settings.json · secrets in Keychain")
+                            .font(Brand.mono(9)).foregroundStyle(Brand.muted)
                             .padding(.top, 2)
                     }
                 }
@@ -62,13 +67,16 @@ struct SettingsView: View {
     }
 
     private var header: some View {
-        HStack {
-            Text("SETTINGS").font(.system(size: 14, weight: .bold, design: .monospaced)).kerning(2)
-                .foregroundStyle(Brand.bone50)
+        HStack(spacing: 10) {
+            Image(systemName: "gearshape.fill").font(.system(size: 13)).foregroundStyle(Brand.ember500)
+            Text("SETTINGS").font(Brand.mono(14, weight: .bold)).kerning(2).foregroundStyle(Brand.bone50)
             Spacer()
-            Button("DONE") { model.settingsOpen = false }
-                .buttonStyle(.plain).font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundStyle(Brand.muted)
+            Button { model.settingsOpen = false } label: {
+                Text("DONE").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.bone100)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }.buttonStyle(.plain)
         }
     }
 
@@ -153,13 +161,177 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: connections (external MCP integrations) — lives in Settings, not the chat
+
+    private func isConnected(_ name: String) -> Bool {
+        store.settings.mcpServers.contains { $0.name == name }
+    }
+
+    private var connectionsSection: some View {
+        card("CONNECTIONS") {
+            caption("Connect external tools over MCP. Tool calls are approval-gated and writes need your Touch ID. New connections take effect after you restart the core (button below).")
+
+            connector("Notion", hint: "Internal integration token (ntn_ / secret_).",
+                      placeholder: "Notion integration token", token: $model.notionTokenDraft,
+                      connected: isConnected("notion"), connect: model.connectNotion)
+            divider
+            connector("GitHub", hint: "Personal access token (repo / issues scopes).",
+                      placeholder: "GitHub PAT (ghp_… / github_pat_…)", token: $model.githubTokenDraft,
+                      connected: isConnected("github"), connect: model.connectGitHub)
+            divider
+            tokenlessConnector("Shopify", hint: "Shopify's official dev MCP (docs + Admin schema). No token needed.",
+                               connected: isConnected("shopify"), connect: model.connectShopify)
+            divider
+            connector("Printful", hint: "API token from Printful → Settings → Developers. Uses GINEXUS's own professional Printful MCP (catalog, products, orders, shipping).",
+                      placeholder: "Printful API token", token: $model.printfulTokenDraft,
+                      connected: isConnected("printful"), connect: model.connectPrintful)
+            divider
+            braveRow
+            divider
+            customServerRow
+            if !store.settings.mcpServers.isEmpty {
+                divider
+                configuredList
+            }
+        }
+    }
+
+    /// A preset connector with a token field, or a CONNECTED badge once added.
+    private func connector(_ name: String, hint: String, placeholder: String,
+                           token: Binding<String>, connected: Bool, connect: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(name).font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone50)
+                Spacer()
+                if connected { connectedBadge }
+            }
+            caption(hint)
+            if !connected {
+                HStack(spacing: 8) {
+                    SecureField(placeholder, text: token)
+                        .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
+                        .padding(9).background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
+                    emberButton("CONNECT", enabled: !token.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty, action: connect)
+                }
+            }
+        }
+    }
+
+    /// A preset connector that needs no token (Shopify dev MCP).
+    private func tokenlessConnector(_ name: String, hint: String, connected: Bool, connect: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(name).font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone50)
+                Spacer()
+                if connected { connectedBadge } else { emberButton("CONNECT", enabled: true, action: connect) }
+            }
+            caption(hint)
+        }
+    }
+
+    private var braveRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Brave Search key").font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone50)
+                Spacer()
+                if model.braveSearchConfigured {
+                    connectedBadge
+                    Button("Remove") { model.clearBraveKey(); braveDirty = true }
+                        .buttonStyle(.plain).font(Brand.mono(10)).foregroundStyle(Brand.muted)
+                }
+            }
+            caption("Optional. Powers full live web search (news, prices, recent events). Without it, search is keyless and limited. Free key at api.search.brave.com.")
+            if !model.braveSearchConfigured {
+                HStack(spacing: 8) {
+                    SecureField("Brave Search API key", text: $model.braveKeyDraft)
+                        .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
+                        .padding(9).background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
+                    emberButton("SAVE", enabled: !model.braveKeyDraft.trimmingCharacters(in: .whitespaces).isEmpty,
+                                action: { model.saveBraveKey(); braveDirty = true })
+                }
+            }
+        }
+    }
+
+    private var customServerRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Add any MCP server").font(Brand.mono(11, weight: .bold)).kerning(1).foregroundStyle(Brand.bone200)
+            caption("Any stdio MCP server — e.g. a command like npx -y <package>.")
+            smallField("Name (e.g. linear)", $model.mcpCustomName)
+            smallField("Command (e.g. npx -y @some/mcp-server)", $model.mcpCustomCommand)
+            HStack(spacing: 8) {
+                smallField("Token env var (optional)", $model.mcpCustomTokenEnv)
+                smallSecure("Token (optional)", $model.mcpCustomToken)
+            }
+            HStack {
+                Spacer()
+                emberButton("ADD SERVER",
+                            enabled: !model.mcpCustomName.trimmingCharacters(in: .whitespaces).isEmpty
+                                  && !model.mcpCustomCommand.trimmingCharacters(in: .whitespaces).isEmpty,
+                            action: model.addCustomMcp)
+            }
+        }
+    }
+
+    private var configuredList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Configured").font(Brand.mono(11, weight: .bold)).kerning(1).foregroundStyle(Brand.bone200)
+            ForEach(model.mcpServers) { s in
+                HStack(spacing: 10) {
+                    Circle().fill(s.enabled ? Brand.ember500 : Brand.muted).frame(width: 7, height: 7)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(s.name).font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone50)
+                        Text(s.command).font(Brand.mono(9)).foregroundStyle(Brand.muted).lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(get: { s.enabled }, set: { model.setMcpEnabled(s.id, $0) }))
+                        .labelsHidden().toggleStyle(.switch).tint(Brand.ember500)
+                    Button(role: .destructive) { model.removeMcpServer(s.id) } label: {
+                        Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(Brand.muted)
+                    }.buttonStyle(.plain)
+                }
+                .padding(8).background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 7))
+            }
+        }
+    }
+
+    private var connectedBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "checkmark.circle.fill").font(.system(size: 10))
+            Text("CONNECTED").font(Brand.mono(9, weight: .bold)).kerning(1)
+        }.foregroundStyle(Brand.ember500)
+    }
+
+    private func emberButton(_ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(enabled ? Brand.ember500 : Brand.muted).clipShape(RoundedRectangle(cornerRadius: 7))
+        }.buttonStyle(.plain).disabled(!enabled)
+    }
+
+    private func smallField(_ ph: String, _ text: Binding<String>) -> some View {
+        TextField(ph, text: text)
+            .textFieldStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone50)
+            .padding(8).background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
+    }
+    private func smallSecure(_ ph: String, _ text: Binding<String>) -> some View {
+        SecureField(ph, text: text)
+            .textFieldStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone50)
+            .padding(8).background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
+    }
+
     private var applyBar: some View {
         HStack {
-            Text("Restart the core to apply endpoint / vault / image-generation changes.")
+            Text("Restart the core to apply connection, endpoint, vault, or image-generation changes.")
                 .font(.system(size: 10, design: .monospaced)).foregroundStyle(Brand.muted)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
-            Button(action: { model.restartCore(); baseline = store.settings }) {
+            Button(action: { model.restartCore(); baseline = store.settings; braveDirty = false }) {
                 Text("APPLY & RESTART CORE").font(.system(size: 11, weight: .bold, design: .monospaced)).kerning(1)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .foregroundStyle(Brand.ink900).background(canApply ? Brand.ember500 : Brand.muted)
@@ -172,30 +344,32 @@ struct SettingsView: View {
     // MARK: building blocks
 
     private func card<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
-                .foregroundStyle(Brand.muted)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 7) {
+                Rectangle().fill(Brand.ember500).frame(width: 3, height: 11).clipShape(Capsule())
+                Text(title).font(Brand.mono(10, weight: .bold)).kerning(1.6).foregroundStyle(Brand.bone200)
+            }
             content()
         }
-        .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
         .background(Brand.cardFill)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 10)) }
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 12)) }
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line1, lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
     }
 
     private func row<Control: View>(_ label: String, @ViewBuilder _ control: () -> Control) -> some View {
         HStack {
-            Text(label).font(.system(size: 13, design: .monospaced)).foregroundStyle(Brand.bone50)
+            Text(label).font(Brand.mono(13)).foregroundStyle(Brand.bone50)
             Spacer()
             control()
         }
     }
 
     private func caption(_ text: String) -> some View {
-        Text(text).font(.system(size: 10, design: .monospaced)).foregroundStyle(Brand.muted)
-            .fixedSize(horizontal: false, vertical: true)
+        Text(text).font(Brand.mono(10)).foregroundStyle(Brand.muted)
+            .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
     }
 
     private var divider: some View { Divider().overlay(Color.white.opacity(0.06)) }

@@ -139,8 +139,45 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
             false, // copies an already-created file into a standard folder → not destructive
         ),
         bridge_tool(
-            sock,
-            token,
+            sock.clone(),
+            token.clone(),
+            "read_pdf_fields",
+            "Read the fillable form fields of an EXISTING PDF (AcroForm). Returns JSON: each field's \
+             name, type (text/button/choice), current value, page, and any options. Call this FIRST, \
+             before fill_pdf_form, to learn the exact field names to map the user's data onto. `src` = \
+             a local path to the PDF (~ allowed; never iCloud). If it reports no fields, the PDF is \
+             flat/scanned or XFA and can't be filled in place.",
+            json!({"type": "object",
+                   "properties": {"src": {"type": "string", "description": "path to the PDF (local, ~ allowed)"}},
+                   "required": ["src"]}),
+            false, // read-only
+        ),
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
+            "fill_pdf_form",
+            "Fill an EXISTING fillable PDF form and save it — the real file filled, never a regenerated \
+             one. Call read_pdf_fields FIRST to get the exact field names, then map the user's data onto \
+             them. `src` = path to the PDF; `fields` = object { fieldName: value } (plain text; for a \
+             checkbox use a truthy value like \"Yes\"/\"On\", or a radio's export name). \
+             FOR A TEMPLATE YOU REUSE (e.g. a monthly report): set `out_name` to the new document's name \
+             (e.g. \"Monthly Report - June 2026\") — GINEXUS DUPLICATES the template into that named file \
+             in the same folder, fills it, and leaves the template untouched. Set the date-range field \
+             like any other field. Omit out_name to fill in place (auto-backup); or `new_copy:true` for a \
+             \"<name>-filled.pdf\" copy. NEVER recreate/regenerate the PDF; do not paste the absolute path \
+             or username in your reply.",
+            json!({"type": "object",
+                   "properties": {
+                       "src": {"type": "string", "description": "path to the existing fillable PDF / template (local, ~ allowed)"},
+                       "fields": {"type": "object", "description": "{ fieldName: value } using names from read_pdf_fields (one entry per section + the date field)"},
+                       "out_name": {"type": "string", "description": "save a NAMED duplicate (template preserved) — use for monthly/recurring reports, e.g. \"Monthly Report - June 2026\""},
+                       "new_copy": {"type": "boolean", "description": "write a -filled.pdf copy instead of editing in place"}},
+                   "required": ["src", "fields"]}),
+            true, // HITL-gated: writes/overwrites a user file
+        ),
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
             "pages_write",
             "Create a real document USING Apple Pages and save it to the user's folder. Pages renders \
              the text and exports it; needs Pages installed + a one-time automation consent. Prefer \
@@ -157,6 +194,45 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
                        "filename": {"type": "string"}},
                    "required": ["content", "filename"]}),
             true, // HITL-gated: writes a user-facing file + drives another app
+        ),
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
+            "mcp_list",
+            "List the MCP integrations currently configured in GINEXUS (each server's name and whether \
+             it is enabled). Call this when the user asks what's connected, or before connecting \
+             something new so you don't duplicate an existing one.",
+            json!({"type": "object", "properties": {}}),
+            false, // read-only
+        ),
+        bridge_tool(
+            sock,
+            token,
+            "connect_mcp",
+            "Connect an external MCP server so its tools become available inside GINEXUS — use this to \
+             fulfill a request like \"connect me to Notion\" or \"add the Shopify MCP\" directly in chat. \
+             Provide `name` (a short lowercase slug), `command` (the server's stdio launch command), and \
+             — for services that need auth — `token` plus `token_env` (the env var the server reads). \
+             The secret is stored in the macOS Keychain, never in plaintext. \
+             KNOWN SERVERS (use these exact commands): \
+             Notion → command `npx -y @notionhq/notion-mcp-server`, token_env `NOTION_TOKEN` (ask the user \
+             for their Notion internal integration token, starts `ntn_`/`secret_`); \
+             GitHub → `npx -y @modelcontextprotocol/server-github`, token_env `GITHUB_PERSONAL_ACCESS_TOKEN` \
+             (a personal access token, `ghp_`/`github_pat_`); \
+             Shopify dev docs → `npx -y @shopify/dev-mcp` (no token). \
+             For any OTHER MCP server, pass its documented stdio command (and token if it needs one). \
+             SAFETY: only connect servers the user explicitly trusts — this launches an external process. \
+             If a credential is required and the user hasn't given it, ASK for it first; don't invent one. \
+             The connection saves immediately and becomes active the next time GINEXUS is restarted — tell \
+             the user to relaunch to start using it.",
+            json!({"type": "object",
+                   "properties": {
+                       "name": {"type": "string", "description": "short lowercase slug, e.g. \"notion\""},
+                       "command": {"type": "string", "description": "stdio launch command, e.g. \"npx -y @notionhq/notion-mcp-server\""},
+                       "token": {"type": "string", "description": "the secret/credential (optional; stored in Keychain)"},
+                       "token_env": {"type": "string", "description": "env var the server reads the token from (e.g. NOTION_TOKEN)"}},
+                   "required": ["name", "command"]}),
+            true, // HITL-gated: adds an external integration that can run/exfiltrate — user approves each
         ),
     ]
 }
@@ -208,6 +284,13 @@ mod tests {
         assert!(tools.iter().find(|t| t.name == "pages_write").unwrap().irreversible);
         // save_to_folder just copies an already-created file → autonomous (not HITL)
         assert!(!tools.iter().find(|t| t.name == "save_to_folder").unwrap().irreversible);
+        // SP-Docs PDF tools: reading fields is autonomous; filling (writes the file) is HITL-gated.
+        assert!(!tools.iter().find(|t| t.name == "read_pdf_fields").unwrap().irreversible);
+        assert!(tools.iter().find(|t| t.name == "fill_pdf_form").unwrap().irreversible);
+        // SP-Connect-in-chat: listing connections is autonomous; connecting one (external integration)
+        // is HITL-gated so the user approves every server before it's added.
+        assert!(!tools.iter().find(|t| t.name == "mcp_list").unwrap().irreversible);
+        assert!(tools.iter().find(|t| t.name == "connect_mcp").unwrap().irreversible);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

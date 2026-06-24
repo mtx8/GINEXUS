@@ -37,6 +37,11 @@ struct ContentView: View {
         .sheet(isPresented: $model.memoryOpen) { memorySheet }
         .sheet(isPresented: $model.modelsOpen) { modelsSheet }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model, store: model.settings) }
+        .sheet(isPresented: $model.projectSheetOpen) { ProjectEditorSheet(model: model) }
+        .sheet(isPresented: $model.connectionsOpen) { ConnectionsSheet(model: model) }
+        .sheet(isPresented: $model.projectsOpen) { ProjectsSheet(model: model) }
+        .sheet(isPresented: $model.schedulesOpen) { ScheduledTasksSheet(model: model) }
+        .sheet(isPresented: $model.scheduleSheetOpen) { ScheduleEditorSheet(model: model) }
     }
 
     // MARK: ── far-left icon rail ───────────────────────────────────────────────
@@ -44,6 +49,11 @@ struct ContentView: View {
         VStack(spacing: 6) {
             GlyphMark(size: 38, spinning: model.sending).padding(.top, 16).padding(.bottom, 12)
             railIcon("square.and.pencil", "New conversation", enabled: model.connected && !model.sending) { model.newChat() }
+            railIcon("folder", "Projects — folders, files, custom instructions", enabled: model.connected) {
+                model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id
+                model.projectsOpen = true
+            }
+            railIcon("clock.arrow.circlepath", "Scheduled tasks — routine automation", enabled: model.connected) { model.openSchedules() }
             railIcon("brain", "Memory — what GINEXUS knows", enabled: model.connected) { model.openMemory() }
             railIcon("cube.box", "Models — download / manage", enabled: model.connected, animating: model.pulling) { model.openModels() }
             railIcon("gearshape", "Settings") { model.openSettings() }   // always reachable (recovery)
@@ -97,14 +107,50 @@ struct ContentView: View {
             )
         ) {
             VStack(spacing: 0) {
-                if model.conversations.isEmpty {
-                    Text("No conversations yet").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                // Scope picker — one click to switch between regular chats and any project.
+                Menu {
+                    Button { model.setScope(nil) } label: {
+                        Label("All Chats", systemImage: model.activeProjectID == nil ? "checkmark" : "bubble.left.and.bubble.right")
+                    }
+                    if !model.projects.isEmpty {
+                        Divider()
+                        ForEach(model.projects) { p in
+                            Button { model.setScope(p.id) } label: {
+                                Label(p.name, systemImage: p.id == model.activeProjectID ? "checkmark" : "folder")
+                            }
+                        }
+                    }
+                    Divider()
+                    Button { model.openNewProjectSheet() } label: { Label("New project…", systemImage: "plus") }
+                    Button { model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id; model.projectsOpen = true } label: {
+                        Label("Manage projects…", systemImage: "folder.badge.gearshape")
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: model.activeProject != nil ? "folder.fill" : "bubble.left.and.bubble.right.fill")
+                            .font(.system(size: 11)).foregroundStyle(model.activeProject != nil ? Brand.ember500 : Brand.bone300)
+                        Text(model.activeProject?.name ?? "All Chats")
+                            .font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100).lineLimit(1)
+                        Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(Brand.bone400)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12).padding(.vertical, 9).contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(model.activeProject != nil ? Brand.ember500.opacity(0.07) : Color.clear)
+                Divider().overlay(Brand.line1)
+
+                if model.visibleConversations.isEmpty {
+                    Text(model.activeProject != nil ? "No threads in this project yet — tap +" : "No conversations yet")
+                        .font(Brand.mono(11)).foregroundStyle(Brand.bone400)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.top, 14)
                     Spacer()
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 3) {
-                            ForEach(model.conversations) { c in
+                            ForEach(model.visibleConversations) { c in
                                 ConversationRow(
                                     c: c, selected: c.id == model.activeConversationID,
                                     disabled: model.sending && c.id != model.activeConversationID,
@@ -327,7 +373,9 @@ struct ContentView: View {
                     GlyphMark(size: 22, spinning: msg.streaming)
                     VStack(alignment: .leading, spacing: 10) {
                         if msg.streaming {
-                            StreamingText(text: msg.text)
+                            // Render Markdown WHILE streaming too, so the user never sees raw ###/**/```.
+                            if msg.text.isEmpty { StreamingText(text: msg.text) }
+                            else { MarkdownReply(text: msg.text) }
                         } else {
                             MarkdownReply(text: msg.text)
                             if let path = msg.imagePath { StreamImage(path: path) }
@@ -412,6 +460,8 @@ struct ContentView: View {
     // MARK: ── input bar ───────────────────────────────────────────────────────
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let vc = model.voiceController { VoiceStatusBar(controller: vc) }
+            if model.deepResearchMode { deepResearchHint }
             attachmentChip
             HStack(spacing: 10) {
                 HStack(spacing: 8) {
@@ -424,6 +474,8 @@ struct ContentView: View {
                 .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 10)) }
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+                researchButton
+                voiceButton
                 Button(action: { model.send(model.chatInput) }) {
                     Text("SEND").font(Brand.mono(12, weight: .bold)).kerning(1.6)
                         .padding(.horizontal, 24).padding(.vertical, 14)
@@ -441,6 +493,66 @@ struct ContentView: View {
         (!model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.attachment != nil)
     }
 
+    /// Deep Research toggle — arm it, then send your question and the GINEXUS research team (Nexus
+    /// RND/STR) searches the web, cross-checks, and returns a cited report. Always clickable when
+    /// connected; lights up ember when armed; disarms after one message.
+    private var researchButton: some View {
+        Button(action: model.toggleDeepResearch) {
+            Image(systemName: "binoculars.fill").font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(model.deepResearchMode ? Brand.ink900 : Brand.bone200)
+                .frame(width: 46, height: 46)
+                .background(model.deepResearchMode ? AnyShapeStyle(Brand.ember500) : AnyShapeStyle(Brand.cardFill))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10)
+                    .stroke(model.deepResearchMode ? Brand.ember500 : Brand.line1, lineWidth: 1))
+                .shadow(color: model.deepResearchMode ? Brand.ember500.opacity(0.45) : .clear, radius: 9)
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.connected)
+        .help(model.deepResearchMode
+              ? "Deep Research armed — your next message gets researched. Click to cancel."
+              : "Deep Research — search the web and return a cited report")
+    }
+
+    /// Banner shown above the composer while Deep Research is armed, so the feature is unmistakable.
+    private var deepResearchHint: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "binoculars.fill").font(.system(size: 11)).foregroundStyle(Brand.ember500)
+            Text("Deep Research armed — your next message will be searched, cross-checked, and returned as a cited report.")
+                .font(Brand.mono(10)).foregroundStyle(Brand.bone200).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button { model.deepResearchMode = false } label: {
+                Image(systemName: "xmark").font(.system(size: 9)).foregroundStyle(Brand.bone400)
+            }.buttonStyle(.plain).help("Cancel Deep Research")
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Brand.ember500.opacity(0.10)).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.ember500.opacity(0.4), lineWidth: 1))
+    }
+
+    /// Mic toggle — starts/stops the hands-free voice conversation (SP-Voice). Animated waveform
+    /// when live; the ring + glow pulse with the brand ember.
+    private var voiceButton: some View {
+        Button(action: model.toggleVoice) {
+            Group {
+                if let vc = model.voiceController {
+                    VoiceWaveformIcon(controller: vc)
+                } else {
+                    Image(systemName: "mic.fill").font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Brand.bone200)
+                }
+            }
+            .frame(width: 46, height: 46)
+            .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(model.voiceActive ? Brand.ember500.opacity(0.75) : Brand.line1, lineWidth: 1))
+            .shadow(color: model.voiceActive ? Brand.ember500.opacity(0.45) : .clear, radius: 9)
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.connected)
+        .help(model.voiceActive ? "Stop voice conversation" : "Talk to GINEXUS (hands-free)")
+    }
+
     /// The "+" menu inside the input row: capabilities that act on your message, plus attachments.
     private var plusMenu: some View {
         Menu {
@@ -448,6 +560,22 @@ struct ContentView: View {
                 Button("Perspectives", action: model.runCouncil).disabled(!model.canQuickAction)
                 Button("Research", action: model.runResearch).disabled(!model.canQuickAction)
                 Button("Create image", action: model.runImage).disabled(!model.canQuickAction)
+            }
+            Section(model.activeProject.map { "Project: \($0.name)" } ?? "Project: none") {
+                Button("New project…", action: model.openNewProjectSheet)
+                if !model.projects.isEmpty {
+                    Menu("Switch project") {
+                        Button("None (loose chat)") { model.selectProject(nil) }
+                        ForEach(model.projects) { p in
+                            Button(p.name) { model.selectProject(p.id) }
+                        }
+                    }
+                }
+                if let p = model.activeProject {
+                    Button("Edit “\(p.name)”…") { model.openEditProjectSheet(p.id) }
+                    if p.folderPath != nil { Button("Reveal project folder", action: model.revealProjectFolder) }
+                    Button("Delete “\(p.name)”", role: .destructive) { model.deleteProject(p.id) }
+                }
             }
             Section("Attach") {
                 Button("Attach file…", action: model.attachAny)
@@ -721,35 +849,87 @@ struct ContentView: View {
                     Button("DONE") { model.memoryOpen = false }
                         .buttonStyle(.plain).font(Brand.display(12, weight: .bold)).foregroundStyle(Brand.bone300)
                 }
+                ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         if model.memBlocks.isEmpty {
-                            Text("Nothing learned about you yet. Tap BUILD PROFILE above to summarize what GINEXUS knows from your memory.")
-                                .font(Brand.mono(12)).foregroundStyle(Brand.bone300).fixedSize(horizontal: false, vertical: true)
+                            HStack {
+                                Text("Nothing learned about you yet — tap BUILD PROFILE, or")
+                                    .font(Brand.mono(12)).foregroundStyle(Brand.bone300)
+                                Button("WRITE ONE") { model.newProfileBlock() }
+                                    .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ember500)
+                            }.fixedSize(horizontal: false, vertical: true)
                         }
                         ForEach(model.memBlocks) { b in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Eyebrow(text: b.name, color: Brand.ember500)
-                                Text(b.value).font(Brand.body(13)).foregroundStyle(Brand.bone50).fixedSize(horizontal: false, vertical: true)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Eyebrow(text: b.name, color: Brand.ember500)
+                                    Spacer()
+                                    if model.editingBlock != b.name {
+                                        Button("EDIT") { model.beginEditBlock(b.name, value: b.value) }
+                                            .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
+                                    }
+                                }
+                                if model.editingBlock == b.name {
+                                    TextEditor(text: $model.blockDraft)
+                                        .font(Brand.body(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                                        .frame(minHeight: 120)
+                                        .padding(8).background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember600.opacity(0.5), lineWidth: 1))
+                                    HStack {
+                                        Spacer()
+                                        Button("CANCEL") { model.cancelEditBlock() }
+                                            .buttonStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                                        Button("SAVE") { model.saveBlock() }
+                                            .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ink900)
+                                            .padding(.horizontal, 14).padding(.vertical, 7)
+                                            .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 6))
+                                    }
+                                } else {
+                                    highlightedText(b.value, terms: model.memTerms, current: false)
+                                        .font(Brand.body(13)).foregroundStyle(Brand.bone50).fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                             .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                         Divider().overlay(Color.white.opacity(0.08))
-                        ForEach(model.memResults) { f in
+                        ForEach(Array(model.memResults.enumerated()), id: \.offset) { idx, f in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(f.origin == "untrusted" ? "DATA" : "·").font(Brand.mono(8, weight: .bold))
                                     .foregroundStyle(Brand.bone300).frame(width: 34, alignment: .leading)
-                                Text(f.text).font(Brand.body(12)).foregroundStyle(Brand.bone100).fixedSize(horizontal: false, vertical: true)
+                                highlightedText(f.text, terms: model.memTerms, current: idx == model.memMatchIndex)
+                                    .font(Brand.body(12)).foregroundStyle(Brand.bone100).fixedSize(horizontal: false, vertical: true)
                             }
+                            .padding(.vertical, 4).padding(.horizontal, 6)
+                            .background(idx == model.memMatchIndex && !model.memTerms.isEmpty ? Brand.ember500.opacity(0.10) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .id(idx)
                         }
                     }
                 }
+                .onChange(of: model.memMatchIndex) { _, new in
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(new, anchor: .center) }
+                }
+                }   // ScrollViewReader
                 HStack(spacing: 8) {
-                    TextField("Search memory…", text: $model.memQuery)
-                        .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50)
-                        .padding(10).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
-                        .onSubmit { model.searchMemory() }
+                    HStack(spacing: 8) {
+                        TextField("Search memory…", text: $model.memQuery)
+                            .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50)
+                            .onSubmit { model.searchMemory() }
+                        // Office-style match counter + prev/next, shown once there are results.
+                        if !model.memResults.isEmpty {
+                            Text("\(model.memMatchIndex + 1) of \(model.memResults.count)")
+                                .font(Brand.mono(11)).monospacedDigit().foregroundStyle(Brand.bone300)
+                            Button(action: model.memPrev) {
+                                Image(systemName: "chevron.up").font(.system(size: 11, weight: .bold)).foregroundStyle(Brand.bone200)
+                            }.buttonStyle(.plain).keyboardShortcut(.upArrow, modifiers: []).help("Previous match")
+                            Button(action: model.memNext) {
+                                Image(systemName: "chevron.down").font(.system(size: 11, weight: .bold)).foregroundStyle(Brand.bone200)
+                            }.buttonStyle(.plain).keyboardShortcut(.downArrow, modifiers: []).help("Next match")
+                        }
+                    }
+                    .padding(10).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
                     Button(action: { model.searchMemory() }) {
                         Text("SEARCH").font(Brand.display(12, weight: .bold)).kerning(1)
                             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -786,6 +966,709 @@ struct ContentView: View {
 
 // MARK: - streaming answer text with a blinking ember cursor (matches the EXECUTE accent)
 // MARK: - token usage gauge (Context rail) — REAL counts only, honest empty state ("—")
+/// SP-Connect: manage external MCP integrations. Notion has a one-paste preset; others can be added
+/// as a raw stdio command. Secrets go to the Keychain; changes apply on the next app restart.
+/// Scheduled tasks (cron jobs) — routine automation that runs unattended on a cadence. Each task
+/// carries its own custom instructions and optional attached files. Discoverable from the left rail.
+private struct ScheduledTasksSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "clock.arrow.circlepath").font(.system(size: 12)).foregroundStyle(Brand.ember500)
+                Text("SCHEDULED TASKS").font(Brand.mono(12, weight: .bold)).kerning(2).foregroundStyle(Brand.bone100)
+                Spacer()
+                Button(action: model.openNewScheduleSheet) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "plus").font(.system(size: 11, weight: .bold))
+                        Text("NEW").font(Brand.mono(10, weight: .bold)).kerning(1)
+                    }.foregroundStyle(Brand.ember500)
+                }.buttonStyle(.plain).help("New scheduled task")
+                Button { model.schedulesOpen = false } label: {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.bone300)
+                }.buttonStyle(.plain).help("Close")
+            }
+            .padding(.horizontal, 18).padding(.vertical, 13)
+            Divider().overlay(Brand.line1)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Tasks run on their own in the background. Each one follows your instructions and can read files you attach. Read-only by default — anything irreversible waits for your approval.")
+                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+
+                    if model.schedules.isEmpty {
+                        emptyState
+                    } else {
+                        ForEach(model.schedules) { task in taskCard(task) }
+                    }
+                }
+                .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 20)
+            }
+        }
+        .frame(width: 540, height: 600)
+        .background(Brand.ink850)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "clock.badge.questionmark").font(.system(size: 30)).foregroundStyle(Brand.bone400)
+            Text("No scheduled tasks yet").font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone200)
+            Text("Create one to run routine work automatically — a morning digest, a weekly report, a recurring check.")
+                .font(Brand.mono(10)).foregroundStyle(Brand.bone400).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: model.openNewScheduleSheet) {
+                Text("NEW TASK").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
+                    .padding(.horizontal, 18).padding(.vertical, 10)
+                    .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+            }.buttonStyle(.plain).padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 40)
+    }
+
+    private func taskCard(_ task: ScheduledTask) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(task.displayTitle).font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone100).lineLimit(1)
+                Spacer(minLength: 8)
+                Toggle("", isOn: Binding(get: { task.enabled }, set: { model.toggleSchedule(task.id, enabled: $0) }))
+                    .labelsHidden().toggleStyle(.switch).tint(Brand.ember500).help(task.enabled ? "Pause" : "Resume")
+                Button(role: .destructive) { model.removeSchedule(task.id) } label: {
+                    Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(Brand.bone300)
+                }.buttonStyle(.plain).help("Delete task")
+            }
+
+            // Cadence · next run · run count — at-a-glance status.
+            HStack(spacing: 8) {
+                metaChip("clock", task.cadenceLabel)
+                metaChip("calendar", task.nextRunLabel)
+                if task.runs > 0 { metaChip("checkmark.circle", "\(task.runs) run\(task.runs == 1 ? "" : "s")") }
+            }
+
+            if task.prompt.trimmingCharacters(in: .whitespacesAndNewlines) != task.displayTitle {
+                Text(task.prompt).font(Brand.mono(10)).foregroundStyle(Brand.bone300).lineLimit(2)
+            }
+
+            if !task.attachments.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "paperclip").font(.system(size: 9)).foregroundStyle(Brand.bone400)
+                    Text(task.attachments.joined(separator: ", "))
+                        .font(Brand.mono(9)).foregroundStyle(Brand.bone400).lineLimit(1)
+                }
+            }
+
+            if !task.lastResult.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("LAST RESULT").font(Brand.mono(8, weight: .bold)).kerning(1).foregroundStyle(Brand.bone400)
+                    Text(task.lastResult).font(Brand.mono(10)).foregroundStyle(Brand.bone300).lineLimit(4)
+                }
+                .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+        .opacity(task.enabled ? 1 : 0.6)
+    }
+
+    private func metaChip(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 8))
+            Text(text).font(Brand.mono(9))
+        }
+        .foregroundStyle(Brand.bone300)
+        .padding(.horizontal, 7).padding(.vertical, 3)
+        .background(Brand.ink900).clipShape(Capsule())
+    }
+}
+
+/// Create a scheduled task: a name, the instructions GINEXUS follows each run, a cadence, and any
+/// files to attach. Files are read app-side and copied to the task (the sidecar can't reach iCloud /
+/// TCC folders); iCloud paths are refused.
+private struct ScheduleEditorSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("NEW SCHEDULED TASK").font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Name").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                TextField("e.g. Morning news digest", text: $model.schedDraftName)
+                    .textFieldStyle(.plain).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
+                    .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Instructions").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Text("What GINEXUS should do each time this runs. Be specific.")
+                    .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                TextEditor(text: $model.schedDraftPrompt)
+                    .font(Brand.mono(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                    .frame(minHeight: 96)
+                    .padding(8).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Runs").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Picker("", selection: $model.schedDraftEverySecs) {
+                    ForEach(ScheduleCadence.allCases) { c in Text(c.label).tag(c.rawValue) }
+                }
+                .labelsHidden().pickerStyle(.menu).tint(Brand.ember500)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Files").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                    Spacer()
+                    Button("Add file…", action: model.addFilesToScheduleDraft)
+                        .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ember500)
+                }
+                if model.schedDraftFiles.isEmpty {
+                    Text("Optional — attach documents the task should read each run.")
+                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                } else {
+                    VStack(spacing: 3) {
+                        ForEach(model.schedDraftFiles, id: \.self) { f in
+                            HStack(spacing: 8) {
+                                Image(systemName: "doc").font(.system(size: 10)).foregroundStyle(Brand.bone300)
+                                Text(f.lastPathComponent).font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Button { model.removeScheduleDraftFile(f) } label: {
+                                    Image(systemName: "xmark").font(.system(size: 9))
+                                }.buttonStyle(.plain).foregroundStyle(Brand.bone400)
+                            }
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { model.scheduleSheetOpen = false }
+                    .buttonStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone200)
+                    .padding(.horizontal, 18).padding(.vertical, 10)
+                Button(action: model.saveScheduleSheet) {
+                    Text("CREATE").font(Brand.mono(12, weight: .bold)).kerning(1.4).foregroundStyle(Brand.ink900)
+                        .padding(.horizontal, 22).padding(.vertical, 12)
+                        .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.schedDraftPrompt.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(22).frame(width: 480)
+        .background(Brand.ink850)
+    }
+}
+
+private struct ConnectionsSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("CONNECTIONS").font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+                Spacer()
+                Button { model.connectionsOpen = false } label: {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.bone300)
+                }.buttonStyle(.plain)
+            }
+            .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 10)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Connect external tools over MCP. Tool calls are approval-gated; writes need your biometric OK. Changes apply after restarting GINEXUS.")
+                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+
+                    presetRow("Notion", hint: "Internal integration token (“ntn_” / “secret_”).",
+                              placeholder: "Notion integration token", token: $model.notionTokenDraft, connect: model.connectNotion)
+                    presetRow("GitHub", hint: "Personal access token (repo / issues scopes).",
+                              placeholder: "GitHub PAT (ghp_… / github_pat_…)", token: $model.githubTokenDraft, connect: model.connectGitHub)
+
+                    Divider().overlay(Brand.line1)
+
+                    // Generic add-any-server form (Shopify, etc.)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("ADD A SERVER").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
+                        Text("Any MCP server with a stdio command — e.g. Shopify: npx -y @shopify/dev-mcp")
+                            .font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                        field("Name (e.g. shopify)", $model.mcpCustomName)
+                        field("Command (e.g. npx -y @shopify/dev-mcp)", $model.mcpCustomCommand)
+                        HStack(spacing: 8) {
+                            field("Token env var (optional)", $model.mcpCustomTokenEnv)
+                            secure("Token (optional)", $model.mcpCustomToken)
+                        }
+                        HStack {
+                            Spacer()
+                            Button(action: model.addCustomMcp) {
+                                Text("ADD SERVER").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
+                                    .padding(.horizontal, 16).padding(.vertical, 10)
+                                    .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                            }.buttonStyle(.plain)
+                            .disabled(model.mcpCustomName.trimmingCharacters(in: .whitespaces).isEmpty
+                                      || model.mcpCustomCommand.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                    }
+
+                    Divider().overlay(Brand.line1)
+
+                    Text("CONFIGURED").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
+                    if model.mcpServers.isEmpty {
+                        Text("No connections yet.").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                    } else {
+                        ForEach(model.mcpServers) { s in
+                            HStack(spacing: 10) {
+                                Circle().fill(s.enabled ? Brand.ember500 : Brand.ink500).frame(width: 7, height: 7)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(s.name).font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
+                                    Text(s.command).font(Brand.mono(9)).foregroundStyle(Brand.bone400).lineLimit(1)
+                                }
+                                Spacer()
+                                Toggle("", isOn: Binding(get: { s.enabled }, set: { model.setMcpEnabled(s.id, $0) }))
+                                    .labelsHidden().toggleStyle(.switch).tint(Brand.ember500)
+                                Button(role: .destructive) { model.removeMcpServer(s.id) } label: {
+                                    Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(Brand.bone300)
+                                }.buttonStyle(.plain)
+                            }
+                            .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+                        }
+                    }
+                }
+                .padding(.horizontal, 20).padding(.bottom, 18)
+            }
+        }
+        .frame(width: 500, height: 560)
+        .background(Brand.ink850)
+    }
+
+    private func presetRow(_ title: String, hint: String, placeholder: String,
+                           token: Binding<String>, connect: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
+            Text(hint).font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+            HStack(spacing: 8) {
+                SecureField(placeholder, text: token)
+                    .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
+                    .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+                Button(action: connect) {
+                    Text("CONNECT").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
+                        .padding(.horizontal, 16).padding(.vertical, 11)
+                        .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain).disabled(token.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
+    private func field(_ ph: String, _ text: Binding<String>) -> some View {
+        TextField(ph, text: text)
+            .textFieldStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone50)
+            .padding(9).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
+    }
+    private func secure(_ ph: String, _ text: Binding<String>) -> some View {
+        SecureField(ph, text: text)
+            .textFieldStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone50)
+            .padding(9).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
+    }
+}
+
+/// Create/edit a project: name + custom instructions (the per-project system prompt).
+private struct ProjectEditorSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(model.editingProjectID == nil ? "NEW PROJECT" : "EDIT PROJECT")
+                .font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Name").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                TextField("e.g. Taxes 2026", text: $model.projectDraftName)
+                    .textFieldStyle(.plain).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
+                    .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Custom instructions").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Text("Steers every chat in this project. Files you add here ground its answers.")
+                    .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                TextEditor(text: $model.projectDraftInstructions)
+                    .font(Brand.mono(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                    .frame(minHeight: 100)
+                    .padding(8).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }
+            // Files — works for a brand-new project (staged, copied on Create) and an existing one.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Files").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                    Spacer()
+                    Button("Add file…") {
+                        if let id = model.editingProjectID { model.addFilesToProject(id) } else { model.addFilesToDraft() }
+                    }.buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ember500)
+                    Button("Add folder…") {
+                        if let id = model.editingProjectID { model.addFolderToProject(id) } else { model.addFolderToDraft() }
+                    }.buttonStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                }
+                let files: [URL] = model.editingProjectID.map { model.projectFiles($0) } ?? model.projectDraftFiles
+                if files.isEmpty {
+                    Text("Optional — GINEXUS can read files you add in this project's chats.")
+                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                } else {
+                    VStack(spacing: 3) {
+                        ForEach(files, id: \.self) { f in
+                            HStack(spacing: 8) {
+                                Image(systemName: "doc").font(.system(size: 10)).foregroundStyle(Brand.bone300)
+                                Text(f.lastPathComponent).font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Button {
+                                    if let id = model.editingProjectID { model.removeProjectFile(id, f) } else { model.removeDraftFile(f) }
+                                } label: { Image(systemName: "xmark").font(.system(size: 9)) }
+                                    .buttonStyle(.plain).foregroundStyle(Brand.bone400)
+                            }
+                        }
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { model.projectSheetOpen = false }
+                    .buttonStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone200)
+                    .padding(.horizontal, 18).padding(.vertical, 10)
+                Button(action: model.saveProjectSheet) {
+                    Text(model.editingProjectID == nil ? "CREATE" : "SAVE")
+                        .font(Brand.mono(12, weight: .bold)).kerning(1.4).foregroundStyle(Brand.ink900)
+                        .padding(.horizontal, 22).padding(.vertical, 12)
+                        .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.projectDraftName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(22).frame(width: 460)
+        .background(Brand.ink850)
+    }
+}
+
+/// Projects workspace — create projects (folders), set custom instructions, and add files / local
+/// paths that GINEXUS can read in that project's chats. Discoverable from the left rail (folder icon).
+private struct ProjectsSheet: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Top bar — title, NEW, and a clear close (no more overlap with the ACTIVE badge).
+            HStack(spacing: 10) {
+                Image(systemName: "folder.fill").font(.system(size: 12)).foregroundStyle(Brand.ember500)
+                Text("PROJECTS").font(Brand.mono(12, weight: .bold)).kerning(2).foregroundStyle(Brand.bone100)
+                Spacer()
+                Button(action: model.openNewProjectSheet) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "plus").font(.system(size: 11, weight: .bold))
+                        Text("NEW").font(Brand.mono(10, weight: .bold)).kerning(1)
+                    }.foregroundStyle(Brand.ember500)
+                }.buttonStyle(.plain).help("New project")
+                Button { model.projectsOpen = false } label: {
+                    Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.bone300)
+                }.buttonStyle(.plain).help("Close")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            Divider().overlay(Brand.line1)
+
+            HStack(spacing: 0) {
+                // Left: project list
+                ScrollView {
+                    VStack(spacing: 3) {
+                        ForEach(model.projects) { p in
+                            Button { model.selectedProjectID = p.id } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "folder.fill").font(.system(size: 11))
+                                        .foregroundStyle(p.id == model.activeProjectID ? Brand.ember500 : Brand.bone300)
+                                    Text(p.name).font(Brand.mono(12)).foregroundStyle(Brand.bone50).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                    if p.id == model.activeProjectID {
+                                        Circle().fill(Brand.ember500).frame(width: 5, height: 5)
+                                    }
+                                }
+                                .padding(.vertical, 8).padding(.horizontal, 10)
+                                .background(p.id == model.selectedProjectID ? Brand.ink600 : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                            }.buttonStyle(.plain)
+                        }
+                        if model.projects.isEmpty {
+                            VStack(spacing: 8) {
+                                Image(systemName: "folder.badge.plus").font(.system(size: 22)).foregroundStyle(Brand.bone400)
+                                Text("No projects yet").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                            }.frame(maxWidth: .infinity).padding(.top, 28)
+                        }
+                    }.padding(10)
+                }
+                .frame(width: 200).background(Brand.ink850)
+
+                Rectangle().fill(Brand.line1).frame(width: 1)
+
+                // Right: detail
+                Group {
+                    if let pid = model.selectedProjectID, let p = model.projects.first(where: { $0.id == pid }) {
+                        ProjectDetail(model: model, project: p).id(p.id)
+                    } else {
+                        VStack(spacing: 14) {
+                            Image(systemName: "folder").font(.system(size: 34)).foregroundStyle(Brand.bone400)
+                            Text("Select a project, or create one").font(Brand.mono(13)).foregroundStyle(Brand.bone300)
+                            Button { model.openNewProjectSheet() } label: {
+                                HStack(spacing: 6) { Image(systemName: "plus"); Text("NEW PROJECT").kerning(1) }
+                                    .font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ink900)
+                                    .padding(.horizontal, 18).padding(.vertical, 10).background(Brand.ember500)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }.buttonStyle(.plain)
+                        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+            }
+        }
+        .frame(width: 680, height: 510)
+        .background(Brand.ink900)
+    }
+}
+
+/// One project's editable detail: name, custom instructions, and its files.
+private struct ProjectDetail: View {
+    @ObservedObject var model: AppModel
+    let project: Project
+    @State private var name: String
+    @State private var instr: String
+
+    init(model: AppModel, project: Project) {
+        self.model = model
+        self.project = project
+        _name = State(initialValue: project.name)
+        _instr = State(initialValue: project.instructions)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Name + ACTIVE pill (inline — no longer colliding with a close button).
+            HStack(spacing: 8) {
+                TextField("Project name", text: $name)
+                    .textFieldStyle(.plain).font(Brand.display(17, weight: .bold)).foregroundStyle(Brand.bone50)
+                    .onSubmit { model.updateProject(project.id, name: name) }
+                if model.activeProjectID == project.id {
+                    Text("• ACTIVE").font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.ember500)
+                }
+            }
+
+            // Primary action: enter the project and start chatting.
+            Button { model.openProjectAndChat(project.id) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "bubble.left.and.text.bubble.right.fill").font(.system(size: 12))
+                    Text("OPEN — NEW CHAT IN THIS PROJECT").font(Brand.mono(11, weight: .bold)).kerning(1)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 11)
+                .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+            }.buttonStyle(.plain)
+
+            // Custom instructions
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("CUSTOM INSTRUCTIONS").font(Brand.mono(9, weight: .bold)).kerning(1.4).foregroundStyle(Brand.bone300)
+                    Spacer()
+                    Button("SAVE") { model.updateProject(project.id, name: name, instructions: instr) }
+                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500).help("Save instructions")
+                }
+                Text("Every thread in this project follows these.").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                TextEditor(text: $instr)
+                    .font(Brand.body(12)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                    .frame(height: 80)
+                    .padding(8).background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.line1, lineWidth: 1))
+            }
+
+            // Files
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 12) {
+                    Text("FILES").font(Brand.mono(9, weight: .bold)).kerning(1.4).foregroundStyle(Brand.bone300)
+                    Spacer()
+                    Button("ADD FILE") { model.addFilesToProject(project.id) }
+                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
+                    Button("ADD FOLDER") { model.addFolderToProject(project.id) }
+                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
+                    Button { model.revealProjectFolderFor(project.id) } label: {
+                        Image(systemName: "arrow.up.forward.app").font(.system(size: 12)).foregroundStyle(Brand.bone300)
+                    }.buttonStyle(.plain).help("Reveal folder in Finder")
+                }
+                Text("GINEXUS can read these in this project's chats.").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                ScrollView {
+                    VStack(spacing: 4) {
+                        let files = model.projectFiles(project.id)
+                        if files.isEmpty {
+                            VStack(spacing: 7) {
+                                Image(systemName: "tray").font(.system(size: 20)).foregroundStyle(Brand.bone400)
+                                Text("No files yet — add files or a folder.").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                            }.frame(maxWidth: .infinity).padding(.vertical, 16)
+                        }
+                        ForEach(files, id: \.self) { f in
+                            HStack(spacing: 8) {
+                                Image(systemName: Self.icon(for: f)).font(.system(size: 11)).foregroundStyle(Brand.ember500.opacity(0.85))
+                                Text(f.lastPathComponent).font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
+                                Spacer(minLength: 0)
+                                Button { model.removeProjectFile(project.id, f) } label: {
+                                    Image(systemName: "trash").font(.system(size: 10))
+                                }.buttonStyle(.plain).foregroundStyle(Brand.bone400).help("Remove from project")
+                            }.padding(.vertical, 7).padding(.horizontal, 9).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                }.frame(maxHeight: .infinity)
+            }
+
+            HStack {
+                Spacer()
+                Button {
+                    model.deleteProject(project.id)
+                    model.selectedProjectID = model.projects.first?.id
+                } label: {
+                    HStack(spacing: 4) { Image(systemName: "trash"); Text("Delete project") }
+                        .font(Brand.mono(10)).foregroundStyle(Brand.hi500)
+                }.buttonStyle(.plain).help("Delete this project")
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private static func icon(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "pdf": return "doc.richtext"
+        case "doc", "docx": return "doc.text"
+        case "png", "jpg", "jpeg", "gif", "heic", "webp": return "photo"
+        case "csv", "xlsx", "numbers", "tsv": return "tablecells"
+        case "md", "markdown", "txt", "rtf": return "doc.plaintext"
+        case "mp4", "mov", "m4v": return "film"
+        case "zip", "tar", "gz": return "doc.zipper"
+        default: return "doc"
+        }
+    }
+}
+
+/// Office-style match highlighting: emphasize each search term in `text`; tint the CURRENT match.
+fileprivate func highlightedText(_ text: String, terms: [String], current: Bool) -> Text {
+    guard !terms.isEmpty else { return Text(text) }
+    var attr = AttributedString(text)
+    for term in terms {
+        var start = text.startIndex
+        while start < text.endIndex,
+              let r = text.range(of: term, options: .caseInsensitive, range: start..<text.endIndex) {
+            if let ar = Range(r, in: attr) {
+                attr[ar].foregroundColor = Brand.ember500
+                attr[ar].inlinePresentationIntent = .stronglyEmphasized
+                if current { attr[ar].backgroundColor = Brand.ember500.opacity(0.28) }
+            }
+            start = r.upperBound
+        }
+    }
+    return Text(attr)
+}
+
+/// Brand-styled waveform for the live voice button that REACTS to the actual mic level — bars rise
+/// with sound and sit nearly flat in silence. A faint organic shimmer (scaled by level) keeps it
+/// from looking frozen, but the height is driven by the real RMS, not a canned loop.
+private struct VoiceWaveformIcon: View {
+    @ObservedObject var controller: VoiceConversationController
+    private let bars = 5
+
+    var body: some View {
+        TimelineView(.animation) { tl in
+            let t = tl.date.timeIntervalSinceReferenceDate
+            // Normalize raw mic RMS (~0…0.06 for speech) to 0…1, with a soft knee.
+            let level = min(1.0, CGFloat(controller.level) * 22.0)
+            HStack(spacing: 2.5) {
+                ForEach(0..<bars, id: \.self) { i in
+                    Capsule()
+                        .fill(LinearGradient(colors: [Brand.ember300, Brand.ember600],
+                                             startPoint: .top, endPoint: .bottom))
+                        .frame(width: 3, height: height(i, t, level))
+                }
+            }
+            .frame(width: 26, height: 24)
+            .animation(.easeOut(duration: 0.08), value: level)
+            .drawingGroup()
+        }
+    }
+
+    private func height(_ i: Int, _ t: Double, _ level: CGFloat) -> CGFloat {
+        // Per-bar organic shape, but its AMPLITUDE is the live mic level → flat when silent, dancing
+        // when you speak. Center bars react a touch more, like a real meter.
+        let phase = Double(i) / Double(bars) * .pi * 2
+        let shape = 0.45 + 0.55 * (0.5 + 0.5 * sin(t * 9.0 + phase))
+        let center = 1.0 - abs(CGFloat(i) - CGFloat(bars - 1) / 2) / CGFloat(bars)  // ~0.6…1.0
+        let baseline: CGFloat = 3
+        return baseline + level * 17 * CGFloat(shape) * center
+    }
+}
+
+/// Live voice state above the composer: pulsing dot + state + mic level + last transcript.
+private struct VoiceStatusBar: View {
+    @ObservedObject var controller: VoiceConversationController
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(dotColor).frame(width: 8, height: 8)
+                .shadow(color: dotColor.opacity(0.7), radius: controller.state == .listening ? 5 : 0)
+            Text(label).font(Brand.mono(11, weight: .bold)).kerning(1.6).foregroundStyle(Brand.bone200)
+            level
+            if !controller.lastTranscript.isEmpty {
+                Text("“\(controller.lastTranscript)”")
+                    .font(Brand.mono(11)).foregroundStyle(Brand.bone300).lineLimit(1).truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+            if let err = controller.errorText {
+                Text(err).font(Brand.mono(10)).foregroundStyle(Brand.hi500).lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.ember600.opacity(0.4), lineWidth: 1))
+    }
+
+    /// A small 5-bar level meter driven by the mic RMS.
+    private var level: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<5, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Float(i) < controller.level * 40 ? Brand.ember500 : Brand.ink500)
+                    .frame(width: 3, height: 4 + CGFloat(i) * 2)
+            }
+        }
+        .frame(height: 14)
+        .opacity(controller.state == .listening ? 1 : 0.35)
+    }
+
+    private var label: String {
+        switch controller.state {
+        case .idle: return "VOICE OFF"
+        case .listening: return "LISTENING"
+        case .transcribing: return "HEARD YOU"
+        case .thinking: return "THINKING"
+        case .speaking: return "SPEAKING"
+        }
+    }
+
+    private var dotColor: Color {
+        switch controller.state {
+        case .listening: return Brand.ember500
+        case .speaking: return Brand.ember400
+        case .thinking, .transcribing: return Brand.bone300
+        case .idle: return Brand.ink500
+        }
+    }
+}
+
 private struct TokenUsageGauge: View {
     let usage: TokenUsage?
     var body: some View {
@@ -869,33 +1752,45 @@ private struct ConversationRow: View {
     let onRequestRename: () -> Void
     let onRequestDelete: () -> Void
     @State private var hover = false
+    @FocusState private var focused: Bool
     private var isRenaming: Bool { renamingID == c.id }
 
     var body: some View {
-        Button(action: onSelect) {
+        if isRenaming {
+            // Editable row — NOT inside a Button, so the TextField actually receives clicks + focus.
             VStack(alignment: .leading, spacing: 2) {
-                if isRenaming {
-                    TextField("Title", text: $renameText)
-                        .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50).tint(Brand.ember500)
-                        .padding(.horizontal, 6).padding(.vertical, 3)
-                        .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 6))
-                        .onSubmit(onCommitRename).onExitCommand { renamingID = nil }
-                } else {
-                    Text(c.title).font(Brand.mono(13)).foregroundStyle(selected ? Brand.ember500 : Brand.bone50).lineLimit(1)
-                }
-                Text("\(relativeTime(c.updatedAt)) · \(c.messageCount)").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                TextField("Title", text: $renameText)
+                    .textFieldStyle(.plain).font(Brand.mono(13)).foregroundStyle(Brand.bone50).tint(Brand.ember500)
+                    .focused($focused)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(Brand.ink800).clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember500.opacity(0.6), lineWidth: 1))
+                    .onSubmit(onCommitRename)
+                    .onExitCommand { renamingID = nil }
+                Text("Enter to save · Esc to cancel").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? Brand.ink700 : Color.white.opacity(hover ? 0.04 : 0))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain).disabled(disabled)
-        .onHover { h in withAnimation(Brand.ease) { hover = h } }
-        .contextMenu {
-            Button("Rename", action: onRequestRename)
-            Button("Delete", role: .destructive, action: onRequestDelete)
+            .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
+            .onAppear { DispatchQueue.main.async { focused = true } }
+        } else {
+            Button(action: onSelect) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(c.title).font(Brand.mono(13)).foregroundStyle(selected ? Brand.ember500 : Brand.bone50).lineLimit(1)
+                    Text("\(relativeTime(c.updatedAt)) · \(c.messageCount)").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(selected ? Brand.ink700 : Color.white.opacity(hover ? 0.04 : 0))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).disabled(disabled)
+            .onHover { h in withAnimation(Brand.ease) { hover = h } }
+            .contextMenu {
+                Button("Rename", action: onRequestRename)
+                Button("Delete", role: .destructive, action: onRequestDelete)
+            }
         }
     }
 }

@@ -38,6 +38,81 @@ struct MemFact: Identifiable, Sendable {
     let origin: String   // "trusted" | "untrusted"
 }
 
+/// A scheduled task (cron job) that runs unattended on a cadence. Mirrors the core's `/v1/schedule`
+/// record. `attachments` are the basenames of files the task reads each run.
+struct ScheduledTask: Identifiable, Sendable {
+    let id: String
+    var name: String
+    var prompt: String
+    var everySecs: Int
+    var enabled: Bool
+    var attachments: [String]
+    var runs: Int
+    var lastRunMs: Int64
+    var nextRunMs: Int64
+    var lastResult: String
+
+    /// Friendly title — the task's name, or the first line of its instructions if unnamed.
+    var displayTitle: String {
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !n.isEmpty { return n }
+        let firstLine = prompt.split(separator: "\n").first.map(String.init) ?? prompt
+        return firstLine.isEmpty ? "Untitled task" : String(firstLine.prefix(60))
+    }
+
+    /// Human cadence label from the interval (e.g. "Every hour", "Daily").
+    var cadenceLabel: String { ScheduleCadence.label(forSeconds: everySecs) }
+
+    var lastRunLabel: String {
+        guard lastRunMs > 0 else { return "Never run" }
+        let d = Date(timeIntervalSince1970: Double(lastRunMs) / 1000)
+        let f = RelativeDateTimeFormatter(); f.unitsStyle = .abbreviated
+        return "Ran \(f.localizedString(for: d, relativeTo: Date()))"
+    }
+
+    var nextRunLabel: String {
+        guard enabled else { return "Paused" }
+        let d = Date(timeIntervalSince1970: Double(nextRunMs) / 1000)
+        if d <= Date() { return "Due now" }
+        let f = RelativeDateTimeFormatter(); f.unitsStyle = .abbreviated
+        return "Next \(f.localizedString(for: d, relativeTo: Date()))"
+    }
+}
+
+/// The preset cadences offered in the editor — clean, intuitive choices mapped to the core's
+/// interval engine. (The core floors anything below 30s.)
+enum ScheduleCadence: Int, CaseIterable, Identifiable {
+    case every15min = 900
+    case hourly = 3600
+    case every6h = 21600
+    case daily = 86400
+    case weekly = 604800
+
+    var id: Int { rawValue }
+    var label: String {
+        switch self {
+        case .every15min: return "Every 15 minutes"
+        case .hourly: return "Every hour"
+        case .every6h: return "Every 6 hours"
+        case .daily: return "Daily"
+        case .weekly: return "Weekly"
+        }
+    }
+
+    /// Shorter label for list rows.
+    static func label(forSeconds s: Int) -> String {
+        switch s {
+        case ..<60: return "Every \(s)s"
+        case ..<3600: return "Every \(s / 60) min"
+        case 3600: return "Every hour"
+        case ..<86400: return "Every \(s / 3600) h"
+        case 86400: return "Daily"
+        case 604800: return "Weekly"
+        default: return "Every \(s / 86400) days"
+        }
+    }
+}
+
 /// A model actually installed in the local runtime (from Ollama /api/tags).
 struct InstalledModel: Identifiable, Sendable {
     let id: String      // model name (e.g. "qwen3-vl:30b-a3b-instruct")
@@ -89,6 +164,8 @@ final class AppModel: ObservableObject {
     @Published var sidebarColumn: NavigationSplitViewVisibility = .all
     private var activeCreatedAt = Date()
     private var activeTitle = "New chat"
+    /// SP-Projects: which project the active thread belongs to (nil = loose chat). New chats inherit it.
+    @Published var activeProjectID: UUID?
     private let convStore: ConversationStoring = DiskConversationStore()
     let settings = SettingsStore.shared
     /// Conversations shown in the sidebar but not yet written to disk (empty "New chat" tiles). They
@@ -109,6 +186,22 @@ final class AppModel: ObservableObject {
         didSet { if autonomous != oldValue { settings.update { $0.defaultMode = autonomous ? "autonomous" : "hitl" } } }
     }
     private var modeString: String { autonomous ? "autonomous" : "hitl" }
+
+    /// Injected for typed chat turns: clean, brand-correct formatting (no emoji).
+    static let chatFormatPrompt = """
+    Format replies cleanly for a chat interface: clear prose in short paragraphs; use a heading or a \
+    list ONLY when it genuinely aids scanning (don't over-structure a simple answer); keep code in \
+    fenced code blocks. Never use emoji. Don't restate the user's question before answering.
+    """
+
+    /// Injected only for voice turns so GINEXUS speaks like a human in conversation.
+    static let voiceSystemPrompt = """
+    You are in a live VOICE conversation — your reply will be spoken aloud. Talk like a real person, \
+    not like you are reading a document. Be natural, warm, and brief: usually one to three sentences. \
+    Do NOT use markdown, headings, bullet points, numbered lists, code blocks, tables, or emoji. Do not \
+    restate or repeat the user's question back to them. Just answer conversationally and get to the \
+    point. Only give a longer, structured answer if the user explicitly asks for detail or a list.
+    """
     /// HITL: when set, an irreversible/OS action is waiting on the biometric approval sheet.
     @Published var pending: PendingAction?
 
@@ -121,6 +214,14 @@ final class AppModel: ObservableObject {
     @Published var memFactsCount = 0
     @Published var memResults: [MemFact] = []
     @Published var memQuery = ""
+    @Published var memMatchIndex = 0   // Office-style find: which result is "current"
+
+    /// The active search terms (≥2 chars) used to highlight matches in the memory browser.
+    var memTerms: [String] {
+        memQuery.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 2 }
+    }
+    func memNext() { guard !memResults.isEmpty else { return }; memMatchIndex = (memMatchIndex + 1) % memResults.count }
+    func memPrev() { guard !memResults.isEmpty else { return }; memMatchIndex = (memMatchIndex - 1 + memResults.count) % memResults.count }
     @Published var memLoading = false
 
     /// File/image attached to the next message via the "+" menu (nil when none).
@@ -169,6 +270,313 @@ final class AppModel: ObservableObject {
     @Published var settingsOpen = false
 
     private let spine = SpineController()
+
+    /// SP-Projects: workspaces (folder + custom instructions + threads). `activeProjectID` selects the
+    /// one new chats join and whose instructions are injected.
+    @Published var projects: [Project] = []
+    private let projectStore: ProjectStoring = DiskProjectStore()
+    var activeProject: Project? { projects.first { $0.id == activeProjectID } }
+
+    /// Create a project (with a local folder; iCloud refused) and make it active.
+    func createProject(name: String, instructions: String = "") {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var p = Project(name: trimmed, instructions: instructions)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let folder = "\(home)/GINEXUS-Projects/\(p.slug)"
+        if !SpineController.isICloudPath(folder) {
+            try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+            p.folderPath = folder
+        }
+        projects.insert(p, at: 0)
+        activeProjectID = p.id
+        selectedProjectID = p.id   // so the Projects sheet opens straight into the new project
+        projectStore.save(projects)
+    }
+
+    /// Enter a project and start chatting in it: make it active, open a fresh thread, close the sheet.
+    func openProjectAndChat(_ id: UUID) {
+        selectProject(id)
+        newChat()
+        projectsOpen = false
+    }
+
+    /// The sidebar shows the active project's threads when inside one, else the loose (no-project) chats.
+    var visibleConversations: [ConversationMeta] {
+        if let pid = activeProjectID { return conversations.filter { $0.projectID == pid } }
+        return conversations.filter { $0.projectID == nil }
+    }
+
+    /// Switch the sidebar scope (nil = regular/non-project chats, else a project). Does NOT create a
+    /// chat or change the open conversation — just changes which thread list you're browsing. New
+    /// chats started afterward join this scope.
+    func setScope(_ id: UUID?) { activeProjectID = id }
+
+    func updateProject(_ id: UUID, name: String? = nil, instructions: String? = nil) {
+        guard let i = projects.firstIndex(where: { $0.id == id }) else { return }
+        if let name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { projects[i].name = name }
+        if let instructions { projects[i].instructions = instructions }
+        projects[i].updatedAt = Date()
+        projectStore.save(projects)
+    }
+
+    func deleteProject(_ id: UUID) {
+        projects.removeAll { $0.id == id }
+        if activeProjectID == id { activeProjectID = nil }
+        projectStore.save(projects)
+    }
+
+    /// Switch the active project; new chats join it. Does not move existing threads.
+    func selectProject(_ id: UUID?) { activeProjectID = id }
+
+    // MARK: project files — add files / local paths so GINEXUS's project threads can use them
+    @Published var projectsOpen = false
+    @Published var selectedProjectID: UUID?   // which project the Projects sheet is viewing
+
+    /// Files currently in a project's folder (the documents GINEXUS can read for that project).
+    func projectFiles(_ id: UUID) -> [URL] {
+        guard let p = projects.first(where: { $0.id == id }), let path = p.folderPath else { return [] }
+        let url = URL(fileURLWithPath: path)
+        let items = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+        return items.filter { !$0.lastPathComponent.hasPrefix(".") }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Pick file(s) and COPY them into the project's folder (so they live with the project).
+    func addFilesToProject(_ id: UUID) {
+        guard let p = projects.first(where: { $0.id == id }), let folder = p.folderPath else { return }
+        if SpineController.isICloudPath(folder) { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK else { return }
+        for src in panel.urls {
+            if SpineController.isICloudPath(src.path) { continue }   // never pull from iCloud
+            let dest = URL(fileURLWithPath: folder).appendingPathComponent(src.lastPathComponent)
+            try? FileManager.default.removeItem(at: dest)
+            try? FileManager.default.copyItem(at: src, to: dest)
+        }
+        touchProject(id)
+    }
+
+    /// Add a whole local folder's files into the project (copies them in). iCloud refused.
+    func addFolderToProject(_ id: UUID) {
+        guard let p = projects.first(where: { $0.id == id }), let folder = p.folderPath else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        guard panel.runModal() == .OK, let dir = panel.url, !SpineController.isICloudPath(dir.path) else { return }
+        let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        for src in items where !src.hasDirectoryPath {
+            let dest = URL(fileURLWithPath: folder).appendingPathComponent(src.lastPathComponent)
+            try? FileManager.default.removeItem(at: dest)
+            try? FileManager.default.copyItem(at: src, to: dest)
+        }
+        touchProject(id)
+    }
+
+    func removeProjectFile(_ id: UUID, _ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        touchProject(id)
+    }
+
+    func revealProjectFolderFor(_ id: UUID) {
+        guard let path = projects.first(where: { $0.id == id })?.folderPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    private func touchProject(_ id: UUID) {
+        if let i = projects.firstIndex(where: { $0.id == id }) { projects[i].updatedAt = Date(); projectStore.save(projects) }
+        objectWillChange.send()
+    }
+
+    // Project editor sheet (create / edit name + instructions).
+    @Published var projectSheetOpen = false
+    @Published var projectDraftName = ""
+    @Published var projectDraftInstructions = ""
+    @Published var projectDraftFiles: [URL] = []   // files staged for a NEW project (copied on create)
+    @Published var editingProjectID: UUID?
+
+    func openNewProjectSheet() {
+        editingProjectID = nil
+        projectDraftName = ""
+        projectDraftInstructions = ""
+        projectDraftFiles = []
+        projectSheetOpen = true
+    }
+
+    func openEditProjectSheet(_ id: UUID) {
+        guard let p = projects.first(where: { $0.id == id }) else { return }
+        editingProjectID = id
+        projectDraftName = p.name
+        projectDraftInstructions = p.instructions
+        projectDraftFiles = []
+        projectSheetOpen = true
+    }
+
+    /// Stage file(s) for a project being created (copied into its folder once it exists).
+    func addFilesToDraft() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true; panel.canChooseFiles = true; panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        for u in panel.urls where !SpineController.isICloudPath(u.path) {
+            if !projectDraftFiles.contains(u) { projectDraftFiles.append(u) }
+        }
+    }
+
+    func addFolderToDraft() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        guard panel.runModal() == .OK, let dir = panel.url, !SpineController.isICloudPath(dir.path) else { return }
+        let items = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        for u in items where !u.hasDirectoryPath && !projectDraftFiles.contains(u) { projectDraftFiles.append(u) }
+    }
+
+    func removeDraftFile(_ u: URL) { projectDraftFiles.removeAll { $0 == u } }
+
+    func saveProjectSheet() {
+        let name = projectDraftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { projectSheetOpen = false; return }
+        if let id = editingProjectID {
+            updateProject(id, name: name, instructions: projectDraftInstructions)
+        } else {
+            createProject(name: name, instructions: projectDraftInstructions)
+            // copy the staged files into the new project's folder
+            if let folder = activeProject?.folderPath {
+                for src in projectDraftFiles where !SpineController.isICloudPath(src.path) {
+                    let dest = URL(fileURLWithPath: folder).appendingPathComponent(src.lastPathComponent)
+                    try? FileManager.default.removeItem(at: dest)
+                    try? FileManager.default.copyItem(at: src, to: dest)
+                }
+            }
+        }
+        projectDraftFiles = []
+        projectSheetOpen = false
+    }
+
+    /// Open the active project's folder in Finder (where its files live).
+    func revealProjectFolder() {
+        guard let path = activeProject?.folderPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    // MARK: SP-Connect — external MCP integrations (Notion, Shopify, …)
+    @Published var connectionsOpen = false
+    @Published var notionTokenDraft = ""
+
+    var mcpServers: [McpServerConfig] { settings.settings.mcpServers }
+
+    /// Register (or replace) an MCP server; the secret goes to the Keychain, never settings.json.
+    /// Takes effect on the next spine restart (servers are spawned at boot).
+    func addMcpServer(name: String, command: String, tokenEnv: String?, token: String?) {
+        let slug = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !slug.isEmpty, !command.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        var ref: String?
+        if let tokenEnv, !tokenEnv.isEmpty, let token, !token.isEmpty {
+            let r = "mcp.\(slug).token"
+            Keychain.set(token, for: r)
+            ref = r
+        }
+        settings.update { s in
+            s.mcpServers.removeAll { $0.name == slug }
+            s.mcpServers.append(McpServerConfig(name: slug, command: command, enabled: true,
+                                                tokenEnv: tokenEnv, credentialRef: ref))
+        }
+    }
+
+    func removeMcpServer(_ id: UUID) {
+        if let s = mcpServers.first(where: { $0.id == id }), let ref = s.credentialRef { Keychain.delete(ref) }
+        settings.update { $0.mcpServers.removeAll { $0.id == id } }
+    }
+
+    func setMcpEnabled(_ id: UUID, _ on: Bool) {
+        settings.update { s in if let i = s.mcpServers.firstIndex(where: { $0.id == id }) { s.mcpServers[i].enabled = on } }
+    }
+
+    /// Preset: Notion's official stdio MCP server with an integration token.
+    func connectNotion() {
+        let tok = notionTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tok.isEmpty else { return }
+        addMcpServer(name: "notion", command: "npx -y @notionhq/notion-mcp-server",
+                     tokenEnv: "NOTION_TOKEN", token: tok)
+        notionTokenDraft = ""
+    }
+
+    @Published var githubTokenDraft = ""
+    /// Preset: GitHub's official MCP server with a personal access token.
+    func connectGitHub() {
+        let tok = githubTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tok.isEmpty else { return }
+        addMcpServer(name: "github", command: "npx -y @modelcontextprotocol/server-github",
+                     tokenEnv: "GITHUB_PERSONAL_ACCESS_TOKEN", token: tok)
+        githubTokenDraft = ""
+    }
+
+    @Published var shopifyConnected = false
+    /// Preset: Shopify's official dev MCP server (docs/admin schema). No token required.
+    func connectShopify() {
+        addMcpServer(name: "shopify", command: "npx -y @shopify/dev-mcp", tokenEnv: nil, token: nil)
+    }
+
+    @Published var printfulTokenDraft = ""
+    /// Preset: the bundled professional Printful MCP server (runs the signed core in `--printful-mcp`
+    /// mode). The path is quoted so an "Application Support"-style space survives shell_split.
+    func connectPrintful() {
+        let tok = printfulTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tok.isEmpty else { return }
+        addMcpServer(name: "printful", command: "\"\(spine.corePath)\" --printful-mcp",
+                     tokenEnv: "PRINTFUL_TOKEN", token: tok)
+        printfulTokenDraft = ""
+    }
+
+    // Brave Search API key (Settings → Connections) — powers full live web_search. Stored in Keychain,
+    // injected as BRAVE_SEARCH_API_KEY at core boot. Not an MCP server; takes effect on restart.
+    @Published var braveKeyDraft = ""
+    var braveSearchConfigured: Bool { Keychain.has("search.brave.key") }
+    func saveBraveKey() {
+        let k = braveKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else { return }
+        _ = Keychain.set(k, for: "search.brave.key")
+        braveKeyDraft = ""
+        objectWillChange.send()
+    }
+    func clearBraveKey() {
+        _ = Keychain.delete("search.brave.key")
+        objectWillChange.send()
+    }
+
+    // Generic "add any MCP server" form — covers anything with a stdio MCP server.
+    @Published var mcpCustomName = ""
+    @Published var mcpCustomCommand = ""
+    @Published var mcpCustomTokenEnv = ""
+    @Published var mcpCustomToken = ""
+    func addCustomMcp() {
+        let name = mcpCustomName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cmd = mcpCustomCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !cmd.isEmpty else { return }
+        let env = mcpCustomTokenEnv.trimmingCharacters(in: .whitespacesAndNewlines)
+        addMcpServer(name: name, command: cmd, tokenEnv: env.isEmpty ? nil : env,
+                     token: mcpCustomToken.isEmpty ? nil : mcpCustomToken)
+        mcpCustomName = ""; mcpCustomCommand = ""; mcpCustomTokenEnv = ""; mcpCustomToken = ""
+    }
+
+    /// SP-Voice: the hands-free conversation loop. Non-nil while voice mode is active; the overlay
+    /// observes it for live state (listening / thinking / speaking) and the mic level.
+    @Published var voiceController: VoiceConversationController?
+    var voiceActive: Bool { voiceController != nil }
+
+    /// Toggle hands-free voice. Starts mic → STT → agent → TTS with barge-in, or stops it.
+    func toggleVoice() {
+        if let vc = voiceController {
+            vc.stop()
+            voiceController = nil
+            return
+        }
+        guard let vc = VoiceConversationController(app: self, audioBase: spine.audioBase) else { return }
+        voiceController = vc
+        Task { await vc.start() }
+    }
+
     private var pollTimer: Timer?
     private var autoDemoSent = false
     private var didRestoreSession = false   // transcript/settings restore runs once per launch, not per reconnect
@@ -184,6 +592,7 @@ final class AppModel: ObservableObject {
 
     // MARK: lifecycle
     func start() {
+        projects = projectStore.load()   // SP-Projects: restore workspaces
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { await self?.pollHealth() }
         }
@@ -239,6 +648,7 @@ final class AppModel: ObservableObject {
         activeConversationID = conv.id
         activeCreatedAt = conv.createdAt
         activeTitle = conv.title
+        activeProjectID = conv.projectID
         chat = conv.messages
         attachment = nil
         pending = nil
@@ -348,7 +758,7 @@ final class AppModel: ObservableObject {
             if !t.isEmpty { activeTitle = String(t.prefix(48)) }
         }
         let conv = Conversation(id: id, title: activeTitle, createdAt: activeCreatedAt,
-                                updatedAt: Date(), messages: chat)
+                                updatedAt: Date(), messages: chat, projectID: activeProjectID)
         let meta = conv.meta
         unsavedIDs.remove(id)   // it now has content → a real, persisted conversation
         if let i = conversations.firstIndex(where: { $0.id == id }) { conversations[i] = meta }
@@ -550,6 +960,16 @@ final class AppModel: ObservableObject {
             }
         }
 
+        // Deep Research mode (one-shot): hand the next message to the research team — search the web,
+        // cross-check, and return a cited report. Wrap what the MODEL sees; tag the user's bubble.
+        if deepResearchMode, !text.isEmpty {
+            sendText = "Run a DEEP RESEARCH investigation with the research team: use deep_research to "
+                + "search the web for current, reputable sources, cross-check the facts, and produce a "
+                + "clear, well-structured report that cites the source URLs.\n\nTopic: " + sendText
+            displayText = (displayText.isEmpty ? text : displayText) + "  · deep research"
+            deepResearchMode = false
+        }
+
         chat.append(ChatMsg(role: "user", text: displayText, imagePath: userImage))
         chatInput = ""
         attachment = nil
@@ -576,6 +996,31 @@ final class AppModel: ObservableObject {
                         + "Briefly say you can't view images yet — they can enable vision from the Models manager.]"
                 }
                 msgs[last]["content"] = content
+            }
+        }
+        // SP-Voice: when speaking aloud, GINEXUS must TALK like a person, not read a formatted
+        // document. Steer to short, natural, spoken replies — no markdown, lists, or restating the
+        // question. (This also keeps replies short → snappier voice.)
+        if voiceActive {
+            msgs.insert(["role": "system", "content": Self.voiceSystemPrompt], at: 0)
+        } else {
+            msgs.insert(["role": "system", "content": Self.chatFormatPrompt], at: 0)
+        }
+        // SP-Projects: prepend the active project's custom instructions as a system message so every
+        // thread in the project is steered by them (user-authored → trusted).
+        if let proj = activeProject {
+            var ctx = "Project: \(proj.name)"
+            let instr = proj.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !instr.isEmpty { ctx += "\nProject instructions:\n\(instr)" }
+            let files = projectFiles(proj.id)
+            if !files.isEmpty, let folder = proj.folderPath {
+                let home = FileManager.default.homeDirectoryForCurrentUser.path
+                let tildeFolder = folder.hasPrefix(home) ? "~" + folder.dropFirst(home.count) : folder
+                let list = files.map { "- \(tildeFolder)/\($0.lastPathComponent)" }.joined(separator: "\n")
+                ctx += "\nThis project has these files. Use the read_document tool with the path to read any you need:\n\(list)"
+            }
+            if !instr.isEmpty || !files.isEmpty {
+                msgs.insert(["role": "system", "content": ctx], at: 0)
             }
         }
         let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "mode": modeString])
@@ -851,7 +1296,9 @@ final class AppModel: ObservableObject {
         send("\(directive)\n\n\(t)")
     }
     func runCouncil()  { quick("Convene a council to deliberate on this, then give me the synthesized verdict:") }
-    func runResearch() { quick("Do deep research on this and produce a clear, cited report:") }
+    /// Deep Research — route to the GINEXUS research team (Nexus RND/STR) via deep_research: search the
+    /// web for current, reputable sources, cross-check, and produce a clear report with cited URLs.
+    func runResearch() { quick("Run a DEEP RESEARCH investigation with the research team: use deep_research to search the web for current, reputable sources, cross-check the facts, and produce a clear, well-structured report that cites the source URLs. Topic:") }
     func runImage()    { quick("Generate an image:") }
 
     /// Build/refresh the durable self-model from long-term memory (POST /v1/consolidate). Appends the
@@ -886,6 +1333,39 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: memory browser
+    // Editing a core memory block (the custom profile is the main one). User-authored → trusted.
+    @Published var editingBlock: String?
+    @Published var blockDraft = ""
+
+    func beginEditBlock(_ name: String, value: String) { editingBlock = name; blockDraft = value }
+    func cancelEditBlock() { editingBlock = nil; blockDraft = "" }
+
+    /// Start authoring a profile from scratch (when none exists yet).
+    func newProfileBlock() {
+        editingBlock = "profile"
+        blockDraft = memBlocks.first(where: { $0.name == "profile" })?.value ?? ""
+    }
+
+    /// Persist the edited core block to the core (and reflect it locally). Always available — the
+    /// profile is meant to be hand-editable, not only auto-generated.
+    func saveBlock() {
+        guard let name = editingBlock else { return }
+        let value = blockDraft
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let body = try? JSONSerialization.data(withJSONObject: ["block": name, "value": value])
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/memory/block", token: tok, jsonBody: body)
+            }.value
+            if let i = memBlocks.firstIndex(where: { $0.name == name }) {
+                if value.isEmpty { memBlocks.remove(at: i) } else { memBlocks[i] = BlockKV(name: name, value: value) }
+            } else if !value.isEmpty {
+                memBlocks.append(BlockKV(name: name, value: value)); memBlocks.sort { $0.name < $1.name }
+            }
+            editingBlock = nil; blockDraft = ""
+        }
+    }
+
     func openMemory() {
         memoryOpen = true
         memLoading = true
@@ -919,7 +1399,136 @@ final class AppModel: ObservableObject {
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
             let facts = (o["facts"] as? [[String: Any]]) ?? []
             memResults = facts.map { MemFact(text: ($0["text"] as? String) ?? "", origin: ($0["origin"] as? String) ?? "") }
+            memMatchIndex = 0   // Office-style find: reset to the first match
         }
+    }
+
+    /// Deep Research mode: when armed, the next message you send is routed to the research team
+    /// (web search → cross-check → cited report). One-shot — it disarms after firing.
+    @Published var deepResearchMode = false
+    func toggleDeepResearch() { deepResearchMode.toggle() }
+
+    // MARK: scheduled tasks (cron jobs) — routine automation that runs unattended on a cadence
+    @Published var schedulesOpen = false
+    @Published var schedules: [ScheduledTask] = []
+    @Published var schedLoading = false
+
+    /// Open the Scheduled Tasks sheet and load the current tasks from the core.
+    func openSchedules() {
+        schedulesOpen = true
+        refreshSchedules()
+    }
+
+    func refreshSchedules() {
+        schedLoading = true
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/schedule", token: tok, jsonBody: nil)
+            }.value
+            schedLoading = false
+            guard case .success(let r) = res, let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let arr = o["schedules"] as? [[String: Any]] else { return }
+            schedules = arr.map { Self.parseSchedule($0) }
+                .sorted { $0.nextRunMs < $1.nextRunMs }
+        }
+    }
+
+    private static func parseSchedule(_ o: [String: Any]) -> ScheduledTask {
+        ScheduledTask(
+            id: (o["id"] as? String) ?? "",
+            name: (o["name"] as? String) ?? "",
+            prompt: (o["prompt"] as? String) ?? "",
+            everySecs: (o["every_secs"] as? Int) ?? 3600,
+            enabled: (o["enabled"] as? Bool) ?? true,
+            attachments: (o["attachments"] as? [String]) ?? [],
+            runs: (o["runs"] as? Int) ?? 0,
+            lastRunMs: (o["last_run_ms"] as? Int64) ?? Int64((o["last_run_ms"] as? Int) ?? 0),
+            nextRunMs: (o["next_run_ms"] as? Int64) ?? Int64((o["next_run_ms"] as? Int) ?? 0),
+            lastResult: (o["last_result"] as? String) ?? ""
+        )
+    }
+
+    /// Create a scheduled task. Files are read on the APP side (the sidecar can't reach TCC-protected
+    /// folders) and sent as base64 — the core stores a copy this task owns. iCloud paths are refused.
+    func createSchedule(name: String, prompt: String, everySecs: Int, files: [URL]) {
+        let p = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return }
+        var attachments: [[String: String]] = []
+        for url in files {
+            if SpineController.isICloudPath(url.path) { continue } // HARD RULE #1: never touch iCloud
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url) else { continue }
+            attachments.append(["filename": url.lastPathComponent, "content_b64": data.base64EncodedString()])
+        }
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: [
+            "name": name, "prompt": p, "every_secs": everySecs, "attachments": attachments,
+        ])
+        Task {
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/schedule", token: tok, jsonBody: body)
+            }.value
+            refreshSchedules()
+        }
+    }
+
+    /// Pause or resume a task (optimistic local update, then persist to the core).
+    func toggleSchedule(_ id: String, enabled: Bool) {
+        if let i = schedules.firstIndex(where: { $0.id == id }) { schedules[i].enabled = enabled }
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["id": id, "enabled": enabled])
+        Task {
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/schedule/toggle", token: tok, jsonBody: body)
+            }.value
+            refreshSchedules()
+        }
+    }
+
+    func removeSchedule(_ id: String) {
+        schedules.removeAll { $0.id == id }
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["id": id])
+        Task {
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/schedule/remove", token: tok, jsonBody: body)
+            }.value
+            refreshSchedules()
+        }
+    }
+
+    // The "New task" editor's draft state.
+    @Published var scheduleSheetOpen = false
+    @Published var schedDraftName = ""
+    @Published var schedDraftPrompt = ""
+    @Published var schedDraftEverySecs = ScheduleCadence.daily.rawValue
+    @Published var schedDraftFiles: [URL] = []
+
+    func openNewScheduleSheet() {
+        schedDraftName = ""; schedDraftPrompt = ""
+        schedDraftEverySecs = ScheduleCadence.daily.rawValue; schedDraftFiles = []
+        scheduleSheetOpen = true
+    }
+
+    func addFilesToScheduleDraft() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true; panel.canChooseFiles = true; panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        for u in panel.urls where !SpineController.isICloudPath(u.path) {
+            if !schedDraftFiles.contains(u) { schedDraftFiles.append(u) }
+        }
+    }
+
+    func removeScheduleDraftFile(_ u: URL) { schedDraftFiles.removeAll { $0 == u } }
+
+    func saveScheduleSheet() {
+        let p = schedDraftPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return }
+        createSchedule(name: schedDraftName, prompt: p, everySecs: schedDraftEverySecs, files: schedDraftFiles)
+        scheduleSheetOpen = false
     }
 
     /// Streaming /v1/agent/stream round-trip. A placeholder assistant bubble is appended and grows
@@ -947,15 +1556,29 @@ final class AppModel: ObservableObject {
             handleSSE(event: event, data: data, msgId: msgId, context: contextMessages)
         }
         // Stream closed: make sure the bubble is finalized + input re-enabled.
+        var finalText = ""
         if let i = chat.firstIndex(where: { $0.id == msgId }) {
             flushActivity(i)   // finalize any activity whose min-display timer is still pending
             chat[i].streaming = false
             chat[i].status = nil
+            finalText = chat[i].text
         }
         sending = false
         persistActive()   // the only safe "message is final" point (text is authoritative now)
         renderSnapshot()
+        // SP-Voice: let the conversation loop speak the finished reply (no-op in text mode).
+        onTurnComplete?(finalText)
+        onAssistantText?(finalText, true)   // final flush for streaming-TTS (speaks the tail)
     }
+
+    /// SP-Voice: fired with the GROWING assistant text on every token (final=false) and once more at
+    /// turn end (final=true). The voice controller speaks each sentence as it completes so audio
+    /// starts well before the full reply is done. nil in text mode.
+    var onAssistantText: ((String, Bool) -> Void)?
+
+    /// SP-Voice: fired with the final assistant text when an agent turn finishes streaming. The voice
+    /// controller sets this to drive TTS; nil in normal typed use.
+    var onTurnComplete: ((String) -> Void)?
 
     /// Apply one SSE frame to the streaming assistant bubble (runs on the main actor, in order).
     /// When the current live activity started — drives the live card's minimum visible window.
@@ -977,6 +1600,7 @@ final class AppModel: ObservableObject {
             // activity card here — its minimum-visible timer (below) owns when it completes.
             if let tok = try? JSONDecoder().decode(String.self, from: Data(data.utf8)) {
                 chat[i].text += tok
+                onAssistantText?(chat[i].text, false)   // stream to voice as it grows
             }
         case "tool":
             if let d = data.data(using: .utf8),

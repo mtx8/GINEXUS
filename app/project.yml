@@ -41,6 +41,9 @@ targets:
     platform: macOS
     sources:
       - path: Sources/GinexusApp
+      # Brand app icon — bundled as a loose .icns so EVERY build (⌘R + build_app.sh) shows the mark.
+      - path: Resources/AppIcon.icns
+        type: file
       # Rust core, staged by the scheme pre-action below; embedded natively + signed on copy.
       # optional: true so generation/build don't fail before the first stage (the guard catches it).
       - path: artifacts/ginexus-server
@@ -57,11 +60,13 @@ targets:
       path: Generated/Info.plist
       properties:
         CFBundleDisplayName: GINEXUS
+        CFBundleIconFile: AppIcon
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.productivity
         NSHighResolutionCapable: true
         NSCalendarsFullAccessUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
         NSCalendarsUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
+        NSMicrophoneUsageDescription: "GINEXUS uses the microphone for hands-free voice conversation — your speech is transcribed locally on this Mac and never leaves the device."
     settings:
       base:
         PRODUCT_NAME: GINEXUS

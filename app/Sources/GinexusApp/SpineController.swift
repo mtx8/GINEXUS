@@ -24,6 +24,13 @@ final class SpineController {
     private let mediaPort = 8765
     private var mediaProcess: Process?
 
+    /// SP-Voice: the local audio sidecar (Chatterbox TTS + Parakeet STT on Apple MLX). Launched as a
+    /// sibling of the core; the core gets its base URL via env (the `speak` tool) and the Swift voice
+    /// loop calls it directly over loopback for low-latency synth/transcribe.
+    let audioPort = 8764
+    private var audioProcess: Process?
+    var audioBase: String { "http://127.0.0.1:\(audioPort)" }
+
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         socketPath = "\(home)/Library/Application Support/GINEXUS/run/ginexus.sock"
@@ -34,6 +41,10 @@ final class SpineController {
     private var embeddedBinary: URL {
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ginexus-server")
     }
+
+    /// Absolute path to the embedded core binary — used to launch its bundled subcommand MCP servers
+    /// (e.g. the Printful MCP: `"<corePath>" --printful-mcp`). Same signed binary, a different mode.
+    var corePath: String { embeddedBinary.path }
 
     var available: Bool { FileManager.default.isExecutableFile(atPath: embeddedBinary.path) }
 
@@ -75,6 +86,10 @@ final class SpineController {
         // still points at the base URL and the image_generate tool simply errors until one answers.
         if settings.mediaSidecarEnabled { startMediaSidecar() }
 
+        // SP-Voice: best-effort launch the audio sidecar (Chatterbox TTS + Parakeet STT). Gated by the
+        // "Voice" setting; preloads both models so the first turn is warm.
+        if settings.voiceEnabled { startAudioSidecar() }
+
         let p = Process()
         p.executableURL = embeddedBinary
         p.arguments = ["--uds", socketPath]
@@ -90,6 +105,12 @@ final class SpineController {
         } else {
             env.removeValue(forKey: "GINEXUS_MEDIA_BASE")
         }
+        // Voice: advertise the audio base (registers the `speak` tool) only when voice is enabled.
+        if settings.voiceEnabled {
+            env["GINEXUS_AUDIO_BASE"] = audioBase
+        } else {
+            env.removeValue(forKey: "GINEXUS_AUDIO_BASE")
+        }
         // Ollama endpoint override: only inject when the user set a non-default, valid, host-allowed
         // base (every tier + model management derive from it). Loopback default OR a blocked host
         // (metadata/link-local/wildcard) → leave unset so the core uses the safe loopback default.
@@ -102,6 +123,26 @@ final class SpineController {
         if let vault = Self.resolveVault(settings.obsidianVaultPath) {
             env["GINEXUS_OBSIDIAN_VAULT"] = vault
         }
+        // SP-Connect: configure enabled external MCP servers + inject their secrets from the Keychain
+        // into the core's env (the spawned MCP children inherit it). Secrets never land in settings.json.
+        let enabledMCP = settings.mcpServers.filter { $0.enabled }
+        if !enabledMCP.isEmpty {
+            let arr = enabledMCP.map { ["name": $0.name, "command": $0.command] }
+            if let data = try? JSONSerialization.data(withJSONObject: arr),
+               let json = String(data: data, encoding: .utf8) {
+                env["GINEXUS_MCP_SERVERS"] = json
+            }
+            for s in enabledMCP {
+                if let te = s.tokenEnv, !te.isEmpty, let ref = s.credentialRef, let secret = Keychain.get(ref) {
+                    env[te] = secret
+                }
+            }
+        }
+        // SP-Research: the optional Brave Search API key (Settings → Connections) powers full live web
+        // search. Stored in the Keychain; injected as the env var web_search reads. Never in settings.json.
+        if let brave = Keychain.get("search.brave.key"), !brave.isEmpty {
+            env["BRAVE_SEARCH_API_KEY"] = brave
+        }
         p.environment = env
         if let logHandle {
             p.standardOutput = logHandle
@@ -113,30 +154,72 @@ final class SpineController {
         process = p
     }
 
-    /// Launch the uv media sidecar from the project dir (dev). Best-effort: needs `uv` + the
-    /// sidecar sources; if the port is taken (already running) uvicorn just exits — harmless.
-    private func startMediaSidecar() {
+    /// Launch a Python sidecar (media or audio) from its project dir. ROBUST under a Finder/`open`
+    /// launch: it runs the project's OWN venv interpreter (`.venv/bin/python -m uvicorn`) so it does
+    /// NOT depend on `uv` resolving a Python in the minimal GUI environment — that resolution hangs
+    /// when launched from Finder (no shell PATH), which silently leaves the sidecar down. Falls back
+    /// to `uv run` only if the venv is missing. Best-effort; if the port is taken uvicorn just exits.
+    private func launchSidecar(dir: String, port: Int, preloadKey: String, logName: String) -> Process? {
+        guard FileManager.default.fileExists(atPath: "\(dir)/server.py") else { return nil }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let dir = ProcessInfo.processInfo.environment["GINEXUS_MEDIA_SIDECAR_DIR"]
-            ?? "\(home)/Desktop/GINEXUS/app/media-sidecar"
+        let venvPython = "\(dir)/.venv/bin/python"
         let uv = "\(home)/.local/bin/uv"
-        guard FileManager.default.fileExists(atPath: "\(dir)/server.py"),
-              FileManager.default.isExecutableFile(atPath: uv) else { return }
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: uv)
         p.currentDirectoryURL = URL(fileURLWithPath: dir)
-        p.arguments = ["run", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "\(mediaPort)"]
+        let venvOK = FileManager.default.isExecutableFile(atPath: venvPython)
+        let uvOK = FileManager.default.isExecutableFile(atPath: uv)
+        VoiceLog.log("launchSidecar \(logName): dir=\(dir) venvPython=\(venvOK) uv=\(uvOK)")
+        if venvOK {
+            p.executableURL = URL(fileURLWithPath: venvPython)
+            p.arguments = ["-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "\(port)"]
+        } else if uvOK {
+            p.executableURL = URL(fileURLWithPath: uv)
+            p.arguments = ["run", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", "\(port)"]
+        } else {
+            VoiceLog.log("launchSidecar \(logName): no launcher found")
+            return nil
+        }
         var env = ProcessInfo.processInfo.environment
-        env["GINEXUS_MEDIA_PRELOAD"] = "1"
+        env[preloadKey] = "1"
+        // Finder/`open` launches inherit a minimal PATH; give subprocesses the usual locations.
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\(home)/.local/bin:" + (env["PATH"] ?? "")
         p.environment = env
-        let mediaLog = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("GINEXUS/media.log")
-        FileManager.default.createFile(atPath: mediaLog.path, contents: nil)
-        if let h = try? FileHandle(forWritingTo: mediaLog) { p.standardOutput = h; p.standardError = h }
-        do { try p.run(); mediaProcess = p } catch { /* sidecar optional */ }
+        let log = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GINEXUS/\(logName)")
+        FileManager.default.createFile(atPath: log.path, contents: nil)
+        if let h = try? FileHandle(forWritingTo: log) { p.standardOutput = h; p.standardError = h }
+        do {
+            try p.run()
+            VoiceLog.log("launchSidecar \(logName): launched pid=\(p.processIdentifier)")
+            return p
+        } catch {
+            VoiceLog.log("launchSidecar \(logName): run() THREW: \(error)")
+            return nil
+        }
     }
 
-    func shutdown() { process?.terminate(); appHost?.stop(); mediaProcess?.terminate() }
+    /// Sidecars run from App Support, NOT ~/Desktop. A Finder-launched app has no TCC permission for
+    /// the Desktop, so a child Python whose venv lives under ~/Desktop hangs forever in an open()
+    /// during interpreter startup (getpath) waiting on a TCC gate it can't present. App Support is not
+    /// TCC-protected, so the sidecar's venv loads cleanly. (build_app.sh stages the sidecars here.)
+    private func sidecarDir(_ name: String, env: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return ProcessInfo.processInfo.environment[env]
+            ?? "\(home)/Library/Application Support/GINEXUS/\(name)"
+    }
+
+    private func startMediaSidecar() {
+        let dir = sidecarDir("media-sidecar", env: "GINEXUS_MEDIA_SIDECAR_DIR")
+        mediaProcess = launchSidecar(dir: dir, port: mediaPort, preloadKey: "GINEXUS_MEDIA_PRELOAD", logName: "media.log")
+    }
+
+    /// Preloads TTS + STT so the first conversational turn is warm.
+    private func startAudioSidecar() {
+        let dir = sidecarDir("audio-sidecar", env: "GINEXUS_AUDIO_SIDECAR_DIR")
+        audioProcess = launchSidecar(dir: dir, port: audioPort, preloadKey: "GINEXUS_AUDIO_PRELOAD", logName: "audio.log")
+    }
+
+    func shutdown() { process?.terminate(); appHost?.stop(); mediaProcess?.terminate(); audioProcess?.terminate() }
 
     /// Resolve the vault to inject: a user-chosen path (canonicalized, so a symlink into iCloud can't
     /// sneak past the check) if it's a real directory and NOT in iCloud, else fall back to auto-detect.
@@ -153,13 +236,14 @@ final class SpineController {
     }
 
     /// Resolve symlinks so an iCloud target can't hide behind a non-iCloud path string.
-    static func canonical(_ path: String) -> String {
+    /// `nonisolated` so the app-host (background thread) can reuse it for the PDF iCloud guard.
+    nonisolated static func canonical(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().path
     }
 
     /// True if a (preferably canonicalized) path lives under iCloud (hard rule #1: never touch
     /// ~/Library/Mobile Documents). Callers should pass a symlink-resolved path.
-    static func isICloudPath(_ path: String) -> Bool {
+    nonisolated static func isICloudPath(_ path: String) -> Bool {
         let p = canonical(path)
         return p.contains("Mobile Documents") || p.contains("com~apple~CloudDocs")
     }

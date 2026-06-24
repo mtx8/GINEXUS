@@ -304,6 +304,140 @@ pub fn memory_tools(store: Arc<MemoryStore>) -> Vec<Tool> {
     ]
 }
 
+/// True if a path lives under iCloud (hard rule #1: never touch ~/Library/Mobile Documents).
+fn is_icloud(path: &str) -> bool {
+    path.contains("Mobile Documents") || path.contains("com~apple~CloudDocs")
+}
+
+/// Expand a leading `~` to $HOME.
+fn expand_home(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~") {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}{rest}");
+        }
+    }
+    path.to_string()
+}
+
+/// Split text into ~1.2 KB chunks on blank-line boundaries (cheap paragraph-ish chunking for recall).
+fn chunk_text(text: &str, source: &str) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut cur = String::new();
+    for para in text.split("\n\n") {
+        let p = para.trim();
+        if p.is_empty() {
+            continue;
+        }
+        if cur.len() + p.len() > 1200 && !cur.is_empty() {
+            chunks.push(format!("[doc: {source}] {}", cur.trim()));
+            cur.clear();
+        }
+        cur.push_str(p);
+        cur.push_str("\n\n");
+    }
+    if !cur.trim().is_empty() {
+        chunks.push(format!("[doc: {source}] {}", cur.trim()));
+    }
+    chunks
+}
+
+const READ_DOC_MAX_RETURN: usize = 60_000;
+const TEXT_EXTS: &[&str] = &[
+    "md", "markdown", "txt", "text", "csv", "tsv", "json", "log", "rs", "py", "js", "ts", "tsx",
+    "swift", "toml", "yaml", "yml", "html", "htm", "xml", "sh", "c", "h", "cpp", "go", "java",
+];
+
+/// read_document (SP-Docs Flow A) — read & understand an existing local document. Returns its text
+/// (so the model can summarize / answer / rewrite) and, by default, chunks it into archival memory
+/// as Origin::Untrusted (contextual grounding + the injection-into-memory defense). PDFs are
+/// extracted via the signed app (PDFKit) over the app-host; text/markdown/code are read directly.
+pub fn read_document_tool(store: Arc<MemoryStore>, app_host: Option<(String, String)>) -> Tool {
+    let host = Arc::new(app_host);
+    Tool::new(
+        "read_document",
+        "Read and understand an EXISTING document on disk so you can summarize it, answer questions \
+         about it, or rewrite it. Works on PDF and text/markdown/code files. `path` = a local path \
+         (~ allowed; never iCloud). By default the contents are also remembered as untrusted reference \
+         data so later questions can draw on them — set `remember` to false to skip that. Returns the \
+         extracted text; a scanned PDF may yield none.",
+        json!({"type": "object",
+               "properties": {
+                   "path": {"type": "string", "description": "local path to the document (~ allowed)"},
+                   "remember": {"type": "boolean", "description": "also chunk into memory for recall (default true)"}},
+               "required": ["path"]}),
+        false, // read-only → autonomous
+        Arc::new(move |a| {
+            let raw = a.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if raw.is_empty() {
+                return ToolResult::err("missing 'path'");
+            }
+            let path = expand_home(raw);
+            if is_icloud(&path) {
+                return ToolResult::err(
+                    "refusing to read from iCloud — move the file to a local folder like ~/GINEXUS-Docs",
+                );
+            }
+            if !std::path::Path::new(&path).is_file() {
+                return ToolResult::err(format!("file not found: {}", ginexus_agent::abbreviate_home(&path)));
+            }
+            let ext = std::path::Path::new(&path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            let text = if ext == "pdf" {
+                match host.as_ref() {
+                    Some((sock, tok)) => {
+                        match ginexus_agent::app_tools::call_app_host(sock, tok, "read_pdf_text", &json!({"src": path})) {
+                            Ok(t) => t,
+                            Err(e) => return ToolResult::err(format!("PDF read failed: {e}")),
+                        }
+                    }
+                    None => return ToolResult::err("PDF reading needs the app host (run the app, not headless)"),
+                }
+            } else if TEXT_EXTS.contains(&ext.as_str()) || ext.is_empty() {
+                match std::fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(e) => return ToolResult::err(format!("read failed: {e}")),
+                }
+            } else if ext == "docx" {
+                return ToolResult::err(
+                    "Word .docx reading isn't supported yet — export it to PDF or plain text and retry.",
+                );
+            } else {
+                match std::fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(_) => return ToolResult::err(format!("unsupported file type: .{ext}")),
+                }
+            };
+
+            if text.trim().is_empty() {
+                return ToolResult::err("no extractable text (a scanned PDF or an empty file)");
+            }
+
+            let remember = a.get("remember").and_then(|v| v.as_bool()).unwrap_or(true);
+            if remember {
+                let source = std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or("document");
+                let chunks = chunk_text(&text, source);
+                if !chunks.is_empty() {
+                    store.append_facts(chunks, Origin::Untrusted);
+                }
+            }
+
+            let mut out = text;
+            if out.len() > READ_DOC_MAX_RETURN {
+                out.truncate(READ_DOC_MAX_RETURN);
+                out.push_str("\n\n[… document truncated for length; full text was remembered …]");
+            }
+            ToolResult::ok(out)
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

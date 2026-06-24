@@ -11,11 +11,27 @@ use std::sync::Mutex;
 pub const MIN_EVERY_SECS: i64 = 30;
 pub const MAX_SCHEDULES: usize = 50;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Schedule {
     pub id: String,
+    /// Human-friendly title for the task (e.g. "Morning news digest"). Older records without a name
+    /// load with an empty string; callers fall back to the prompt for display.
+    #[serde(default)]
+    pub name: String,
     pub prompt: String,
     pub every_secs: i64,
+    /// Paused tasks stay in the list but never fire. Defaults to `true` so pre-existing schedules
+    /// (written before this field existed) keep running.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Absolute paths to attached files (copies stored under App Support, owned by this task). Their
+    /// contents are injected as context when the task runs.
+    #[serde(default)]
+    pub attachments: Vec<String>,
     pub next_run_ms: i64,
     pub last_run_ms: i64,
     pub runs: u64,
@@ -42,8 +58,23 @@ impl ScheduleStore {
         }
     }
 
+    /// Per-task folder for attachment copies: `<run>/schedule_files/<id>/`. Derived from the store's
+    /// own path so it lives beside `schedules.json` under App Support (writable by the sidecar).
+    pub fn files_dir(&self, id: &str) -> PathBuf {
+        let run = self.path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        run.join("schedule_files").join(id)
+    }
+
     /// Add a schedule. First run fires on the next heartbeat tick (immediate-ish), then every N.
-    pub fn add(&self, prompt: String, every_secs: i64, now_ms: i64, id: String) -> Result<Schedule, String> {
+    pub fn add(
+        &self,
+        name: String,
+        prompt: String,
+        every_secs: i64,
+        attachments: Vec<String>,
+        now_ms: i64,
+        id: String,
+    ) -> Result<Schedule, String> {
         let mut items = self.items.lock().unwrap();
         if items.len() >= MAX_SCHEDULES {
             return Err("too many schedules".into());
@@ -53,8 +84,11 @@ impl ScheduleStore {
         }
         let s = Schedule {
             id,
+            name: name.trim().chars().take(120).collect(),
             prompt,
             every_secs: every_secs.max(MIN_EVERY_SECS),
+            enabled: true,
+            attachments,
             next_run_ms: now_ms, // fire soon, then every_secs
             last_run_ms: 0,
             runs: 0,
@@ -76,19 +110,31 @@ impl ScheduleStore {
         changed
     }
 
+    /// Pause or resume a task. Returns false if the id is unknown.
+    pub fn set_enabled(&self, id: &str, enabled: bool) -> bool {
+        let mut items = self.items.lock().unwrap();
+        if let Some(s) = items.iter_mut().find(|s| s.id == id) {
+            s.enabled = enabled;
+            self.save(&items);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn list(&self) -> Vec<Schedule> {
         self.items.lock().unwrap().clone()
     }
 
-    /// (id, prompt) for schedules due at `now_ms`; immediately bumps their next_run to avoid
-    /// double-firing while the (possibly slow) task runs.
-    pub fn take_due(&self, now_ms: i64) -> Vec<(String, String)> {
+    /// Full records for ENABLED schedules due at `now_ms`; immediately bumps their next_run to avoid
+    /// double-firing while the (possibly slow) task runs. Paused tasks are skipped.
+    pub fn take_due(&self, now_ms: i64) -> Vec<Schedule> {
         let mut items = self.items.lock().unwrap();
         let mut due = Vec::new();
         for s in items.iter_mut() {
-            if s.next_run_ms <= now_ms {
-                due.push((s.id.clone(), s.prompt.clone()));
+            if s.enabled && s.next_run_ms <= now_ms {
                 s.next_run_ms = now_ms + s.every_secs * 1000;
+                due.push(s.clone());
             }
         }
         if !due.is_empty() {
@@ -123,11 +169,12 @@ mod tests {
         let p = tmp();
         {
             let s = ScheduleStore::open(p.clone());
-            s.add("research X".into(), 60, 1000, "a".into()).unwrap();
+            s.add("Digest".into(), "research X".into(), 60, vec![], 1000, "a".into()).unwrap();
             // due at now (next_run == now on add)
             let due = s.take_due(1000);
             assert_eq!(due.len(), 1);
-            assert_eq!(due[0].1, "research X");
+            assert_eq!(due[0].prompt, "research X");
+            assert_eq!(due[0].name, "Digest");
             // not due again immediately (bumped to now + 60s)
             assert!(s.take_due(1000).is_empty());
             s.record_result("a", 2000, "the answer");
@@ -139,6 +186,7 @@ mod tests {
         assert_eq!(items[0].runs, 1);
         assert_eq!(items[0].last_result, "the answer");
         assert_eq!(items[0].every_secs, 60);
+        assert!(items[0].enabled); // enabled by default
         assert!(s2.remove("a"));
         assert!(s2.list().is_empty());
         std::fs::remove_file(&p).ok();
@@ -148,9 +196,30 @@ mod tests {
     fn cadence_floor_and_caps() {
         let p = tmp();
         let s = ScheduleStore::open(p.clone());
-        let sch = s.add("x".into(), 5, 0, "a".into()).unwrap();
+        let sch = s.add("X".into(), "x".into(), 5, vec![], 0, "a".into()).unwrap();
         assert_eq!(sch.every_secs, MIN_EVERY_SECS); // floored
-        assert!(s.add("".into(), 60, 0, "b".into()).is_err()); // empty rejected
+        assert!(s.add("".into(), "".into(), 60, vec![], 0, "b".into()).is_err()); // empty prompt rejected
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn paused_tasks_do_not_fire() {
+        let p = tmp();
+        let s = ScheduleStore::open(p.clone());
+        s.add("X".into(), "x".into(), 60, vec![], 1000, "a".into()).unwrap();
+        assert!(s.set_enabled("a", false)); // pause
+        assert!(s.take_due(1000).is_empty(), "paused task must not be due");
+        assert!(s.set_enabled("a", true)); // resume
+        assert_eq!(s.take_due(1000).len(), 1, "resumed task fires");
+        assert!(!s.set_enabled("nope", false)); // unknown id
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn files_dir_is_beside_store() {
+        let p = std::env::temp_dir().join("run").join("schedules.json");
+        let s = ScheduleStore::open(p);
+        let d = s.files_dir("abc123");
+        assert!(d.ends_with("run/schedule_files/abc123"));
     }
 }

@@ -6,9 +6,11 @@
 //!   POST /v1/agent       {model?, difficulty?, messages, grants?, mode?}       → JSON (HITL loop)
 //!   POST /v1/consolidate {block?}  → distill long-term memory into a durable core profile block
 //!   POST /v1/ingest      {data|path, include_assistant?}  → import export → quarantined memory
-//!   POST /v1/schedule    {prompt, every_secs?}  → create an unattended scheduled task (heartbeat)
-//!   GET  /v1/schedule    → list schedules + last results
-//!   POST /v1/schedule/remove {id}  → remove a schedule
+//!   POST /v1/schedule    {name?, prompt, every_secs?, attachments?:[{filename,content_b64}]}
+//!                          → create an unattended scheduled task (heartbeat); files stored per-task
+//!   GET  /v1/schedule    → list schedules (name, cadence, enabled, attachments, last result)
+//!   POST /v1/schedule/toggle {id, enabled}  → pause / resume a task
+//!   POST /v1/schedule/remove {id}  → remove a schedule (and its attachment copies)
 //!   GET  /v1/admin/killswitch          → {engaged, tier, boot_id}
 //!   POST /v1/admin/killswitch/engage   {tier, reason}
 //!   POST /v1/admin/killswitch/reset    {token, nonce, expiry_ms, boot_id, reason}  (approval-gated)
@@ -69,12 +71,34 @@ FILE LOCATION: image_generate and write_document save into GINEXUS's own interna
 NOT put the file in Downloads/Desktop/Documents. So whenever the user asks for a generated image or \
 document IN a specific folder, you MUST, right after creating it, call save_to_folder with that \
 file's path (from the create-tool's result) and the requested location, and report THAT saved path. \
-Never claim a file is in Downloads/Desktop/Documents unless you actually called save_to_folder.";
+Never claim a file is in Downloads/Desktop/Documents unless you actually called save_to_folder. \
+CONNECTING TOOLS: you can connect external services right here in chat — Notion, GitHub, Shopify, or \
+any MCP server. When the user asks to connect one, call connect_mcp (use mcp_list first to see what's \
+already connected); if it needs a credential, ASK the user for it before connecting, never invent one. \
+Tell them the connection activates after they restart GINEXUS.";
 
-/// Agent message stack: base guidance + memory preamble + the conversation.
+/// The Nexus Enterprise Conductor brief — bundled into the binary (no runtime ~/Desktop dependency)
+/// so GINEXUS *is* the Conductor by default and routes tasks to the right department/team via OSRO.
+const CONDUCTOR_BRIEF: &str = include_str!("../../../resources/conductor-core.md");
+
+/// Wraps the bundled brief with an activation guard so the Conductor protocol applies to operational /
+/// multi-step / enterprise tasks — not to casual chat (no "briefing" for "hello").
+fn conductor_system() -> String {
+    format!(
+        "You operate as the CONDUCTOR of the Principal's Nexus Enterprise. Apply the Conductor protocol \
+         below to operational, multi-step, or enterprise tasks — engineering, security, research, AI/ML, \
+         robotics, finance, tax, legal, content, merch, data, product, trading, logistics, jobs, ops. Run \
+         OSRO: identify the owning department(s)/team(s), and for anything irreversible, external, or \
+         involving spend, present a Conductor Briefing and get the Principal's go-ahead before executing. \
+         For a simple question or casual conversation, just answer normally — do NOT force a briefing.\n\n{CONDUCTOR_BRIEF}"
+    )
+}
+
+/// Agent message stack: Conductor role + base guidance + memory preamble + the conversation.
 fn agent_messages(memory: &MemoryStore, raw: Vec<Value>) -> Vec<Value> {
     let mut messages = with_memory(memory, raw);
     messages.insert(0, json!({"role": "system", "content": AGENT_GUIDANCE}));
+    messages.insert(0, json!({"role": "system", "content": conductor_system()}));
     messages
 }
 
@@ -106,6 +130,175 @@ fn rand_hex(n: usize) -> String {
     hex::encode(buf)
 }
 
+/// Split a command line into tokens, honoring double-quoted spans so a program PATH containing spaces
+/// (e.g. a binary under ".../Application Support/...") survives intact. Minimal: double quotes only,
+/// no escape sequences — enough for our own preset commands and `npx …` server commands.
+fn shell_split(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_q = false;
+    let mut started = false; // a token has begun (so an empty "" still yields a token)
+    for c in s.chars() {
+        match c {
+            '"' => {
+                in_q = !in_q;
+                started = true;
+            }
+            c if c.is_whitespace() && !in_q => {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(cur);
+    }
+    out
+}
+
+/// Decode standard base64 (RFC 4648, with `=` padding) — self-contained so attachment uploads add no
+/// new dependency to the supply chain (PSS: fewer deps to audit). Whitespace is ignored; any other
+/// invalid character fails the whole decode.
+fn b64_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut quad = [0u8; 4];
+    let mut n = 0;
+    let mut pads = 0;
+    for &c in input.as_bytes() {
+        if c.is_ascii_whitespace() {
+            continue;
+        }
+        if c == b'=' {
+            pads += 1;
+            quad[n] = 0;
+            n += 1;
+        } else if pads > 0 {
+            return Err("base64: data after padding".into());
+        } else {
+            quad[n] = val(c).ok_or("base64: invalid character")?;
+            n += 1;
+        }
+        if n == 4 {
+            out.push((quad[0] << 2) | (quad[1] >> 4));
+            if pads < 2 {
+                out.push((quad[1] << 4) | (quad[2] >> 2));
+            }
+            if pads < 1 {
+                out.push((quad[2] << 6) | quad[3]);
+            }
+            n = 0;
+        }
+    }
+    if n != 0 {
+        return Err("base64: truncated input".into());
+    }
+    Ok(out)
+}
+
+/// Caps on scheduled-task attachments (DoS / disk-abuse guard).
+const SCHED_MAX_FILES: usize = 8;
+const SCHED_MAX_FILE_BYTES: usize = 10 * 1024 * 1024; // 10 MB per file
+
+/// A scheduled task as JSON for the app. Attachments are shown as basenames only (never the absolute
+/// stored path) — privacy-by-default, matching the rest of the API.
+fn schedule_json(s: &scheduler::Schedule) -> Value {
+    let files: Vec<String> = s
+        .attachments
+        .iter()
+        .map(|p| std::path::Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or(p).to_string())
+        .collect();
+    json!({
+        "id": s.id, "name": s.name, "prompt": s.prompt, "every_secs": s.every_secs,
+        "enabled": s.enabled, "attachments": files, "runs": s.runs,
+        "last_run_ms": s.last_run_ms, "next_run_ms": s.next_run_ms, "last_result": s.last_result,
+    })
+}
+
+/// Sanitize an uploaded filename to a safe basename inside the task's folder (no traversal).
+fn safe_basename(name: &str) -> Result<String, String> {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    if base.is_empty() || base == "." || base == ".." || base.contains('\0') {
+        return Err("invalid attachment filename".into());
+    }
+    Ok(base.chars().take(128).collect())
+}
+
+/// Decode `[{filename, content_b64}]` and write each to the task's own folder under App Support.
+/// Returns the absolute stored paths. The sidecar CAN write here (App Support is not TCC-protected).
+fn store_schedule_attachments(
+    store: &scheduler::ScheduleStore,
+    id: &str,
+    attachments: Option<&Value>,
+) -> Result<Vec<String>, String> {
+    let arr = match attachments.and_then(|a| a.as_array()) {
+        Some(a) if !a.is_empty() => a,
+        _ => return Ok(vec![]),
+    };
+    if arr.len() > SCHED_MAX_FILES {
+        return Err(format!("too many attachments (max {SCHED_MAX_FILES})"));
+    }
+    let dir = store.files_dir(id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create attachment dir: {e}"))?;
+    let mut paths = Vec::new();
+    for item in arr {
+        let fname = safe_basename(item.get("filename").and_then(|f| f.as_str()).unwrap_or(""))?;
+        let bytes = b64_decode(item.get("content_b64").and_then(|c| c.as_str()).unwrap_or(""))?;
+        if bytes.len() > SCHED_MAX_FILE_BYTES {
+            return Err(format!("attachment '{fname}' exceeds {SCHED_MAX_FILE_BYTES} bytes"));
+        }
+        let dest = dir.join(&fname);
+        std::fs::write(&dest, &bytes).map_err(|e| format!("write attachment: {e}"))?;
+        paths.push(dest.to_string_lossy().to_string());
+    }
+    Ok(paths)
+}
+
+/// Build the context preamble injected ahead of a scheduled task's prompt: inline readable text
+/// attachments (capped), and reference non-text files by path so the agent can open them with its
+/// read tools. Returns an empty string when the task has no attachments.
+fn attachment_context(attachments: &[String]) -> String {
+    const INLINE_CAP: usize = 100 * 1024; // inline up to 100 KB of text per file
+    if attachments.is_empty() {
+        return String::new();
+    }
+    let mut ctx = format!("This task has {} attached file(s):\n", attachments.len());
+    for path in attachments {
+        let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path);
+        match std::fs::read(path) {
+            Ok(bytes) => match std::str::from_utf8(&bytes) {
+                Ok(text) => {
+                    let shown: String = text.chars().take(INLINE_CAP).collect();
+                    let trunc = if text.len() > shown.len() { "\n…[truncated]" } else { "" };
+                    ctx.push_str(&format!("\n--- FILE: {name} ---\n{shown}{trunc}\n--- END FILE ---\n"));
+                }
+                Err(_) => {
+                    // Binary (PDF, image, .docx): hand the agent the path to read with its own tools.
+                    ctx.push_str(&format!("\n--- FILE: {name} (binary; read it at {path}) ---\n"));
+                }
+            },
+            Err(_) => ctx.push_str(&format!("\n--- FILE: {name} (unavailable) ---\n")),
+        }
+    }
+    ctx.push('\n');
+    ctx
+}
+
 fn key_from_env(name: &str) -> Option<Vec<u8>> {
     let h = std::env::var(name).ok()?;
     let k = hex::decode(h).ok()?;
@@ -121,8 +314,23 @@ fn state_dir() -> PathBuf {
     PathBuf::from(home).join("Library/Application Support/GINEXUS")
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Subcommand: run as the bundled Printful MCP server (blocking JSON-RPC over stdio) instead of the
+    // HTTP core. This reuses the already-signed core binary — the MCP host spawns `<core> --printful-mcp`
+    // — so there's no second binary to stage or notarize. reqwest::blocking must run OUTSIDE a tokio
+    // runtime, hence the branch happens before the runtime is built.
+    if std::env::args().skip(1).any(|a| a == "--printful-mcp") {
+        ginexus_gateway::printful::run_stdio();
+        return;
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime")
+        .block_on(run_server());
+}
+
+async fn run_server() {
     let mut args = std::env::args().skip(1);
     let mut uds = state_dir().join("run/ginexus.sock");
     while let Some(a) = args.next() {
@@ -177,7 +385,16 @@ async fn main() {
     };
     let mut registry = ginexus_agent::tools::notes_registry(sd.join("notes"));
     registry.register(ginexus_gateway::web::web_fetch_tool()); // SP4: read-only web research
+    registry.register(ginexus_gateway::web::web_search_tool()); // SP-Research: discover sources (keyless, PSS-safe)
     registry.register(ginexus_agent::documents::write_document_tool(sd.join("documents"), app_host.clone())); // PDF/Word (HITL)
+    // SP-Robotics (Phase 1+2): design → fabricate. cad_generate (OpenSCAD DSL → STL, file-refs rejected)
+    // + cad_slice (PrusaSlicer external CLI → G-code). Autonomous (produce files, no hardware). Only
+    // useful on macOS where the verified OpenSCAD/PrusaSlicer binaries are installed.
+    {
+        let robo = sd.join("robotics");
+        registry.register(ginexus_agent::robotics::cad_generate_tool(robo.clone()));
+        registry.register(ginexus_agent::robotics::cad_slice_tool(robo));
+    }
     // SP6: local image generation — registered only when the app launched the media sidecar and
     // injected its base URL. Generation is autonomous (writes only into the media dir).
     if let Ok(base) = std::env::var("GINEXUS_MEDIA_BASE") {
@@ -190,6 +407,22 @@ async fn main() {
                 let _ = std::fs::set_permissions(sd.join("media"), std::fs::Permissions::from_mode(0o700));
             }
             eprintln!("registered image_generate tool (media sidecar)");
+        }
+    }
+    // SP-Voice: local TTS `speak` tool — registered only when the app launched the audio sidecar and
+    // injected its base URL. Synthesis is autonomous (writes only into the audio dir). The realtime
+    // conversational loop talks to the sidecar directly from the Swift app; this tool is for the
+    // agent to proactively speak in a typed chat.
+    if let Ok(base) = std::env::var("GINEXUS_AUDIO_BASE") {
+        if !base.is_empty() {
+            registry.register(ginexus_gateway::voice::speak_tool(base));
+            let _ = std::fs::create_dir_all(sd.join("audio"));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(sd.join("audio"), std::fs::Permissions::from_mode(0o700));
+            }
+            eprintln!("registered speak tool (audio sidecar)");
         }
     }
     // Obsidian vault tools — registered only when the operator points GINEXUS at a vault dir
@@ -212,6 +445,9 @@ async fn main() {
         registry.register(t);
     }
     registry.register(ginexus_memory::ingest::ingest_tool(memory.clone())); // SP3: import exports (HITL)
+    // SP-Docs Flow A: read & understand a local document (PDF via app host, text/code directly),
+    // chunking it into memory as untrusted reference data. Read-only → autonomous.
+    registry.register(ginexus_memory::read_document_tool(memory.clone(), app_host.clone()));
     registry.register(ginexus_agent::tools::terminal_tool(   // SP4: HITL-gated safe terminal
         sd.join("workspace"),
         ["ls", "cat", "echo", "date", "pwd", "head", "tail", "wc", "uname"]
@@ -219,7 +455,7 @@ async fn main() {
     ));
     // MCP host: import an external MCP server's tools (default-deny / HITL-gated) when configured.
     if let Ok(cmd) = std::env::var("GINEXUS_MCP_CMD") {
-        let parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+        let parts = shell_split(&cmd);
         if let Some((prog, rest)) = parts.split_first() {
             match ginexus_mcp::McpClient::spawn(prog, rest) {
                 Ok(client) => {
@@ -230,6 +466,33 @@ async fn main() {
                     }
                 }
                 Err(e) => eprintln!("MCP spawn failed for '{cmd}': {e}"),
+            }
+        }
+    }
+    // SP-Connect: multiple named MCP servers (Notion, Shopify, …). The app builds this JSON from
+    // settings.mcpServers and injects each server's credential into the child's env (the secret
+    // itself stays in the Keychain, never here). Tools are prefixed mcp.<name>. and stay default-deny.
+    if let Ok(json) = std::env::var("GINEXUS_MCP_SERVERS") {
+        if let Ok(servers) = serde_json::from_str::<Vec<serde_json::Value>>(&json) {
+            for s in servers {
+                let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let cmd = s.get("command").and_then(|v| v.as_str()).unwrap_or("").trim();
+                if name.is_empty() || cmd.is_empty() {
+                    continue;
+                }
+                let parts = shell_split(cmd);
+                let Some((prog, rest)) = parts.split_first() else { continue };
+                match ginexus_mcp::McpClient::spawn(prog, rest) {
+                    Ok(client) => {
+                        let client = Arc::new(Mutex::new(client));
+                        let prefix = format!("mcp.{name}.");
+                        match ginexus_mcp::import_mcp_tools(client, &mut registry, &prefix) {
+                            Ok(n) => eprintln!("imported {n} MCP tools from '{name}'"),
+                            Err(e) => eprintln!("MCP import failed for '{name}': {e}"),
+                        }
+                    }
+                    Err(e) => eprintln!("MCP spawn failed for '{name}': {e}"),
+                }
             }
         }
     }
@@ -476,31 +739,50 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
         }
         ("POST", "/v1/schedule") => {
             // Create an unattended scheduled task. First run fires on the next heartbeat tick.
+            // Attachments arrive as [{filename, content_b64}] — the app sends bytes (the sidecar can't
+            // read TCC-protected dirs), and we store a copy this task owns under App Support.
+            let name = body.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
             let prompt = body.get("prompt").and_then(|p| p.as_str()).unwrap_or("").to_string();
             let every = body.get("every_secs").and_then(|e| e.as_i64()).unwrap_or(3600);
-            match state.schedules.add(prompt, every, now_ms(), rand_hex(6)) {
-                Ok(s) => {
-                    let _ = state.audit.record("schedule_add", json!({"id": s.id, "every_secs": s.every_secs}));
-                    json_ok(&mut stream, json!({"id": s.id, "prompt": s.prompt,
-                                                "every_secs": s.every_secs, "next_run_ms": s.next_run_ms})).await;
-                }
+            let id = rand_hex(6);
+            match store_schedule_attachments(&state.schedules, &id, body.get("attachments")) {
+                Ok(paths) => match state.schedules.add(name, prompt, every, paths, now_ms(), id.clone()) {
+                    Ok(s) => {
+                        let _ = state.audit.record(
+                            "schedule_add",
+                            json!({"id": s.id, "every_secs": s.every_secs, "attachments": s.attachments.len()}),
+                        );
+                        json_ok(&mut stream, schedule_json(&s)).await;
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_dir_all(state.schedules.files_dir(&id)); // no orphan copies
+                        err(&mut stream, 400, "Bad Request", &e).await;
+                    }
+                },
                 Err(e) => err(&mut stream, 400, "Bad Request", &e).await,
             }
         }
         ("GET", "/v1/schedule") => {
-            let items: Vec<Value> = state
-                .schedules
-                .list()
-                .into_iter()
-                .map(|s| json!({"id": s.id, "prompt": s.prompt, "every_secs": s.every_secs,
-                                "runs": s.runs, "last_run_ms": s.last_run_ms, "next_run_ms": s.next_run_ms,
-                                "last_result": s.last_result}))
-                .collect();
+            let items: Vec<Value> = state.schedules.list().iter().map(schedule_json).collect();
             json_ok(&mut stream, json!({"schedules": items})).await;
+        }
+        ("POST", "/v1/schedule/toggle") => {
+            let id = body.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let enabled = body.get("enabled").and_then(|e| e.as_bool()).unwrap_or(true);
+            let ok = state.schedules.set_enabled(id, enabled);
+            if ok {
+                let _ = state.audit.record("schedule_toggle", json!({"id": id, "enabled": enabled}));
+            }
+            json_ok(&mut stream, json!({"ok": ok, "enabled": enabled})).await;
         }
         ("POST", "/v1/schedule/remove") => {
             let id = body.get("id").and_then(|i| i.as_str()).unwrap_or("");
-            json_ok(&mut stream, json!({"removed": state.schedules.remove(id)})).await;
+            let removed = state.schedules.remove(id);
+            if removed {
+                let _ = std::fs::remove_dir_all(state.schedules.files_dir(id)); // drop the task's files
+                let _ = state.audit.record("schedule_remove", json!({"id": id}));
+            }
+            json_ok(&mut stream, json!({"removed": removed})).await;
         }
         ("GET", "/v1/models") => {
             // Roster for the app's model picker. "auto" is the implicit policy-routed default.
@@ -877,6 +1159,19 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 .collect();
             json_ok(&mut stream, json!({"blocks": blocks, "facts_count": facts.len(), "recent": recent})).await;
         }
+        ("POST", "/v1/memory/block") => {
+            // Manually set/edit a CORE memory block (always-in-context), e.g. the custom profile.
+            // User-authored → trusted. Empty value clears the block.
+            let name = body.get("block").and_then(|b| b.as_str()).unwrap_or("").trim();
+            let value = body.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            if name.is_empty() {
+                err(&mut stream, 400, "Bad Request", "missing 'block'").await;
+            } else {
+                state.memory.set_block(name, value);
+                let _ = state.audit.record("memory_block_set", json!({"block": name, "len": value.len()}));
+                json_ok(&mut stream, json!({"status": "ok", "block": name})).await;
+            }
+        }
         ("POST", "/v1/memory/search") => {
             // Semantic search over archival memory (cosine when embeddings exist, else keyword).
             let q = body.get("query").and_then(|x| x.as_str()).unwrap_or("").trim();
@@ -977,20 +1272,23 @@ async fn heartbeat(state: Arc<AppState>) {
         if blocked {
             continue;
         }
-        for (id, prompt) in state.schedules.take_due(now_ms()) {
+        for sched in state.schedules.take_due(now_ms()) {
             let readonly = state.registry.readonly();
             let model = state.gateway.select(None, "reason", "normal", false);
             let bound = BoundModel { gateway: &state.gateway, model };
             let agent =
                 AgentLoop { model: &bound, registry: &readonly, hitl: &state.hitl, max_iters: 6, depth: 0,
                             mode: ginexus_agent::Mode::Hitl };
-            let msgs = with_memory(&state.memory, vec![json!({"role": "user", "content": prompt})]);
+            // Attached files become context the task can act on; then the task's own instructions.
+            let ctx = attachment_context(&sched.attachments);
+            let content = if ctx.is_empty() { sched.prompt.clone() } else { format!("{ctx}\n{}", sched.prompt) };
+            let msgs = with_memory(&state.memory, vec![json!({"role": "user", "content": content})]);
             let res = agent.run(msgs, &[], None, now_ms()).await;
             let _ = state.audit.record(
                 "schedule_run",
-                json!({"id": id, "status": format!("{:?}", res.status), "out_len": res.answer.len()}),
+                json!({"id": sched.id, "status": format!("{:?}", res.status), "out_len": res.answer.len()}),
             );
-            state.schedules.record_result(&id, now_ms(), &res.answer);
+            state.schedules.record_result(&sched.id, now_ms(), &res.answer);
         }
     }
 }
@@ -1034,4 +1332,72 @@ fn ct_eq(a: &str, b: &str) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+#[cfg(test)]
+mod conductor_tests {
+    use super::{conductor_system, CONDUCTOR_BRIEF};
+
+    #[test]
+    fn brief_is_bundled_and_complete() {
+        // The Conductor roster is compiled into the binary — no runtime ~/Desktop dependency.
+        assert!(CONDUCTOR_BRIEF.contains("OSRO"), "brief must carry the OSRO protocol");
+        assert!(CONDUCTOR_BRIEF.contains("Department Routing Table"), "brief must carry the routing table");
+        assert!(CONDUCTOR_BRIEF.contains("CONDUCTOR BRIEFING"), "brief must carry the briefing format");
+        // Spot-check department codes so a truncated roster fails loudly.
+        for code in ["ENG", "SEC", "AIL", "FIN", "MRC", "ITO"] {
+            assert!(CONDUCTOR_BRIEF.contains(code), "routing table missing {code}");
+        }
+    }
+
+    #[test]
+    fn activation_guard_excuses_casual_chat() {
+        let sys = conductor_system();
+        // Guard keeps GINEXUS from issuing a briefing for "hello" — protocol applies to ops work only.
+        assert!(sys.contains("CONDUCTOR"));
+        assert!(sys.to_lowercase().contains("casual conversation"));
+        assert!(sys.contains(CONDUCTOR_BRIEF), "the wrapped system message must embed the full brief");
+    }
+}
+
+#[cfg(test)]
+mod b64_tests {
+    use super::b64_decode;
+
+    #[test]
+    fn round_trips_known_vectors() {
+        assert_eq!(b64_decode("").unwrap(), b"");
+        assert_eq!(b64_decode("Zg==").unwrap(), b"f");
+        assert_eq!(b64_decode("Zm8=").unwrap(), b"fo");
+        assert_eq!(b64_decode("Zm9v").unwrap(), b"foo");
+        assert_eq!(b64_decode("aGVsbG8sIHdvcmxk").unwrap(), b"hello, world");
+        // whitespace (newlines from chunked encoders) is ignored
+        assert_eq!(b64_decode("Zm9v\nYmFy").unwrap(), b"foobar");
+        // a non-text byte (0xFF 0x00) survives
+        assert_eq!(b64_decode("/wA=").unwrap(), vec![0xFF, 0x00]);
+    }
+
+    #[test]
+    fn rejects_malformed() {
+        assert!(b64_decode("Zg=").is_err()); // truncated
+        assert!(b64_decode("Zm9v!!!").is_err()); // invalid char
+        assert!(b64_decode("Zg==Zg==").is_err()); // data after padding
+    }
+}
+
+#[cfg(test)]
+mod shell_split_tests {
+    use super::shell_split;
+
+    #[test]
+    fn splits_plain_and_quoted() {
+        assert_eq!(shell_split("npx -y @shopify/dev-mcp"), vec!["npx", "-y", "@shopify/dev-mcp"]);
+        // A quoted program path with a space survives as ONE token (the Printful preset case).
+        assert_eq!(
+            shell_split("\"/Users/x/Library/Application Support/GINEXUS/core\" --printful-mcp"),
+            vec!["/Users/x/Library/Application Support/GINEXUS/core", "--printful-mcp"]
+        );
+        assert_eq!(shell_split("   spaced   out  "), vec!["spaced", "out"]);
+        assert!(shell_split("").is_empty());
+    }
 }

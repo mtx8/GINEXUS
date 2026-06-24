@@ -9,6 +9,8 @@ import Foundation
 import Darwin
 import EventKit
 import IOKit.ps
+import PDFKit
+import GinexusCore
 
 final class AppToolHost {
     let socketPath: String
@@ -99,6 +101,11 @@ final class AppToolHost {
         case "shortcuts_run":   return shortcutsRun(args)
         case "save_to_folder":  return saveToFolder(args)
         case "pages_write":     return pagesWrite(args)
+        case "read_pdf_fields": return readPdfFields(args)
+        case "fill_pdf_form":   return fillPdfForm(args)
+        case "read_pdf_text":   return readPdfText(args)
+        case "mcp_list":        return mcpList()
+        case "connect_mcp":     return connectMcp(args)
         default:                return fail("unknown tool '\(tool)'")
         }
     }
@@ -291,6 +298,154 @@ final class AppToolHost {
         return ok("Created in Apple Pages and saved to \(tildeShown(dest.path))")
     }
 
+    // MARK: - PDF forms (SP-Docs Flow B — native PDFKit, TCC-correct, never iCloud)
+
+    private enum PDFOpen { case ok(PDFDocument, String); case err(Data) }
+
+    /// Open a PDF and resolve its source path, refusing iCloud + missing files. Shared by both PDF tools.
+    private func openPDF(_ a: [String: Any]) -> PDFOpen {
+        guard let srcRaw = (a["src"] as? String), !srcRaw.isEmpty else { return .err(fail("'src' required")) }
+        let src = SpineController.canonical((srcRaw as NSString).expandingTildeInPath)
+        if SpineController.isICloudPath(src) {
+            return .err(fail("refusing to touch iCloud (\(tildeShown(src))) — move the PDF to a local folder like ~/GINEXUS-Docs"))
+        }
+        guard FileManager.default.fileExists(atPath: src) else { return .err(fail("PDF not found: \(tildeShown(src))")) }
+        guard let doc = PDFDocument(url: URL(fileURLWithPath: src)) else { return .err(fail("could not open PDF (corrupt or encrypted): \(tildeShown(src))")) }
+        return .ok(doc, src)
+    }
+
+    private func fieldTypeName(_ t: PDFAnnotationWidgetSubtype) -> String {
+        switch t {
+        case .text: return "text"
+        case .button: return "button"
+        case .choice: return "choice"
+        case .signature: return "signature"
+        default: return "unknown"
+        }
+    }
+
+    /// List the fillable AcroForm fields so the agent can map the user's data to them.
+    private func readPdfFields(_ a: [String: Any]) -> Data {
+        let doc: PDFDocument, src: String
+        switch openPDF(a) { case .err(let e): return e; case .ok(let d, let s): doc = d; src = s }
+
+        var fields: [[String: Any]] = []
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i) else { continue }
+            for ann in page.annotations where ann.fieldName != nil {
+                var f: [String: Any] = [
+                    "name": ann.fieldName ?? "",
+                    "type": fieldTypeName(ann.widgetFieldType),
+                    "page": i,
+                    "value": ann.widgetStringValue ?? "",
+                ]
+                if let choices = ann.choices, !choices.isEmpty { f["options"] = choices }
+                fields.append(f)
+            }
+        }
+        if fields.isEmpty {
+            return ok("This PDF has no fillable AcroForm fields — it may be a flat/scanned PDF or an XFA form, which can't be filled in place. (\(tildeShown(src)))")
+        }
+        let payload: [String: Any] = ["path": tildeShown(src), "field_count": fields.count, "fields": fields]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return fail("could not encode fields") }
+        return ok(json)
+    }
+
+    /// Extract a PDF's text (read_document's PDF path runs through here for TCC-correct file access).
+    private func readPdfText(_ a: [String: Any]) -> Data {
+        let doc: PDFDocument
+        switch openPDF(a) { case .err(let e): return e; case .ok(let d, _): doc = d }
+        let text = doc.string ?? ""
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ok("(no extractable text — this PDF is likely scanned images)")
+        }
+        return ok(text)
+    }
+
+    private static let truthy: Set<String> = ["on", "true", "yes", "y", "x", "1", "checked", "✓"]
+
+    /// Fill an existing AcroForm PDF in place (default) with an automatic timestamped backup, or to a
+    /// new copy when `new_copy` is set. `fields` is { fieldName: value }.
+    private func fillPdfForm(_ a: [String: Any]) -> Data {
+        let doc: PDFDocument, src: String
+        switch openPDF(a) { case .err(let e): return e; case .ok(let d, let s): doc = d; src = s }
+        guard let fields = a["fields"] as? [String: Any], !fields.isEmpty else { return fail("'fields' object required ({fieldName: value})") }
+
+        // Index widgets by field name.
+        var widgets: [String: PDFAnnotation] = [:]
+        for i in 0..<doc.pageCount {
+            guard let page = doc.page(at: i) else { continue }
+            for ann in page.annotations { if let n = ann.fieldName { widgets[n] = ann } }
+        }
+        if widgets.isEmpty { return fail("no AcroForm fields to fill (flat/scanned or XFA PDF): \(tildeShown(src))") }
+
+        var filled: [String] = []
+        var missing: [String] = []
+        for (name, raw) in fields {
+            guard let ann = widgets[name] else { missing.append(name); continue }
+            let value = "\(raw)"
+            if ann.widgetFieldType == .button {
+                let on = Self.truthy.contains(value.lowercased())
+                ann.buttonWidgetState = on ? .onState : .offState
+                if on, ann.buttonWidgetStateString.isEmpty == false { /* keep export state */ }
+                // For radio groups the value may be an export name rather than a boolean.
+                if !on && !Self.truthy.contains(value.lowercased()) { ann.widgetStringValue = value }
+            } else {
+                ann.widgetStringValue = value
+            }
+            filled.append(name)
+        }
+
+        // Destination, in priority order:
+        //   out_name → DUPLICATE the template into a named file in the same folder (template untouched)
+        //              — this is the "monthly report from a template" workflow.
+        //   new_copy → a "<stem>-filled.pdf" copy beside the original.
+        //   else     → fill in place, with an automatic timestamped backup.
+        let srcURL = URL(fileURLWithPath: src)
+        let dir = srcURL.deletingLastPathComponent()
+        let outName = (a["out_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newCopy = (a["new_copy"] as? Bool) ?? false
+        var madeCopy = false
+        let destPath: String
+        if let outName, !outName.isEmpty {
+            var name = (outName as NSString).lastPathComponent           // single component, no traversal
+            if !name.lowercased().hasSuffix(".pdf") { name += ".pdf" }
+            var dest = dir.appendingPathComponent(name)
+            if dest.path == src {                                        // never overwrite the template
+                dest = dir.appendingPathComponent("\((name as NSString).deletingPathExtension) (copy).pdf")
+            }
+            destPath = dest.path
+            madeCopy = true
+        } else if newCopy {
+            let stem = srcURL.deletingPathExtension().lastPathComponent
+            destPath = dir.appendingPathComponent("\(stem)-filled.pdf").path
+            madeCopy = true
+        } else {
+            if let backup = backupPath(for: src) {
+                try? FileManager.default.copyItem(atPath: src, toPath: backup)
+            }
+            destPath = src
+        }
+        guard doc.write(to: URL(fileURLWithPath: destPath)) else {
+            return fail("failed to write the filled PDF (grant GINEXUS access to that folder if macOS asks)")
+        }
+        var msg = "Filled \(filled.count) field(s) → \(tildeShown(destPath))."
+        if madeCopy { msg += " The template was left unchanged." } else { msg += " Original backed up." }
+        if !missing.isEmpty { msg += " Not found in the form: \(missing.sorted().joined(separator: ", "))." }
+        return ok(msg)
+    }
+
+    /// Timestamped backup path under App Support so an in-place fill is always reversible.
+    private func backupPath(for src: String) -> String? {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GINEXUS/backups", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let df = DateFormatter(); df.dateFormat = "yyyyMMdd-HHmmss"
+        let stem = (src as NSString).lastPathComponent
+        return base.appendingPathComponent("\(df.string(from: Date()))-\(stem)").path
+    }
+
     private func run(_ path: String, _ args: [String]) -> (code: Int32, out: String) {
         let p = Process(); p.executableURL = URL(fileURLWithPath: path); p.arguments = args
         let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
@@ -298,5 +453,48 @@ final class AppToolHost {
         p.waitUntilExit()
         let d = pipe.fileHandleForReading.readDataToEndOfFile()
         return (p.terminationStatus, String(data: d, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+    }
+
+    // MARK: MCP integrations — connect external servers from within a chat (SP-Connect-in-chat).
+    // Persistence goes through SettingsStore.shared (the single settings.json writer) on the main
+    // actor; the secret lands in the Keychain, never plaintext. The server activates on next restart.
+
+    private func mcpList() -> Data {
+        let servers = DispatchQueue.main.sync { MainActor.assumeIsolated { SettingsStore.shared.settings.mcpServers } }
+        if servers.isEmpty { return ok("No MCP integrations are connected yet.") }
+        let lines = servers.map { s -> String in
+            let state = s.enabled ? "enabled" : "disabled"
+            let cred = (s.tokenEnv?.isEmpty == false) ? " · uses a Keychain credential" : ""
+            return "- \(s.name): \(state)\(cred)"
+        }
+        return ok("Connected MCP servers:\n" + lines.joined(separator: "\n"))
+    }
+
+    private func connectMcp(_ a: [String: Any]) -> Data {
+        let slug = (a["name"] as? String ?? "")
+            .lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            .filter { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+        let command = (a["command"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !slug.isEmpty else { return fail("a short name is required") }
+        guard !command.isEmpty else { return fail("the server's launch command is required") }
+        let tokenEnv = (a["token_env"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = a["token"] as? String
+        var ref: String? = nil
+        if let tokenEnv, !tokenEnv.isEmpty, let token, !token.isEmpty {
+            let r = "mcp.\(slug).token"
+            _ = Keychain.set(token, for: r)
+            ref = r
+        }
+        let cfg = McpServerConfig(name: slug, command: command, enabled: true,
+                                  tokenEnv: (tokenEnv?.isEmpty == false) ? tokenEnv : nil, credentialRef: ref)
+        DispatchQueue.main.sync {
+            MainActor.assumeIsolated {
+                SettingsStore.shared.update { s in
+                    s.mcpServers.removeAll { $0.name == slug }
+                    s.mcpServers.append(cfg)
+                }
+            }
+        }
+        return ok("Connected “\(slug)”. It activates the next time GINEXUS is restarted — relaunch the app to start using its tools.")
     }
 }
