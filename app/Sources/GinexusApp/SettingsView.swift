@@ -52,8 +52,8 @@ struct SettingsView: View {
                         runtimeSection
                         importSection
                         privacySection
-                        Text("Saved to ~/Library/Application Support/GINEXUS/settings.json")
-                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(Brand.muted)
+                        Text("Saved to ~/Library/Application Support/GINEXUS/settings.json · secrets in Keychain")
+                            .font(Brand.mono(9)).foregroundStyle(Brand.muted)
                             .padding(.top, 2)
                     }
                 }
@@ -67,13 +67,16 @@ struct SettingsView: View {
     }
 
     private var header: some View {
-        HStack {
-            Text("SETTINGS").font(.system(size: 14, weight: .bold, design: .monospaced)).kerning(2)
-                .foregroundStyle(Brand.bone50)
+        HStack(spacing: 10) {
+            Image(systemName: "gearshape.fill").font(.system(size: 13)).foregroundStyle(Brand.ember500)
+            Text("SETTINGS").font(Brand.mono(14, weight: .bold)).kerning(2).foregroundStyle(Brand.bone50)
             Spacer()
-            Button("DONE") { model.settingsOpen = false }
-                .buttonStyle(.plain).font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundStyle(Brand.muted)
+            Button { model.settingsOpen = false } label: {
+                Text("DONE").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.bone100)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+            }.buttonStyle(.plain)
         }
     }
 
@@ -341,30 +344,32 @@ struct SettingsView: View {
     // MARK: building blocks
 
     private func card<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.5)
-                .foregroundStyle(Brand.muted)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 7) {
+                Rectangle().fill(Brand.ember500).frame(width: 3, height: 11).clipShape(Capsule())
+                Text(title).font(Brand.mono(10, weight: .bold)).kerning(1.6).foregroundStyle(Brand.bone200)
+            }
             content()
         }
-        .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
         .background(Brand.cardFill)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 10)) }
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 12)) }
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line1, lineWidth: 1))
         .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
     }
 
     private func row<Control: View>(_ label: String, @ViewBuilder _ control: () -> Control) -> some View {
         HStack {
-            Text(label).font(.system(size: 13, design: .monospaced)).foregroundStyle(Brand.bone50)
+            Text(label).font(Brand.mono(13)).foregroundStyle(Brand.bone50)
             Spacer()
             control()
         }
     }
 
     private func caption(_ text: String) -> some View {
-        Text(text).font(.system(size: 10, design: .monospaced)).foregroundStyle(Brand.muted)
-            .fixedSize(horizontal: false, vertical: true)
+        Text(text).font(Brand.mono(10)).foregroundStyle(Brand.muted)
+            .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
     }
 
     private var divider: some View { Divider().overlay(Color.white.opacity(0.06)) }
