@@ -42,6 +42,10 @@ final class SpineController {
         Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/ginexus-server")
     }
 
+    /// Absolute path to the embedded core binary — used to launch its bundled subcommand MCP servers
+    /// (e.g. the Printful MCP: `"<corePath>" --printful-mcp`). Same signed binary, a different mode.
+    var corePath: String { embeddedBinary.path }
+
     var available: Bool { FileManager.default.isExecutableFile(atPath: embeddedBinary.path) }
 
     var logURL: URL {
@@ -133,6 +137,11 @@ final class SpineController {
                     env[te] = secret
                 }
             }
+        }
+        // SP-Research: the optional Brave Search API key (Settings → Connections) powers full live web
+        // search. Stored in the Keychain; injected as the env var web_search reads. Never in settings.json.
+        if let brave = Keychain.get("search.brave.key"), !brave.isEmpty {
+            env["BRAVE_SEARCH_API_KEY"] = brave
         }
         p.environment = env
         if let logHandle {

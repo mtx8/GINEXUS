@@ -512,7 +512,40 @@ final class AppModel: ObservableObject {
         githubTokenDraft = ""
     }
 
-    // Generic "add any MCP server" form — covers Shopify and anything with a stdio MCP server.
+    @Published var shopifyConnected = false
+    /// Preset: Shopify's official dev MCP server (docs/admin schema). No token required.
+    func connectShopify() {
+        addMcpServer(name: "shopify", command: "npx -y @shopify/dev-mcp", tokenEnv: nil, token: nil)
+    }
+
+    @Published var printfulTokenDraft = ""
+    /// Preset: the bundled professional Printful MCP server (runs the signed core in `--printful-mcp`
+    /// mode). The path is quoted so an "Application Support"-style space survives shell_split.
+    func connectPrintful() {
+        let tok = printfulTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tok.isEmpty else { return }
+        addMcpServer(name: "printful", command: "\"\(spine.corePath)\" --printful-mcp",
+                     tokenEnv: "PRINTFUL_TOKEN", token: tok)
+        printfulTokenDraft = ""
+    }
+
+    // Brave Search API key (Settings → Connections) — powers full live web_search. Stored in Keychain,
+    // injected as BRAVE_SEARCH_API_KEY at core boot. Not an MCP server; takes effect on restart.
+    @Published var braveKeyDraft = ""
+    var braveSearchConfigured: Bool { Keychain.has("search.brave.key") }
+    func saveBraveKey() {
+        let k = braveKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty else { return }
+        _ = Keychain.set(k, for: "search.brave.key")
+        braveKeyDraft = ""
+        objectWillChange.send()
+    }
+    func clearBraveKey() {
+        _ = Keychain.delete("search.brave.key")
+        objectWillChange.send()
+    }
+
+    // Generic "add any MCP server" form — covers anything with a stdio MCP server.
     @Published var mcpCustomName = ""
     @Published var mcpCustomCommand = ""
     @Published var mcpCustomTokenEnv = ""

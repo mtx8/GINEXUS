@@ -577,9 +577,6 @@ struct ContentView: View {
                     Button("Delete “\(p.name)”", role: .destructive) { model.deleteProject(p.id) }
                 }
             }
-            Section("Integrations") {
-                Button("Connections (Notion, …)…") { model.connectionsOpen = true }
-            }
             Section("Attach") {
                 Button("Attach file…", action: model.attachAny)
                 Button("Attach image…", action: model.attachImage)
