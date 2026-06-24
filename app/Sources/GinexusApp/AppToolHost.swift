@@ -104,6 +104,10 @@ final class AppToolHost {
         case "read_pdf_fields": return readPdfFields(args)
         case "fill_pdf_form":   return fillPdfForm(args)
         case "read_pdf_text":   return readPdfText(args)
+        case "list_folder":     return listFolder(args)
+        case "find_file":       return findFile(args)
+        case "read_docx_text":  return readDocxText(args)
+        case "fill_docx":       return fillDocx(args)
         case "mcp_list":        return mcpList()
         case "connect_mcp":     return connectMcp(args)
         default:                return fail("unknown tool '\(tool)'")
@@ -361,6 +365,195 @@ final class AppToolHost {
             return ok("(no extractable text — this PDF is likely scanned images)")
         }
         return ok(text)
+    }
+
+    // MARK: - Folders & Word documents (native, TCC-correct, never iCloud, no third-party code)
+
+    /// Expand `~` and treat a bare relative path as relative to the user's home, then canonicalize.
+    private func resolveUserPath(_ raw: String) -> String {
+        var p = (raw as NSString).expandingTildeInPath
+        if !p.hasPrefix("/") { p = (NSHomeDirectory() as NSString).appendingPathComponent(p) }
+        return SpineController.canonical(p)
+    }
+
+    /// List a user folder (e.g. ~/Documents/MSR): names, kinds, and sizes so the agent can find a file.
+    private func listFolder(_ a: [String: Any]) -> Data {
+        guard let raw = (a["path"] as? String), !raw.isEmpty else { return fail("'path' required (e.g. ~/Documents/MSR)") }
+        let dir = resolveUserPath(raw)
+        if SpineController.isICloudPath(dir) { return fail("refusing to read iCloud (\(tildeShown(dir))). Use a local folder.") }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else {
+            return fail("folder not found: \(tildeShown(dir))")
+        }
+        let items = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        var entries: [[String: Any]] = []
+        for name in items.sorted() where !name.hasPrefix(".") {
+            let full = (dir as NSString).appendingPathComponent(name)
+            var d: ObjCBool = false
+            FileManager.default.fileExists(atPath: full, isDirectory: &d)
+            let size = (try? FileManager.default.attributesOfItem(atPath: full)[.size] as? Int) ?? nil
+            entries.append(["name": name, "kind": d.boolValue ? "folder" : "file", "size": size ?? 0])
+        }
+        let payload: [String: Any] = ["path": tildeShown(dir), "count": entries.count, "items": entries]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return fail("could not encode listing") }
+        return ok(json)
+    }
+
+    /// Find files by name (case-insensitive substring) under a base folder, or under the common user
+    /// folders (Documents / Desktop / Downloads) when no base is given. Skips hidden + Library; caps results.
+    private func findFile(_ a: [String: Any]) -> Data {
+        guard let needle = (a["name"] as? String)?.lowercased(), !needle.isEmpty else { return fail("'name' required") }
+        let bases: [String]
+        if let b = a["base"] as? String, !b.isEmpty {
+            bases = [resolveUserPath(b)]
+        } else {
+            let home = NSHomeDirectory()
+            bases = ["Documents", "Desktop", "Downloads"].map { (home as NSString).appendingPathComponent($0) }
+        }
+        var matches: [String] = []
+        let fm = FileManager.default
+        outer: for base in bases {
+            if SpineController.isICloudPath(base) { continue }
+            guard let en = fm.enumerator(at: URL(fileURLWithPath: base),
+                                         includingPropertiesForKeys: [.isRegularFileKey],
+                                         options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            var scanned = 0
+            for case let url as URL in en {
+                scanned += 1
+                if scanned > 6000 { break }                    // bound the walk
+                if url.path.contains("/Library/") { en.skipDescendants(); continue }
+                if url.lastPathComponent.lowercased().contains(needle),
+                   (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                   !SpineController.isICloudPath(url.path) {
+                    matches.append(tildeShown(url.path))
+                    if matches.count >= 25 { break outer }
+                }
+            }
+        }
+        let payload: [String: Any] = ["query": needle, "count": matches.count, "matches": matches]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return fail("could not encode results") }
+        return ok(matches.isEmpty ? "No files matching “\(needle)” under \(bases.map { tildeShown($0) }.joined(separator: ", "))." : json)
+    }
+
+    private enum DocxSrc { case ok(String); case err(Data) }
+
+    /// Resolve a .docx source path (expand ~, refuse iCloud, must exist + be a .docx).
+    private func resolveDocx(_ a: [String: Any]) -> DocxSrc {
+        guard let raw = (a["src"] as? String), !raw.isEmpty else { return .err(fail("'src' required")) }
+        let src = resolveUserPath(raw)
+        if SpineController.isICloudPath(src) { return .err(fail("refusing to touch iCloud (\(tildeShown(src))).")) }
+        guard FileManager.default.fileExists(atPath: src) else { return .err(fail("file not found: \(tildeShown(src))")) }
+        guard src.lowercased().hasSuffix(".docx") else { return .err(fail("not a .docx file: \(tildeShown(src)). (Legacy .doc isn't supported — save as .docx.)")) }
+        return .ok(src)
+    }
+
+    /// Read a Word .docx's text by extracting word/document.xml (system unzip) and stripping tags.
+    private func readDocxText(_ a: [String: Any]) -> Data {
+        let src: String
+        switch resolveDocx(a) { case .err(let e): return e; case .ok(let s): src = s }
+        let r = run("/usr/bin/unzip", ["-p", src, "word/document.xml"])
+        guard r.code == 0, !r.out.isEmpty else { return fail("could not read .docx (corrupt or not a Word file): \(tildeShown(src))") }
+        let text = Self.docxXmlToText(r.out)
+        return ok(text.isEmpty ? "(no extractable text)" : text)
+    }
+
+    /// Turn word/document.xml into readable text: paragraphs → newlines, tabs honored, tags stripped,
+    /// XML entities decoded. Good enough for the agent to see placeholders/fields it needs to fill.
+    private static func docxXmlToText(_ xml: String) -> String {
+        var s = xml
+        s = s.replacingOccurrences(of: "</w:p>", with: "\n")
+        s = s.replacingOccurrences(of: "<w:tab/>", with: "\t")
+        s = s.replacingOccurrences(of: "<w:br/>", with: "\n")
+        // strip all remaining tags
+        var out = "", inTag = false
+        for c in s { if c == "<" { inTag = true } else if c == ">" { inTag = false } else if !inTag { out.append(c) } }
+        out = out.replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"").replacingOccurrences(of: "&apos;", with: "'")
+        return out.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func xmlEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    /// Fill an existing Word .docx by replacing literal text in word/document.xml — duplicate to a named
+    /// copy (out_name) or `-filled.docx` (new_copy), or edit in place with a timestamped backup.
+    /// `replacements` = { findText: replaceWith }. WRITE action (HITL-gated by the host).
+    private func fillDocx(_ a: [String: Any]) -> Data {
+        let src: String
+        switch resolveDocx(a) { case .err(let e): return e; case .ok(let s): src = s }
+        guard let repl = a["replacements"] as? [String: Any], !repl.isEmpty else {
+            return fail("'replacements' object required ({ \"find text\": \"replace with\" })")
+        }
+        let dir = (src as NSString).deletingLastPathComponent
+        let stem = ((src as NSString).lastPathComponent as NSString).deletingPathExtension
+        let fm = FileManager.default
+
+        // Decide destination.
+        let dest: String
+        if let outName = (a["out_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !outName.isEmpty {
+            let safe = outName.replacingOccurrences(of: "/", with: "-")
+            let name = safe.lowercased().hasSuffix(".docx") ? safe : safe + ".docx"
+            dest = (dir as NSString).appendingPathComponent(name)
+            try? fm.removeItem(atPath: dest)
+            do { try fm.copyItem(atPath: src, toPath: dest) } catch { return fail("could not create copy: \(error.localizedDescription)") }
+        } else if (a["new_copy"] as? Bool) == true {
+            dest = (dir as NSString).appendingPathComponent("\(stem)-filled.docx")
+            try? fm.removeItem(atPath: dest)
+            do { try fm.copyItem(atPath: src, toPath: dest) } catch { return fail("could not create copy: \(error.localizedDescription)") }
+        } else {
+            // In place: back up first.
+            let backup = (dir as NSString).appendingPathComponent("\(stem).backup.docx")
+            try? fm.removeItem(atPath: backup); try? fm.copyItem(atPath: src, toPath: backup)
+            dest = src
+        }
+
+        // Unpack → edit document.xml → repack, all in a scratch dir.
+        let work = (NSTemporaryDirectory() as NSString).appendingPathComponent("gx-docx-\(UUID().uuidString)")
+        defer { try? fm.removeItem(atPath: work) }
+        try? fm.createDirectory(atPath: work, withIntermediateDirectories: true)
+        if run("/usr/bin/unzip", ["-o", "-q", dest, "-d", work]).code != 0 { return fail("could not unpack the .docx") }
+        let docXmlPath = (work as NSString).appendingPathComponent("word/document.xml")
+        guard var xml = try? String(contentsOfFile: docXmlPath, encoding: .utf8) else { return fail("could not read the document body") }
+
+        var applied = 0
+        for (find, value) in repl {
+            let replacement = Self.xmlEscape("\(value)")
+            // Replace both the raw text and its XML-escaped form (Word stores & < > escaped).
+            for needle in [find, Self.xmlEscape(find)] where !needle.isEmpty && xml.contains(needle) {
+                xml = xml.replacingOccurrences(of: needle, with: replacement)
+                applied += 1
+            }
+        }
+        guard (try? xml.write(toFile: docXmlPath, atomically: true, encoding: .utf8)) != nil else { return fail("could not write the filled body") }
+
+        // Repack: zip the work dir contents back into dest (Word opens any valid zip; order not required).
+        let tmpZip = (NSTemporaryDirectory() as NSString).appendingPathComponent("gx-out-\(UUID().uuidString).docx")
+        if runIn(work, "/usr/bin/zip", ["-r", "-X", "-q", tmpZip, "."]).code != 0 { return fail("could not repackage the .docx") }
+        try? fm.removeItem(atPath: dest)
+        do { try fm.moveItem(atPath: tmpZip, toPath: dest) } catch { return fail("could not save: \(error.localizedDescription)") }
+
+        if applied == 0 {
+            return ok("Saved \(tildeShown(dest)), but none of the find-text values were present in the document. Call read_docx_text first to see the exact placeholder text, then retry.")
+        }
+        return ok("Filled \(applied) field(s) and saved \(tildeShown(dest)).")
+    }
+
+    /// Run a process with a working directory (for repacking the docx zip from inside the scratch dir).
+    private func runIn(_ cwd: String, _ path: String, _ args: [String]) -> (code: Int32, out: String) {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: path); p.arguments = args
+        p.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+        do { try p.run() } catch { return (-1, "\(error)") }
+        p.waitUntilExit()
+        let d = pipe.fileHandleForReading.readDataToEndOfFile()
+        return (p.terminationStatus, String(data: d, encoding: .utf8) ?? "")
     }
 
     private static let truthy: Set<String> = ["on", "true", "yes", "y", "x", "1", "checked", "✓"]

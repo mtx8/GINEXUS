@@ -198,6 +198,65 @@ pub fn app_tools(sock: String, token: String) -> Vec<Tool> {
         bridge_tool(
             sock.clone(),
             token.clone(),
+            "list_folder",
+            "List the files and subfolders in one of the user's folders so you can find a file to work \
+             on. `path` accepts ~ and bare paths (e.g. \"~/Documents/MSR\" or \"Documents/MSR\"). Returns \
+             each entry's name, kind (file/folder), and size. Use this BEFORE read_document / \
+             read_docx_text / fill_docx when the user names a folder rather than a full file path.",
+            json!({"type": "object",
+                   "properties": {"path": {"type": "string", "description": "folder path (~ allowed), e.g. ~/Documents/MSR"}},
+                   "required": ["path"]}),
+            false, // read-only
+        ),
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
+            "find_file",
+            "Search the user's folders for files whose name contains `name` (case-insensitive). Searches \
+             Documents, Desktop, and Downloads by default, or a specific `base` folder if given. Returns \
+             matching file paths. Use when the user names a file but not its location.",
+            json!({"type": "object",
+                   "properties": {"name": {"type": "string"},
+                                  "base": {"type": "string", "description": "optional folder to search under (~ allowed)"}},
+                   "required": ["name"]}),
+            false, // read-only
+        ),
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
+            "read_docx_text",
+            "Read the text of an existing Word .docx file (`src` = its path, ~ allowed; never iCloud). \
+             Returns the document's text so you can see its content and the exact placeholder/field text \
+             to fill. Call this BEFORE fill_docx. (Legacy .doc isn't supported — only .docx.)",
+            json!({"type": "object",
+                   "properties": {"src": {"type": "string", "description": "path to the .docx (~ allowed)"}},
+                   "required": ["src"]}),
+            false, // read-only
+        ),
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
+            "fill_docx",
+            "Fill an existing Word .docx by replacing literal text — the real file edited, never a \
+             regenerated one. Call read_docx_text FIRST to get the exact placeholder text, then pass \
+             `replacements` = { \"placeholder or current text\": \"new value\" } (one entry per field). \
+             FOR A TEMPLATE YOU REUSE (e.g. a monthly report): set `out_name` to the new document's name \
+             — GINEXUS DUPLICATES the template into that named .docx in the same folder, fills it, and \
+             leaves the template untouched. Omit out_name to fill in place (auto-backup), or `new_copy:true` \
+             for a \"<name>-filled.docx\". Replacement works best when each placeholder is contiguous text \
+             in the document (e.g. a content control or a typed token like {{name}}).",
+            json!({"type": "object",
+                   "properties": {
+                       "src": {"type": "string", "description": "path to the existing .docx / template (~ allowed)"},
+                       "replacements": {"type": "object", "description": "{ findText: replaceWith } using text from read_docx_text"},
+                       "out_name": {"type": "string", "description": "save a NAMED duplicate (template preserved), e.g. \"Monthly Report - June 2026\""},
+                       "new_copy": {"type": "boolean", "description": "write a -filled.docx copy instead of editing in place"}},
+                   "required": ["src", "replacements"]}),
+            true, // HITL-gated: writes/overwrites a user file
+        ),
+        bridge_tool(
+            sock.clone(),
+            token.clone(),
             "mcp_list",
             "List the MCP integrations currently configured in GINEXUS (each server's name and whether \
              it is enabled). Call this when the user asks what's connected, or before connecting \
@@ -291,6 +350,11 @@ mod tests {
         // is HITL-gated so the user approves every server before it's added.
         assert!(!tools.iter().find(|t| t.name == "mcp_list").unwrap().irreversible);
         assert!(tools.iter().find(|t| t.name == "connect_mcp").unwrap().irreversible);
+        // Files & Word docs: browsing/reading is autonomous; filling a .docx (writes a file) is HITL.
+        assert!(!tools.iter().find(|t| t.name == "list_folder").unwrap().irreversible);
+        assert!(!tools.iter().find(|t| t.name == "find_file").unwrap().irreversible);
+        assert!(!tools.iter().find(|t| t.name == "read_docx_text").unwrap().irreversible);
+        assert!(tools.iter().find(|t| t.name == "fill_docx").unwrap().irreversible);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
