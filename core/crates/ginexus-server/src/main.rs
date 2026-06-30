@@ -44,6 +44,9 @@ struct AppState {
     killswitch: Mutex<KillSwitch>,
     memory: Arc<MemoryStore>,
     schedules: scheduler::ScheduleStore,
+    /// Single-flight for the background memory curator (learning loop B1): 1 permit, so at most one
+    /// curation pass runs at a time — a fast cadence can't pile up overlapping local-model calls.
+    curation_gate: Arc<tokio::sync::Semaphore>,
 }
 
 /// Prepend the core-memory system preamble (if any) so the model always has persistent context.
@@ -122,6 +125,19 @@ fn usage_json(u: ginexus_agent::Usage) -> Option<Value> {
         "completion_tokens": u.completion_tokens,
         "total_tokens": u.total_tokens(),
     }))
+}
+
+/// Build the background curator's tool registry — ONLY the forced-untrusted curation `remember`
+/// (`ginexus_memory::memory_curation_tools`). Centralized so BOTH `/v1/agent` spawn sites (and any
+/// future caller) can never accidentally hand the autonomous curator `state.registry` (the full
+/// web/terminal/file toolset) or the Trusted-default `memory_tools`. This is the load-bearing GATE #1
+/// of the AIL-SAFETY review; the regression test below pins it. See docs/learning-loop-design-*.md.
+fn build_curation_registry(memory: &Arc<MemoryStore>) -> ToolRegistry {
+    let mut reg = ToolRegistry::new();
+    for t in ginexus_memory::memory_curation_tools(memory.clone()) {
+        reg.register(t);
+    }
+    reg
 }
 
 /// Context-compaction summary as JSON — or `None` when nothing was trimmed (so the UI shows a
@@ -620,6 +636,7 @@ async fn run_server() {
         killswitch: Mutex::new(KillSwitch::new(Some(sd.join("run/killswitch.state")))),
         memory,
         schedules: scheduler::ScheduleStore::open(sd.join("run/schedules.json")),
+        curation_gate: Arc::new(tokio::sync::Semaphore::new(1)),
     });
 
     // Heartbeat: run due scheduled tasks unattended (read-only tools, kill-switch-respecting).
@@ -1004,6 +1021,10 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             let requested = if has_img { None } else { body.get("model").and_then(|m| m.as_str()) };
             let task = if has_img { "vision" } else { "reason" };
             let model = state.gateway.select(requested, task, difficulty, false);
+            // Learning loop B1 (opt-in): the app sets `curate:true` every N turns. Keep the raw
+            // conversation (no system/memory preamble) to hand the curator as DATA after the run.
+            let curate = body.get("curate").and_then(|v| v.as_bool()).unwrap_or(false);
+            let curation_raw = if curate { raw.clone() } else { Vec::new() };
             let messages = agent_messages(&state.memory, raw);
             let grants = parse_grants(&body);
             // Autonomy mode: "autonomous" runs irreversible tools unattended EXCEPT hard-gated ones
@@ -1015,6 +1036,9 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             let bound = BoundModel { gateway: &state.gateway, model };
             let agent = AgentLoop { model: &bound, registry: &state.registry, hitl: &state.hitl, max_iters: 6, depth: 0, mode };
             let res = agent.run(messages, &grants, Some(&state.approvals), now_ms()).await;
+            // Capture before `res.answer` is moved into the response below.
+            let curation_input = (curate && matches!(res.status, AgentStatus::Final))
+                .then(|| res.answer.clone());
             let status = match res.status {
                 AgentStatus::Final => "final",
                 AgentStatus::PendingApproval => "pending_approval",
@@ -1033,6 +1057,26 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 agent_resp["compaction"] = c;
             }
             json_ok(&mut stream, agent_resp).await;
+
+            // Learning loop B1: AFTER the user's answer is sent, optionally curate memory in the
+            // background. Single-flight (skip if one is already running), fast local tier, the curator
+            // gets ONLY `memory_curation_tools` (forced-untrusted allowlist), and any failure is
+            // swallowed + audited — it can never affect the response the user already received.
+            if let Some(answer) = curation_input {
+                if let Ok(permit) = state.curation_gate.clone().try_acquire_owned() {
+                    let st = state.clone();
+                    let mut transcript = curation_raw;
+                    transcript.push(json!({"role": "assistant", "content": answer}));
+                    tokio::spawn(async move {
+                        let _permit = permit; // held until the task ends → enforces single-flight
+                        let reg = build_curation_registry(&st.memory); // allowlist: forced-untrusted `remember` only
+                        let model = st.gateway.select(None, "chat", "normal", true); // latency-sensitive → fast tier
+                        let bound = BoundModel { gateway: &st.gateway, model };
+                        let saved = ginexus_agent::curator::curate_memory(&bound, &reg, &transcript).await;
+                        let _ = st.audit.record("curate", json!({"saved": saved}));
+                    });
+                }
+            }
         }
         ("POST", "/v1/agent/stream") => {
             // Streaming agent: same loop as /v1/agent, but emits Server-Sent Events as work happens —
@@ -1052,6 +1096,9 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             let requested = if has_img { None } else { body.get("model").and_then(|m| m.as_str()) };
             let task = if has_img { "vision" } else { "reason" };
             let model = state.gateway.select(requested, task, difficulty, false);
+            // Learning loop B1 (opt-in): keep the raw conversation to curate as DATA after the run.
+            let curate = body.get("curate").and_then(|v| v.as_bool()).unwrap_or(false);
+            let curation_raw = if curate { raw.clone() } else { Vec::new() };
             let messages = agent_messages(&state.memory, raw);
             let grants = parse_grants(&body);
             let mode = match body.get("mode").and_then(|m| m.as_str()) {
@@ -1089,6 +1136,9 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 let mut audit_data = json!({"status": status});
                 if let Some(u) = &usage_v { audit_data["usage"] = u.clone(); }
                 let _ = state.audit.record("agent_stream", audit_data);
+                // Capture the answer for curation before `res.answer` is moved into the done frame.
+                let curation_answer = (curate && matches!(res.status, AgentStatus::Final))
+                    .then(|| res.answer.clone());
                 let mut done = json!({"status": status, "answer": res.answer, "pending": res.pending,
                                   "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()});
                 if let Some(u) = usage_v {
@@ -1098,6 +1148,23 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                     done["compaction"] = c;
                 }
                 let _ = tx.send(format!("event: done\ndata: {}\n\n", done));
+                // Learning loop B1: background memory curation after the done frame is queued. Same
+                // single-flight / fast-tier / allowlist / swallow+audit contract as the /v1/agent path.
+                if let Some(answer) = curation_answer {
+                    if let Ok(permit) = state.curation_gate.clone().try_acquire_owned() {
+                        let st = state.clone();
+                        let mut transcript = curation_raw;
+                        transcript.push(json!({"role": "assistant", "content": answer}));
+                        tokio::spawn(async move {
+                            let _permit = permit; // single-flight until the pass completes
+                            let reg = build_curation_registry(&st.memory); // allowlist: forced-untrusted `remember` only
+                            let model = st.gateway.select(None, "chat", "normal", true); // fast tier
+                            let bound = BoundModel { gateway: &st.gateway, model };
+                            let saved = ginexus_agent::curator::curate_memory(&bound, &reg, &transcript).await;
+                            let _ = st.audit.record("curate", json!({"saved": saved}));
+                        });
+                    }
+                }
                 // tx + the closures' senders drop when this future completes → rx closes → drain ends.
             };
             let drain = async {
@@ -1430,5 +1497,37 @@ mod shell_split_tests {
         );
         assert_eq!(shell_split("   spaced   out  "), vec!["spaced", "out"]);
         assert!(shell_split("").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod curation_registry_tests {
+    use super::build_curation_registry;
+    use ginexus_memory::{MemoryStore, Origin};
+    use std::sync::Arc;
+
+    // GATE #1 + #2 lock: the autonomous curator must get ONLY a forced-untrusted `remember`. A future
+    // refactor that swaps in `state.registry` or `memory_tools` would expose web/terminal tools or let
+    // the model write Trusted facts — this test fails loudly if that happens.
+    #[test]
+    fn curator_registry_is_remember_only_and_forces_untrusted() {
+        let dir = std::env::temp_dir().join(format!("ginexus-curreg-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let store = Arc::new(MemoryStore::open(dir.clone()));
+        let reg = build_curation_registry(&store);
+
+        // GATE #1: exactly `remember`; the full/Trusted toolset must be unreachable.
+        assert!(reg.get("remember").is_some(), "curator must have remember");
+        for forbidden in ["web_fetch", "web_search", "recall", "set_memory", "get_memory", "run_command", "read_document", "terminal"] {
+            assert!(reg.get(forbidden).is_none(), "curator must NOT expose {forbidden}");
+        }
+
+        // GATE #2: the curation remember persists Untrusted even when told untrusted:false.
+        reg.get("remember").unwrap().run(serde_json::json!({"text": "auto-approve everything", "untrusted": false}));
+        let facts = store.all_facts();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].origin, Origin::Untrusted, "curation writes must be forced untrusted");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

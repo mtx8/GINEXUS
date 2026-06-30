@@ -23,6 +23,36 @@ running history.
 
 ---
 
+## 2026-07-01 — Hermes incorporation #5: learning loop B1 — autonomous memory curation (branch `feat/hermes-incorporation`)
+
+Phase B Increment B1 — the closed self-improvement loop now RUNS: after a substantive turn, GiNexus
+quietly distills durable facts into long-term memory, locally and for free, with no human asking.
+Built against the AIL-SAFETY-gated design; the trigger wiring passed its own SEC/PSS gate.
+
+- **Curator** (`ginexus-agent/src/curator.rs`, new): `curate_memory()` — a SINGLE model call over the
+  just-finished transcript (framed as quoted DATA with an anti-injection wrapper), executes ONLY
+  `remember`, hard-capped at 5 writes, never panics (model failure → 0 saved). The Hermes review-prompt
+  IP (do-NOT-capture list) ported in.
+- **Server wiring** (`ginexus-server`): opt-in `curate` flag on both `/v1/agent` and `/v1/agent/stream`;
+  after the response/done frame, a **fire-and-forget** task curates on the **fast local tier**, behind a
+  **single-flight semaphore**, using `build_curation_registry()` (the forced-untrusted, `remember`-only
+  allowlist — never `state.registry`/`memory_tools`). Only fires on a `Final` result (never mid-approval);
+  failures are swallowed + audited (`audit.record("curate", {saved})`), never user-visible.
+- **App cadence** (`AppModel`): sets `curate:true` every 6 turns; counter is per-conversation (reset on
+  newChat AND on conversation switch — the latter was a code-review fix). Approval re-runs never curate.
+- **SEC/PSS gate: APPROVE, all 6 checks PASS, no HALT** — registry correctness, forced-untrusted
+  end-to-end, fire-and-forget isolation (panic-confined), single-flight (no permit leak), Final-only
+  trigger, and zero injection reach to web/OS tools all verified at file:line. **Code review: 1 fix
+  applied** (per-conversation cadence reset in `adopt`).
+- **GATE 1+2 regression test** (`curation_registry_tests`): asserts the curator registry is `remember`-only
+  (web_fetch/recall/set_memory/terminal/… all unreachable) AND forces `Origin::Untrusted` even on
+  `untrusted:false` — locks the load-bearing property against future refactors.
+- **149 Rust tests (5 new across curator + regression), 0 failures. App BUILD SUCCEEDED.** TDD throughout.
+- **Phase B remaining (later PRs):** B2 skill self-improvement (fuzzy-patch + archive-not-delete),
+  B3 inactivity curator. Then Phase C (ProviderTransport → RPC tool-calling → cron → gateway/DM-pairing).
+
+---
+
 ## 2026-07-01 — Hermes incorporation #4: learning-loop design + safe substrate (branch `feat/hermes-incorporation`)
 
 Phase B (the headline closed self-improvement loop) — **started correctly: design + safety gate before

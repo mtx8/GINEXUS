@@ -231,6 +231,14 @@ final class AppModel: ObservableObject {
     /// Context compaction from the most recent agent turn (nil unless the compactor trimmed this turn).
     @Published var lastCompaction: ContextCompaction?
 
+    /// Background memory-curation cadence (learning loop B1). Every `curationInterval` agent turns the
+    /// app sets `curate:true` so the core distills durable facts after answering. The core treats it as
+    /// strictly opt-in (defaults false), runs it fire-and-forget on the fast tier, and writes are forced
+    /// untrusted — so this is safe to leave on. Counter is per-conversation (reset on newChat/adopt).
+    var curationEnabled = true
+    private var turnsSinceCuration = 0
+    private let curationInterval = 6
+
     /// Memory browser ("what GINEXUS knows about you"): core blocks + searchable archival facts.
     @Published var memoryOpen = false
     @Published var memBlocks: [BlockKV] = []
@@ -678,6 +686,8 @@ final class AppModel: ObservableObject {
         attachment = nil
         pending = nil
         lastUsage = nil   // token gauge reflects the ACTIVE conversation; clear on switch
+        lastCompaction = nil
+        turnsSinceCuration = 0   // curation cadence is per-conversation
     }
 
     /// Start a fresh chat. Blocked mid-stream so the streaming bubble lookup can't be orphaned.
@@ -697,6 +707,7 @@ final class AppModel: ObservableObject {
         pending = nil
         lastUsage = nil   // fresh chat starts with no token usage shown
         lastCompaction = nil
+        turnsSinceCuration = 0   // curation cadence is per-conversation
         chatInput = ""
         unsavedIDs.insert(id)
         conversations.insert(ConversationMeta(id: id, title: "New chat", updatedAt: Date(), messageCount: 0), at: 0)
@@ -1049,7 +1060,13 @@ final class AppModel: ObservableObject {
                 msgs.insert(["role": "system", "content": ctx], at: 0)
             }
         }
-        let body = try? JSONSerialization.data(withJSONObject: ["model": selectedModel, "messages": msgs, "mode": modeString])
+        // Learning-loop cadence: ask the core to curate memory every Nth turn (after it answers).
+        turnsSinceCuration += 1
+        let curate = curationEnabled && turnsSinceCuration >= curationInterval
+        if curate { turnsSinceCuration = 0 }
+        var payload: [String: Any] = ["model": selectedModel, "messages": msgs, "mode": modeString]
+        if curate { payload["curate"] = true }
+        let body = try? JSONSerialization.data(withJSONObject: payload)
         Task { await postAgent(body: body, contextMessages: msgs) }
     }
 
