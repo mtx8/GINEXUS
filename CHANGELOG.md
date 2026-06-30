@@ -16,9 +16,38 @@ running history.
   floating Context & Tools card) on the MackTrax brand. Token-streaming chat with content-aware
   rendering, action/final-output cards, **PDF + Word document creation**, collapsible **floating
   side panels**, settings screen, smart attachments + **vision wiring**, in-app model manager,
-  memory browser.
+  memory browser, **⌘K command palette**, starter-prompt empty state, and a **Connections card
+  grid** (MCP servers + exposed tools) — matched to the claude.ai/design "GINEXUS Prototype".
 - **Live memory**: the operator's full ChatGPT history — 3,779 sanitized facts with 768-dim embeddings.
 - **Default model**: Qwen3-30B-A3B-Instruct-2507 (Apache-2.0) via Ollama. Vision tier ready (Qwen3-VL-30B-A3B, pull when Ollama ≥ 0.12.7).
+
+---
+
+## 2026-06-30 — UI: match the Claude Design "GINEXUS Prototype" (branch `feat/voice-docs-projects-connect`)
+
+Pulled the full UI/UX of the **"GINEXUS Prototype"** (built in claude.ai/design) into the real
+native app — re-implemented as SwiftUI on the existing `Brand.swift` tokens + `AppModel`, no HTML
+ported. All in `app/Sources/GinexusApp/ContentView.swift` (+ one `@Published` in `AppModel.swift`).
+
+- **Rich empty state.** "What should we work on?" display heading + subtitle + three tappable,
+  hover-lift **starter cards** (`StarterCard`) that fire real sends; the research card arms Deep
+  Research first.
+- **⌘K command palette.** New `CommandPalette` / `CommandRow` overlay — searchable navigation,
+  Deep-Research / HITL toggles, and a row per model; window-wide `⌘K` shortcut, Enter runs the top
+  hit, Esc / click-out dismisses. Backed by `AppModel.paletteOpen`.
+- **Model dropdown tiers.** `modelSelector` grouped under **"Local · Apple Silicon"**, each row
+  showing `label · tier` (e.g. `Qwen3-30B · smart`), tier derived from the roster id.
+- **Right-panel Connections row.** `connectionsSection` ("MCP & tools · N connected · M tools" +
+  MANAGE) between Token Usage and File Context, wired to real counts.
+- **Connections sheet redesign.** `ginexus-core` summary card + 2-col **`ServerCard`** grid
+  (transport badge, status pill, wrapped tool chips via a `FlowLayout`). Built-in core servers are
+  always-on (disabled switch — gated per call); external servers keep live toggle + remove; the
+  add-server form (Notion / GitHub presets + generic stdio) is preserved behind **ADD**. New shared
+  `ConnServer` model + `AppModel.connectionServers` / `connectedServerCount` / `exposedToolCount`.
+- **No fake stats** (brand rule): all counts derive from the real connection surface; tool chips are
+  real capability names, not invented metrics.
+- Verified: `swift build` **and** the full `GINEXUS` scheme build (cargo pre-action + per-Mach-O
+  sign) both **SUCCEED**.
 
 ---
 
