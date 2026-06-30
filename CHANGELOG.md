@@ -23,6 +23,32 @@ running history.
 
 ---
 
+## 2026-07-01 — Hermes incorporation #2: hybrid memory recall (branch `feat/hermes-incorporation`)
+
+Phase A #2 of the Hermes plan. Upgrades long-term recall from **either/or** (semantic OR keyword)
+to **hybrid** — fusing both signals so exact tokens (IDs, error codes, file paths, proper nouns)
+that embeddings rank poorly are no longer lost. Adapted from Hermes's FTS5 idea, but kept native to
+GiNexus's lightweight append-only JSONL store (no SQLite dependency).
+
+- **Reciprocal Rank Fusion** in `MemoryStore::search()` (`core/crates/ginexus-memory/src/lib.rs`):
+  a semantic ranking (cosine) and a keyword ranking are fused via `Σ 1/(K+rank)`, K=60 — scale-free,
+  no weight tuning between a [0,1] cosine and a word count. Degrades cleanly: no embedder → keyword
+  only; zero-overlap semantic query → semantic only; so all prior behaviors (and tests) are preserved.
+- Live automatically in the `recall` tool and `POST /v1/memory/search` (both call `search()`).
+- **PSS/SEC gate: PASS** (ai-safety-reviewer, halt authority). Origin labeling preserved end-to-end —
+  Untrusted facts still surface as DATA-not-instructions (the injection defense is the labeling layer,
+  unchanged by re-ranking); panic/DoS-safe; no leakage. NON-BLOCKING note for the security design doc:
+  hybrid modestly amplifies *recall* of untrusted exact-token content vs the old semantic-only path —
+  acceptable because the defense is labeling, not ranking.
+- **Code review fix applied:** the fused sort now has a total-order tie-break on insertion index
+  (`.then(a.1.cmp(&b.1))`) — RRF can produce bit-identical scores at symmetric ranks and `ts` collides
+  at ms resolution (batch import), so without it the ordering depended on randomized HashMap iteration
+  → non-reproducible recall. Now deterministic.
+- **139 Rust tests (2 new), 0 failures.** TDD: tests first (exact-token surfacing + dual-signal ranks
+  first), watched fail, implemented, green.
+
+---
+
 ## 2026-06-30 — Hermes incorporation #1: deterministic context compaction (branch `feat/hermes-incorporation`)
 
 First feature ported from **Nous Research's Hermes Agent** (forked to `mtx8/hermes-agent`) after a

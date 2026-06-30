@@ -169,39 +169,77 @@ impl MemoryStore {
             .unwrap_or_default()
     }
 
-    /// Retrieval. Semantic (cosine over embeddings) when an embedder is installed and the query
-    /// embeds + facts carry vectors; otherwise keyword scoring (word overlap). Semantic recall
-    /// matches by MEANING — e.g. "favorite food" finds "I love sushi" with zero shared words.
+    /// HYBRID retrieval — fuses semantic recall (cosine over embeddings, matches by MEANING, e.g.
+    /// "favorite food" finds "I love sushi" with zero shared words) with keyword recall (exact token
+    /// overlap, catches IDs / error codes / file paths / proper nouns that embeddings rank poorly).
+    ///
+    /// The two rankings are combined with **Reciprocal Rank Fusion** (RRF): each fact scores
+    /// `Σ 1/(K + rank)` over the lists it appears in (K=60, standard). RRF is scale-free, so it needs
+    /// no tuning between a [0,1] cosine and an unbounded word count. A fact strong in EITHER signal
+    /// ranks well; a fact strong in BOTH ranks best. Degrades cleanly: with no embedder (or no stored
+    /// vectors, or a failed query embed) only the keyword list contributes → pure keyword recall; a
+    /// purely-semantic query with no word overlap → only the semantic list → pure semantic recall.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Fact> {
         let facts = self.all_facts();
         if facts.is_empty() {
             return Vec::new();
         }
+
+        // Semantic ranking: indices of vector-carrying facts, best cosine first. Empty when no
+        // embedder, the query fails to embed, or no fact has a vector yet.
+        let mut semantic: Vec<usize> = Vec::new();
         if let Some(e) = self.embedder() {
             if let Some(q) = e(query) {
-                let mut scored: Vec<(f32, Fact)> = facts
+                let mut scored: Vec<(f32, usize)> = facts
                     .iter()
-                    .filter_map(|f| f.emb.as_ref().map(|v| (cosine(&q, v), f.clone())))
+                    .enumerate()
+                    .filter_map(|(i, f)| f.emb.as_ref().map(|v| (cosine(&q, v), i)))
                     .collect();
-                if !scored.is_empty() {
-                    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-                    return scored.into_iter().take(limit).map(|(_, f)| f).collect();
-                }
+                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                semantic = scored.into_iter().map(|(_, i)| i).collect();
             }
         }
-        // Keyword fallback: no embedder, embed failed, or no vectors stored yet.
+
+        // Keyword ranking: indices of facts sharing ≥1 query word, most overlap first (recency tie-break).
         let words: Vec<String> = query.to_lowercase().split_whitespace().map(String::from).collect();
-        let mut scored: Vec<(usize, Fact)> = facts
-            .into_iter()
-            .map(|f| {
+        let mut kw: Vec<(usize, usize)> = facts
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
                 let t = f.text.to_lowercase();
-                let score = words.iter().filter(|w| t.contains(w.as_str())).count();
-                (score, f)
+                (words.iter().filter(|w| t.contains(w.as_str())).count(), i)
             })
             .filter(|(s, _)| *s > 0)
             .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.ts.cmp(&a.1.ts)));
-        scored.into_iter().take(limit).map(|(_, f)| f).collect()
+        kw.sort_by(|a, b| b.0.cmp(&a.0).then(facts[b.1].ts.cmp(&facts[a.1].ts)));
+        let keyword: Vec<usize> = kw.into_iter().map(|(_, i)| i).collect();
+
+        if semantic.is_empty() && keyword.is_empty() {
+            return Vec::new();
+        }
+
+        // Reciprocal Rank Fusion across the two ranked lists.
+        const K: f32 = 60.0;
+        let mut fused: std::collections::HashMap<usize, f32> = std::collections::HashMap::new();
+        for (rank, &i) in semantic.iter().enumerate() {
+            *fused.entry(i).or_insert(0.0) += 1.0 / (K + rank as f32 + 1.0);
+        }
+        for (rank, &i) in keyword.iter().enumerate() {
+            *fused.entry(i).or_insert(0.0) += 1.0 / (K + rank as f32 + 1.0);
+        }
+        let mut out: Vec<(f32, usize)> = fused.into_iter().map(|(i, s)| (s, i)).collect();
+        // Highest fused score first; recency breaks score ties. The final `.then(insertion index)` is
+        // load-bearing: RRF can produce bit-identical scores at symmetric ranks AND `ts` collides at
+        // millisecond resolution (routine for batch-imported facts), so without it the ordering would
+        // depend on the randomized HashMap iteration order above — non-reproducible recall. The index
+        // (line order from `all_facts()`) gives a TOTAL order independent of HashMap seeding.
+        out.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(facts[b.1].ts.cmp(&facts[a.1].ts))
+                .then(a.1.cmp(&b.1)) // oldest-insertion first → deterministic, HashMap-order-independent
+        });
+        out.into_iter().take(limit).map(|(_, i)| facts[i].clone()).collect()
     }
 
     /// System-message preamble: the core blocks, always in context. Empty if no blocks set.
@@ -552,6 +590,53 @@ mod tests {
         assert!(hits[0].text.contains("sushi"), "semantic recall should return the food fact, got: {}", hits[0].text);
         // Stored facts carry embeddings now.
         assert!(m.all_facts().iter().all(|f| f.emb.is_some()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hybrid_recall_surfaces_exact_token_a_semantic_query_misses() {
+        let dir = tmp();
+        let m = MemoryStore::open(dir.clone());
+        // Theme embedder: an exact error code carries NO theme signal → embeds to the zero vector, so
+        // cosine (which returns -1.0 for a zero vector) cannot rank it. The keyword arm must surface it.
+        m.set_embedder(Arc::new(|t: &str| {
+            let t = t.to_lowercase();
+            let food = t.contains("sushi") as i32 as f32;
+            let place = t.contains("okinawa") as i32 as f32;
+            Some(vec![food, place])
+        }));
+        m.append_fact("I love sushi", Origin::Trusted);
+        m.append_fact("I live in Okinawa", Origin::Trusted);
+        m.append_fact("Deploy failed with error code E_AUTH_4021 at the gateway", Origin::Trusted);
+        let hits = m.search("E_AUTH_4021", 1);
+        assert_eq!(hits.len(), 1);
+        assert!(
+            hits[0].text.contains("E_AUTH_4021"),
+            "hybrid recall must surface the exact-token fact embeddings can't rank, got: {}",
+            hits[0].text
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hybrid_recall_ranks_a_dual_signal_match_first() {
+        let dir = tmp();
+        let m = MemoryStore::open(dir.clone());
+        m.set_embedder(Arc::new(|t: &str| {
+            let t = t.to_lowercase();
+            let food = (t.contains("sushi") || t.contains("ramen") || t.contains("food") || t.contains("eat")) as i32 as f32;
+            Some(vec![food])
+        }));
+        m.append_fact("I love sushi", Origin::Trusted); // food theme only (no shared words)
+        m.append_fact("My favorite food to eat is ramen", Origin::Trusted); // theme AND keyword overlap
+        // Both facts match the food theme equally (cosine tie); only the ramen fact also matches by
+        // keyword, so fusion must rank it first.
+        let hits = m.search("favorite food to eat", 2);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0].text, "My favorite food to eat is ramen",
+            "a fact matching BOTH semantic and keyword signals must outrank a single-signal match"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }
