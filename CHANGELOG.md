@@ -23,6 +23,35 @@ running history.
 
 ---
 
+## 2026-07-01 — Hermes incorporation #4: learning-loop design + safe substrate (branch `feat/hermes-incorporation`)
+
+Phase B (the headline closed self-improvement loop) — **started correctly: design + safety gate before
+code** for this autonomous self-modification surface. Two commits:
+
+- **Gated design doc** (`docs/learning-loop-design-2026-07-01.md`). AIL-SAFETY/PSS design gate verdict:
+  **APPROVE-WITH-CHANGES (no HALT)** — caught 3 PSS-level holes *before any code*: (1) a curation
+  registry built from `ToolRegistry::readonly()` would leak `recall`/`web_fetch`/`read_document` (since
+  `remember` is non-irreversible) → must be a positive allowlist; (2) the shared `remember` defaults
+  Trusted → curation must force `Origin::Untrusted` in code; (3) routing through `run_streaming` at
+  depth 0 re-arms `delegate`/`council`/`deep_research` → use a single-shot call. Plus transcript-as-DATA
+  framing, an archival write mutex + single-flight, and an expanded do-NOT-capture list (third-party PII,
+  special-category data, inferences, imperative/standing-instructions).
+- **Safe substrate** (`ginexus-memory`), implementing gate changes #1/#2/#5 (all low-risk, fully tested):
+  - `memory_curation_tools()` — positive-allowlist toolset exposing ONLY a curation `remember` that
+    **hardcodes `Origin::Untrusted`** (no `untrusted` field in its schema); built from scratch, not from
+    `memory_tools`/`readonly()`. A prompt-injected curator cannot plant a trusted standing instruction.
+  - `archival: Mutex<()>` serializing `archival.jsonl` appends — fixes a real writer/writer race (the new
+    concurrency test tears lines without it).
+  - **SEC verification: PASS, no HALT.** Allowlist, forced-untrusted, and mutex (no deadlock) all
+    confirmed airtight at file:line.
+- **144 Rust tests (3 new), 0 failures.** TDD throughout (incl. a genuinely-RED concurrency test).
+- **Remaining for B1 (next focused PR, its own SEC gate):** the single-shot curator call in the agent
+  crate (transcript-as-DATA, execute only `remember`, cap 5, swallow+audit errors), the server `curate`
+  flag + fire-and-forget spawn, and the app cadence (every-N-turns toggle). The wiring increment MUST be
+  constructed with `memory_curation_tools` (not `memory_tools`) — carry a regression test asserting it.
+
+---
+
 ## 2026-07-01 — Hermes incorporation #3: error taxonomy + one-shot retry (branch `feat/hermes-incorporation`)
 
 Phase A #3. Makes every model call resilient to transient local-server failures (Ollama cold start,
