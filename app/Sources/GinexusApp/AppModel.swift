@@ -31,6 +31,26 @@ struct TokenUsage: Sendable, Equatable {
     let total: Int
 }
 
+/// Result of the core's deterministic, no-LLM context compaction for one turn — present only when the
+/// running transcript crossed the model's budget and the compactor actually trimmed it.
+struct ContextCompaction: Sendable, Equatable {
+    let beforeTokens: Int
+    let afterTokens: Int
+    let deduped: Int
+    let digested: Int
+    let argsTruncated: Int
+    let dropped: Int
+    /// One-line human summary of what was trimmed (only non-zero actions), e.g. "digested 2 · dropped 3".
+    var summary: String {
+        var parts: [String] = []
+        if deduped > 0 { parts.append("deduped \(deduped)") }
+        if digested > 0 { parts.append("digested \(digested)") }
+        if argsTruncated > 0 { parts.append("trimmed args \(argsTruncated)") }
+        if dropped > 0 { parts.append("dropped \(dropped)") }
+        return parts.isEmpty ? "trimmed" : parts.joined(separator: " · ")
+    }
+}
+
 /// One archival memory fact surfaced in the memory browser.
 struct MemFact: Identifiable, Sendable {
     let id = UUID()
@@ -207,6 +227,9 @@ final class AppModel: ObservableObject {
 
     /// Token usage from the most recent agent turn (nil until one completes with real counts).
     @Published var lastUsage: TokenUsage?
+
+    /// Context compaction from the most recent agent turn (nil unless the compactor trimmed this turn).
+    @Published var lastCompaction: ContextCompaction?
 
     /// Memory browser ("what GINEXUS knows about you"): core blocks + searchable archival facts.
     @Published var memoryOpen = false
@@ -673,6 +696,7 @@ final class AppModel: ObservableObject {
         attachmentThumb = nil
         pending = nil
         lastUsage = nil   // fresh chat starts with no token usage shown
+        lastCompaction = nil
         chatInput = ""
         unsavedIDs.insert(id)
         conversations.insert(ConversationMeta(id: id, title: "New chat", updatedAt: Date(), messageCount: 0), at: 0)
@@ -1647,6 +1671,16 @@ final class AppModel: ObservableObject {
                 // Keep header + bar coherent even if a server reports an inconsistent total.
                 let t = max((u["total_tokens"] as? Int) ?? 0, p + c)
                 if t > 0 { lastUsage = TokenUsage(prompt: p, completion: c, total: t) }
+            }
+            // Context compaction (present only when the core trimmed the transcript this turn).
+            if let cc = o["compaction"] as? [String: Any] {
+                lastCompaction = ContextCompaction(
+                    beforeTokens: (cc["before_tokens"] as? Int) ?? 0,
+                    afterTokens: (cc["after_tokens"] as? Int) ?? 0,
+                    deduped: (cc["deduped"] as? Int) ?? 0,
+                    digested: (cc["digested"] as? Int) ?? 0,
+                    argsTruncated: (cc["args_truncated"] as? Int) ?? 0,
+                    dropped: (cc["dropped"] as? Int) ?? 0)
             }
             let st = (o["status"] as? String) ?? "final"
             if st == "pending_approval", let p = o["pending"] as? [String: Any] {

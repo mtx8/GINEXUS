@@ -715,6 +715,10 @@ struct ContentView: View {
                     railDivider
                     railSection("Token Usage") { TokenUsageGauge(usage: model.lastUsage) }
                     railDivider
+                    railSection("Context Budget") {
+                        ContextBudgetGauge(usage: model.lastUsage, compaction: model.lastCompaction)
+                    }
+                    railDivider
                     connectionsSection
                     railDivider
                     railSection("Current File Context") { currentContextContent }
@@ -1950,6 +1954,57 @@ private struct TokenUsageGauge: View {
             Text(label.uppercased()).font(Brand.mono(10)).foregroundStyle(Brand.bone300)
             Spacer(minLength: 8)
             Text(value ?? "—").font(Brand.mono(11, weight: .medium)).foregroundStyle(value == nil ? Brand.bone400 : Brand.bone100)
+        }
+    }
+}
+
+/// How full the model's context window is after the last turn, plus a "trimmed" badge when the core's
+/// deterministic compactor engaged. Denominator is the local-model window the core compacts against
+/// (GINEXUS_CTX_WINDOW default, 32K) — a known config value, not fabricated data.
+private struct ContextBudgetGauge: View {
+    let usage: TokenUsage?
+    let compaction: ContextCompaction?
+    private let window = 32_768
+    var body: some View {
+        let used = usage?.prompt ?? 0
+        let frac = min(1.0, Double(used) / Double(window))
+        let near = frac > 0.85
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Text("WINDOW").font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
+                Spacer(minLength: 8)
+                Text("\(window / 1024)K").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+            }
+            // Fullness bar: ember normally, Hinomaru red when the prompt nears the window.
+            GeometryReader { geo in
+                let w = min(geo.size.width, max(0, geo.size.width * CGFloat(frac)))
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Brand.ink500.opacity(0.45))
+                    Capsule().fill(near ? Brand.hi500 : Brand.ember500).frame(width: w)
+                }
+            }
+            .frame(height: 4)
+            .padding(.vertical, 1)
+            HStack(spacing: 8) {
+                Text("USED").font(Brand.mono(10)).foregroundStyle(Brand.bone300)
+                Spacer(minLength: 8)
+                Text(usage == nil ? "—" : "\(used) · \(Int(frac * 100))%")
+                    .font(Brand.mono(11, weight: .medium))
+                    .foregroundStyle(usage == nil ? Brand.bone400 : (near ? Brand.hi500 : Brand.bone100))
+            }
+            if let c = compaction {
+                Divider().overlay(Brand.line1).padding(.vertical, 1)
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "scissors")
+                        .font(.system(size: 9, weight: .bold)).foregroundStyle(Brand.ember500)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("TRIMMED").font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
+                        Text(c.summary).font(Brand.mono(10)).foregroundStyle(Brand.bone300)
+                        Text("\(c.beforeTokens) → \(c.afterTokens) tok")
+                            .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                    }
+                }
+            }
         }
     }
 }

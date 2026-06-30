@@ -3,6 +3,7 @@
 
 pub mod tools;
 pub mod loop_;
+pub mod context_compress;
 pub mod app_tools;
 pub mod obsidian;
 pub mod documents;

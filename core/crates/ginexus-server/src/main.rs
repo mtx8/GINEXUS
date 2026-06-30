@@ -124,6 +124,22 @@ fn usage_json(u: ginexus_agent::Usage) -> Option<Value> {
     }))
 }
 
+/// Context-compaction summary as JSON — or `None` when nothing was trimmed (so the UI shows a
+/// "trimmed" badge only when the deterministic compactor actually engaged this run).
+fn compaction_json(c: ginexus_agent::context_compress::CompactionStats) -> Option<Value> {
+    if !c.changed() {
+        return None;
+    }
+    Some(json!({
+        "before_tokens": c.before_tokens,
+        "after_tokens": c.after_tokens,
+        "deduped": c.deduped,
+        "digested": c.digested,
+        "args_truncated": c.args_truncated,
+        "dropped": c.dropped,
+    }))
+}
+
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -1013,6 +1029,9 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             if let Some(u) = usage_v {
                 agent_resp["usage"] = u;
             }
+            if let Some(c) = compaction_json(res.compaction) {
+                agent_resp["compaction"] = c;
+            }
             json_ok(&mut stream, agent_resp).await;
         }
         ("POST", "/v1/agent/stream") => {
@@ -1074,6 +1093,9 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                                   "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()});
                 if let Some(u) = usage_v {
                     done["usage"] = u;
+                }
+                if let Some(c) = compaction_json(res.compaction) {
+                    done["compaction"] = c;
                 }
                 let _ = tx.send(format!("event: done\ndata: {}\n\n", done));
                 // tx + the closures' senders drop when this future completes → rx closes → drain ends.

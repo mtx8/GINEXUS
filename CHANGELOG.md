@@ -23,6 +23,32 @@ running history.
 
 ---
 
+## 2026-06-30 — Hermes incorporation #1: deterministic context compaction (branch `feat/hermes-incorporation`)
+
+First feature ported from **Nous Research's Hermes Agent** (forked to `mtx8/hermes-agent`) after a
+6-agent analysis (`docs/hermes-incorporation-analysis-2026-06-30.md`). Closes the **context
+compression** gap — previously the agent loop was bounded only by an iteration ceiling, so a long
+agentic turn could overflow a local 8K–32K Ollama/MLX window.
+
+- **No-LLM Tier-1 compactor** (`core/crates/ginexus-agent/src/context_compress.rs`, new). Adapted
+  from Hermes `context_compressor.py`: dedup identical tool results (keep newest verbatim), truncate
+  oversized tool-call arguments *inside the parsed JSON* (stays valid), digest stale tool results to
+  a one-line hint, and a last-resort token-budget **tail-cut** that pins `system` + the latest `user`
+  request and never orphans a tool_call/result pair. Runs every loop iteration before the model call;
+  a cheap no-op below threshold. Budget math mirrors Hermes (reserve output, 50%/85% of the rest).
+- **Wired into the loop** (`loop_.rs`) with the result exposed on `AgentResult.compaction` and
+  serialized over `/v1/agent` + the streaming `done` event (`ginexus-server` `compaction_json`).
+- **New "Context Budget" meter** (`ContentView.swift` `ContextBudgetGauge` + `AppModel` parsing):
+  window-fullness bar that turns Hinomaru-red past 85%, plus a "TRIMMED" badge (deduped/digested/
+  dropped + before→after tokens) shown only when the compactor actually engaged.
+- **Safety:** execution & HMAC approval bind to the *fresh* per-turn args, never the compacted
+  history; the pending tool call (last assistant `tool_calls`) is never truncated; audit hash-chain
+  untouched. Code + security review: APPROVE. **137 Rust tests** (10 new) + app `BUILD SUCCEEDED`.
+- Follow-ups queued: feed the real `GINEXUS_CTX_WINDOW` to the UI meter; then hybrid FTS5 recall and
+  the closed self-improvement loop (Phases A→B of the analysis).
+
+---
+
 ## 2026-06-30 — UI: match the Claude Design "GINEXUS Prototype" (branch `feat/voice-docs-projects-connect`)
 
 Pulled the full UI/UX of the **"GINEXUS Prototype"** (built in claude.ai/design) into the real

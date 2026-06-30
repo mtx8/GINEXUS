@@ -95,6 +95,9 @@ pub struct AgentResult {
     /// Aggregated token usage across EVERY model call in this run — main-loop iterations plus the
     /// synthetic delegate / council / deep_research fan-outs and all of their workers.
     pub total_usage: Usage,
+    /// Result of the LAST in-loop context compaction this run performed (zeroed if the conversation
+    /// never crossed the budget). Lets the UI show a context meter and a "trimmed" indicator.
+    pub compaction: crate::context_compress::CompactionStats,
 }
 
 fn target_of(name: &str, args: &Value) -> String {
@@ -285,6 +288,10 @@ impl<'a> AgentLoop<'a> {
         let mut synthetic_used: usize = 0;
         // Real token usage accumulated across every model call this run makes.
         let mut total_usage = Usage::default();
+        // Deterministic, no-LLM context compaction config (env-overridable). Applied before each
+        // model call so a long agentic turn never overflows the local model's context window.
+        let compaction_cfg = crate::context_compress::CompactionConfig::from_env();
+        let mut compaction = crate::context_compress::CompactionStats::default();
 
         // Subagent delegation: advertise + handle `delegate` only below the depth ceiling. Workers
         // get a READ-ONLY registry (they can never perform an irreversible/HITL action on their own).
@@ -302,6 +309,12 @@ impl<'a> AgentLoop<'a> {
         }
 
         for _ in 0..self.max_iters {
+            // Keep the running transcript within the model's context budget BEFORE the call. A no-op
+            // (single vector walk) while the conversation is small; only mutates once it overflows.
+            let step = crate::context_compress::compact(&mut msgs, &compaction_cfg);
+            if step.changed() {
+                compaction = step;
+            }
             let turn = self.model.call_streaming(&msgs, &defs, on_token, on_event).await;
             total_usage.add(turn.usage);
             if turn.tool_calls.is_empty() {
@@ -311,6 +324,7 @@ impl<'a> AgentLoop<'a> {
                     pending: None,
                     trace,
                     total_usage,
+                    compaction,
                 };
             }
 
@@ -401,6 +415,7 @@ impl<'a> AgentLoop<'a> {
                             })),
                             trace,
                             total_usage,
+                            compaction,
                         };
                     }
                 }
@@ -423,6 +438,7 @@ impl<'a> AgentLoop<'a> {
             pending: None,
             trace,
             total_usage,
+            compaction,
         }
     }
 
