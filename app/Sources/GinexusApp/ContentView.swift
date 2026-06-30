@@ -34,6 +34,8 @@ struct ContentView: View {
         .background(ZStack { Brand.ink900; Brand.canvasGlow }.ignoresSafeArea())
         .frame(minWidth: 1180, minHeight: 680)
         .preferredColorScheme(.dark)
+        .overlay { if model.paletteOpen { CommandPalette(model: model) } }
+        .animation(Brand.ease(0.18), value: model.paletteOpen)
         .sheet(isPresented: $model.memoryOpen) { memorySheet }
         .sheet(isPresented: $model.modelsOpen) { modelsSheet }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model, store: model.settings) }
@@ -205,9 +207,26 @@ struct ContentView: View {
             Text("Execution Stream").font(Brand.body(14, weight: .medium)).foregroundStyle(Brand.bone300)
                 .lineLimit(1).truncationMode(.tail).layoutPriority(0)   // truncates first on a tight header
             Spacer(minLength: 8)
+            commandPaletteButton.layoutPriority(1)
             autonomyToggle.layoutPriority(1)
             modelSelector.layoutPriority(1)
         }
+    }
+
+    /// ⌘K affordance — opens the command palette. Carries the window-wide ⌘K shortcut.
+    private var commandPaletteButton: some View {
+        Button { model.paletteOpen = true } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 10, weight: .semibold))
+                Text("⌘K").font(Brand.mono(10.5, weight: .bold)).kerning(0.5)
+            }
+            .foregroundStyle(Brand.bone300)
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Brand.line2, lineWidth: 1))
+        }
+        .buttonStyle(.plain).help("Command palette (⌘K)")
+        .keyboardShortcut("k", modifiers: .command)
     }
 
     private var autonomyToggle: some View {
@@ -230,9 +249,12 @@ struct ContentView: View {
 
     private var modelSelector: some View {
         Menu {
-            ForEach(model.models) { m in
-                Button(action: { model.selectedModel = m.id }) {
-                    if m.id == model.selectedModel { Label(m.label, systemImage: "checkmark") } else { Text(m.label) }
+            Section("Local · Apple Silicon") {
+                ForEach(model.models) { m in
+                    Button(action: { model.selectedModel = m.id }) {
+                        if m.id == model.selectedModel { Label(Self.modelMenuTitle(m), systemImage: "checkmark") }
+                        else { Text(Self.modelMenuTitle(m)) }
+                    }
                 }
             }
         } label: {
@@ -248,6 +270,11 @@ struct ContentView: View {
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .frame(maxWidth: 260).disabled(!model.connected)
+    }
+
+    /// "Qwen3-30B · smart" — the model name with its routing tier (the roster id) as a suffix.
+    static func modelMenuTitle(_ m: ModelOption) -> String {
+        m.id == "auto" ? m.label : "\(m.label)  ·  \(m.id)"
     }
 
     private var executionStream: some View {
@@ -272,13 +299,58 @@ struct ContentView: View {
         .frame(maxHeight: .infinity)
     }
 
+    /// The opening canvas — a confident display heading + tappable starter prompts that route
+    /// straight into the stream. Starter prompts are real sends (no canned answers); the research
+    /// one arms Deep Research first.
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Eyebrow(text: "Ready", color: Brand.ember500)
-            Text("Ask GINEXUS anything — it runs entirely on this Mac.")
-                .font(Brand.body(14)).foregroundStyle(Brand.bone300)
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 11) {
+                Eyebrow(text: "Ready", color: Brand.ember500, tick: true)
+                Text("What should we work on?")
+                    .font(Brand.display(34, weight: .heavy)).foregroundStyle(Brand.bone50)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("GINEXUS runs entirely on this Mac. Ask anything, or start with one of these — you'll watch each tool work the stream.")
+                    .font(Brand.body(14)).foregroundStyle(Brand.bone300)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(spacing: 10) {
+                ForEach(Self.starterPrompts) { s in
+                    StarterCard(icon: s.icon, title: s.title, route: s.route,
+                                disabled: !model.connected || model.sending) { startStarter(s) }
+                }
+            }
         }
-        .padding(.top, 44)
+        .padding(.top, 40)
+    }
+
+    struct StarterPrompt: Identifiable {
+        let id = UUID()
+        let icon: String
+        let title: String
+        let route: String
+        let prompt: String
+        let deepResearch: Bool
+    }
+    static let starterPrompts: [StarterPrompt] = [
+        .init(icon: "doc.text.magnifyingglass",
+              title: "Research the state of local-first LLM agents",
+              route: "web · deep research → cited report",
+              prompt: "Research the current state of local-first, on-device LLM agents — the leading open-weight models, the runtimes (MLX, llama.cpp, Ollama), and where the field is heading. Search the web, cross-check the facts, and give me a clear report that cites its sources.",
+              deepResearch: true),
+        .init(icon: "terminal.fill",
+              title: "Clean up my caches and free disk space",
+              route: "terminal → Touch ID approval gate",
+              prompt: "Survey what's taking up disk space in my user caches (~/Library/Caches and common dev-tool caches) and propose exactly what's safe to clean. Anything destructive waits for my Touch ID approval.",
+              deepResearch: false),
+        .init(icon: "person.3.fill",
+              title: "Weigh shipping the always-on agent now vs. later",
+              route: "council → parallel deliberation → synthesis",
+              prompt: "Convene a council to deliberate: should GINEXUS ship the always-on background agent now, or after the v1 daily-driver lands? Argue both sides in parallel, then give me the synthesized verdict.",
+              deepResearch: false),
+    ]
+    private func startStarter(_ s: StarterPrompt) {
+        if s.deepResearch { model.deepResearchMode = true }
+        model.send(s.prompt)
     }
 
     /// One conversation turn. Your message → a right-aligned soft bubble. GINEXUS's reply → the
@@ -643,6 +715,8 @@ struct ContentView: View {
                     railDivider
                     railSection("Token Usage") { TokenUsageGauge(usage: model.lastUsage) }
                     railDivider
+                    connectionsSection
+                    railDivider
                     railSection("Current File Context") { currentContextContent }
                     railDivider
                     railSection("Enabled Tools") {
@@ -668,6 +742,38 @@ struct ContentView: View {
         }
     }
     private var railDivider: some View { Divider().overlay(Brand.line1).padding(.vertical, 13) }
+
+    /// Connections summary — a single "MCP & tools" row with live counts + a MANAGE shortcut into
+    /// the Connections sheet. Counts come from the real server/tool surface (see connectionServers).
+    private var connectionsSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Eyebrow(text: "Connections", color: Brand.bone300)
+                Spacer()
+                Button { model.connectionsOpen = true } label: {
+                    Text("MANAGE").font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.ember500)
+                }.buttonStyle(.plain).help("Manage MCP servers & tools").disabled(!model.connected)
+            }
+            Button { model.connectionsOpen = true } label: {
+                HStack(spacing: 11) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(Brand.ember500).frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("MCP & tools").font(Brand.body(12.5, weight: .medium)).foregroundStyle(Brand.bone100)
+                        Text("\(model.connectedServerCount) connected · \(model.exposedToolCount) tools")
+                            .font(Brand.mono(9.5)).foregroundStyle(Brand.bone400)
+                    }
+                    Spacer(minLength: 6)
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(Brand.bone400)
+                }
+                .padding(.horizontal, 11).padding(.vertical, 10)
+                .frame(maxWidth: .infinity)
+                .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Brand.line1, lineWidth: 1))
+                .contentShape(Rectangle())
+            }.buttonStyle(.plain).disabled(!model.connected)
+        }
+    }
 
     private func statRow(_ label: String, _ value: String, dot: Color?) -> some View {
         HStack(spacing: 8) {
@@ -1167,83 +1273,120 @@ private struct ScheduleEditorSheet: View {
 
 private struct ConnectionsSheet: View {
     @ObservedObject var model: AppModel
+    @State private var showAddForm = false
+
+    private let cols = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 10) {
+                Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 13)).foregroundStyle(Brand.ember500)
                 Text("CONNECTIONS").font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
                 Spacer()
-                Button { model.connectionsOpen = false } label: {
-                    Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.bone300)
-                }.buttonStyle(.plain)
+                Button("DONE") { model.connectionsOpen = false }
+                    .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).kerning(1).foregroundStyle(Brand.ember500)
             }
-            .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 10)
+            .padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 14)
+            Divider().overlay(Brand.line1)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Connect external tools over MCP. Tool calls are approval-gated; writes need your biometric OK. Changes apply after restarting GINEXUS.")
-                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+                    coreSummaryCard
 
-                    presetRow("Notion", hint: "Internal integration token (“ntn_” / “secret_”).",
-                              placeholder: "Notion integration token", token: $model.notionTokenDraft, connect: model.connectNotion)
-                    presetRow("GitHub", hint: "Personal access token (repo / issues scopes).",
-                              placeholder: "GitHub PAT (ghp_… / github_pat_…)", token: $model.githubTokenDraft, connect: model.connectGitHub)
-
-                    Divider().overlay(Brand.line1)
-
-                    // Generic add-any-server form (Shopify, etc.)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("ADD A SERVER").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
-                        Text("Any MCP server with a stdio command — e.g. Shopify: npx -y @shopify/dev-mcp")
-                            .font(Brand.mono(9)).foregroundStyle(Brand.bone400)
-                        field("Name (e.g. shopify)", $model.mcpCustomName)
-                        field("Command (e.g. npx -y @shopify/dev-mcp)", $model.mcpCustomCommand)
-                        HStack(spacing: 8) {
-                            field("Token env var (optional)", $model.mcpCustomTokenEnv)
-                            secure("Token (optional)", $model.mcpCustomToken)
-                        }
-                        HStack {
-                            Spacer()
-                            Button(action: model.addCustomMcp) {
-                                Text("ADD SERVER").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
-                                    .padding(.horizontal, 16).padding(.vertical, 10)
-                                    .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
-                            }.buttonStyle(.plain)
-                            .disabled(model.mcpCustomName.trimmingCharacters(in: .whitespaces).isEmpty
-                                      || model.mcpCustomCommand.trimmingCharacters(in: .whitespaces).isEmpty)
-                        }
+                    HStack(alignment: .firstTextBaseline) {
+                        Eyebrow(text: "MCP Servers & Exposed Tools", tick: true)
+                        Spacer()
+                        Button { withAnimation(Brand.ease) { showAddForm.toggle() } } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: showAddForm ? "xmark" : "plus").font(.system(size: 10, weight: .bold))
+                                Text(showAddForm ? "CLOSE" : "ADD").font(Brand.mono(10, weight: .bold)).kerning(1)
+                            }
+                            .foregroundStyle(Brand.ember500)
+                            .padding(.horizontal, 11).padding(.vertical, 7)
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember500.opacity(0.4), lineWidth: 1))
+                        }.buttonStyle(.plain).help("Add an MCP server")
                     }
 
-                    Divider().overlay(Brand.line1)
+                    if showAddForm { addServerForm.transition(.opacity.combined(with: .move(edge: .top))) }
 
-                    Text("CONFIGURED").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
-                    if model.mcpServers.isEmpty {
-                        Text("No connections yet.").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
-                    } else {
-                        ForEach(model.mcpServers) { s in
-                            HStack(spacing: 10) {
-                                Circle().fill(s.enabled ? Brand.ember500 : Brand.ink500).frame(width: 7, height: 7)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(s.name).font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
-                                    Text(s.command).font(Brand.mono(9)).foregroundStyle(Brand.bone400).lineLimit(1)
-                                }
-                                Spacer()
-                                Toggle("", isOn: Binding(get: { s.enabled }, set: { model.setMcpEnabled(s.id, $0) }))
-                                    .labelsHidden().toggleStyle(.switch).tint(Brand.ember500)
-                                Button(role: .destructive) { model.removeMcpServer(s.id) } label: {
-                                    Image(systemName: "trash").font(.system(size: 12)).foregroundStyle(Brand.bone300)
-                                }.buttonStyle(.plain)
-                            }
-                            .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+                    LazyVGrid(columns: cols, spacing: 12) {
+                        ForEach(model.connectionServers) { s in
+                            ServerCard(server: s,
+                                       onToggle: { on in if let e = s.external { model.setMcpEnabled(e.id, on) } },
+                                       onRemove: { if let e = s.external { model.removeMcpServer(e.id) } })
                         }
                     }
                 }
-                .padding(.horizontal, 20).padding(.bottom, 18)
+                .padding(.horizontal, 22).padding(.top, 16).padding(.bottom, 22)
             }
         }
-        .frame(width: 500, height: 560)
-        .background(Brand.ink850)
+        .frame(width: 760, height: 660)
+        .background(Brand.ink900)
+    }
+
+    /// The core itself — the always-on Rust MCP host — summarized with live connected/tool counts.
+    private var coreSummaryCard: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "cpu").font(.system(size: 18, weight: .semibold)).foregroundStyle(Brand.ember500)
+                .frame(width: 42, height: 42).background(Brand.ember500.opacity(0.10)).clipShape(RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("ginexus-core").font(Brand.mono(14, weight: .bold)).foregroundStyle(Brand.bone50)
+                Text("Rust · MCP host · UDS + HMAC · hash-chained audit")
+                    .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+            }
+            Spacer(minLength: 12)
+            countPill("\(model.connectedServerCount)", "CONNECTED")
+            countPill("\(model.exposedToolCount)", "TOOLS")
+        }
+        .padding(16)
+        .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 14)) }
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Brand.ember600.opacity(0.35), lineWidth: 1))
+    }
+
+    private func countPill(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(value).font(Brand.display(22, weight: .heavy)).foregroundStyle(Brand.ember500)
+            Text(label).font(Brand.mono(8, weight: .bold)).kerning(1).foregroundStyle(Brand.bone400)
+        }
+        .padding(.leading, 14)
+    }
+
+    /// The add-external-server panel (presets + generic stdio form) — collapsed behind the ADD button.
+    private var addServerForm: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Connect external tools over MCP. Tool calls are approval-gated; writes need your biometric OK. Changes apply after restarting GINEXUS.")
+                .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+            presetRow("Notion", hint: "Internal integration token (“ntn_” / “secret_”).",
+                      placeholder: "Notion integration token", token: $model.notionTokenDraft, connect: model.connectNotion)
+            presetRow("GitHub", hint: "Personal access token (repo / issues scopes).",
+                      placeholder: "GitHub PAT (ghp_… / github_pat_…)", token: $model.githubTokenDraft, connect: model.connectGitHub)
+            Divider().overlay(Brand.line1)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("ADD A SERVER").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
+                Text("Any MCP server with a stdio command — e.g. Shopify: npx -y @shopify/dev-mcp")
+                    .font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                field("Name (e.g. shopify)", $model.mcpCustomName)
+                field("Command (e.g. npx -y @shopify/dev-mcp)", $model.mcpCustomCommand)
+                HStack(spacing: 8) {
+                    field("Token env var (optional)", $model.mcpCustomTokenEnv)
+                    secure("Token (optional)", $model.mcpCustomToken)
+                }
+                HStack {
+                    Spacer()
+                    Button(action: model.addCustomMcp) {
+                        Text("ADD SERVER").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
+                            .padding(.horizontal, 16).padding(.vertical, 10)
+                            .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                    }.buttonStyle(.plain)
+                    .disabled(model.mcpCustomName.trimmingCharacters(in: .whitespaces).isEmpty
+                              || model.mcpCustomCommand.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+        .padding(14)
+        .background(Brand.ink850.opacity(0.55)).clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line1, lineWidth: 1))
     }
 
     private func presetRow(_ title: String, hint: String, placeholder: String,
@@ -1277,6 +1420,110 @@ private struct ConnectionsSheet: View {
             .textFieldStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone50)
             .padding(9).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 7))
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
+    }
+}
+
+/// One server card in the Connections grid — icon, name, subtitle, on/off, transport badge, tool
+/// count, status, and the real exposed tool names as chips. Built-ins show a fixed (disabled) on
+/// switch (always-on, gated per call); external servers get a live toggle + remove.
+private struct ServerCard: View {
+    let server: ConnServer
+    let onToggle: (Bool) -> Void
+    let onRemove: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: server.icon).font(.system(size: 14, weight: .semibold)).foregroundStyle(Brand.ember500)
+                    .frame(width: 30, height: 30).background(Brand.ember500.opacity(0.10)).clipShape(RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(server.name).font(Brand.body(13.5, weight: .semibold)).foregroundStyle(Brand.bone50).lineLimit(1)
+                    Text(server.subtitle).font(Brand.mono(9.5)).foregroundStyle(Brand.bone400).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 6)
+                if server.builtin {
+                    Toggle("", isOn: .constant(server.connected)).labelsHidden().toggleStyle(.switch).tint(Brand.ember500)
+                        .disabled(true).help("Built into the core — always on, gated per call")
+                } else {
+                    Toggle("", isOn: Binding(get: { server.connected }, set: { onToggle($0) }))
+                        .labelsHidden().toggleStyle(.switch).tint(Brand.ember500).help("Enable / disable this server")
+                }
+            }
+            HStack(spacing: 8) {
+                protoBadge(server.proto)
+                Text("\(server.tools.count) tool\(server.tools.count == 1 ? "" : "s")")
+                    .font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                Spacer(minLength: 6)
+                statusPill
+                if !server.builtin {
+                    Button(action: onRemove) {
+                        Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(hover ? Brand.bone200 : Brand.bone400)
+                    }.buttonStyle(.plain).help("Remove server")
+                }
+            }
+            if !server.tools.isEmpty {
+                FlowLayout(spacing: 6, lineSpacing: 6) {
+                    ForEach(server.tools, id: \.self) { t in
+                        Text(t).font(Brand.mono(9.5)).foregroundStyle(Brand.bone200)
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Brand.line1, lineWidth: 1))
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 12)) }
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(hover ? Brand.line2 : Brand.line1, lineWidth: 1))
+        .shadow(color: .black.opacity(hover ? 0.22 : 0), radius: hover ? 12 : 0, x: 0, y: 5)
+        .onHover { h in withAnimation(Brand.ease) { hover = h } }
+    }
+
+    private var statusPill: some View {
+        let c = server.connected ? Brand.success : Brand.bone400
+        return HStack(spacing: 4) {
+            Text(server.connected ? "CONNECTED" : "OFF").font(Brand.mono(8, weight: .bold)).kerning(0.5).foregroundStyle(c)
+            Circle().fill(c).frame(width: 5, height: 5)
+        }
+    }
+
+    private func protoBadge(_ p: String) -> some View {
+        Text(p).font(Brand.mono(8, weight: .bold)).kerning(0.8).foregroundStyle(Brand.bone300)
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Brand.line1, lineWidth: 1))
+    }
+}
+
+/// Minimal wrapping layout (macOS 14+) — lays children left→right, wrapping to a new line when the
+/// row would overflow. Used for the tool chips on a server card.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+    var lineSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxW = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, lineH: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > 0 && x + s.width > maxW { x = 0; y += lineH + lineSpacing; lineH = 0 }
+            x += s.width + spacing; lineH = max(lineH, s.height)
+        }
+        return CGSize(width: maxW == .infinity ? x : maxW, height: y + lineH)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let maxW = bounds.width
+        var x: CGFloat = 0, y: CGFloat = 0, lineH: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > 0 && x + s.width > maxW { x = 0; y += lineH + lineSpacing; lineH = 0 }
+            v.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + y), proposal: ProposedViewSize(s))
+            x += s.width + spacing; lineH = max(lineH, s.height)
+        }
     }
 }
 
@@ -1825,6 +2072,206 @@ private struct ModelRow: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(hover ? 0.13 : 0.06), lineWidth: 1))
         .onHover { h in withAnimation(Brand.ease) { hover = h } }
     }
+}
+
+// MARK: - ⌘K command palette — searchable quick actions, model + mode switches
+private struct CommandPalette: View {
+    @ObservedObject var model: AppModel
+    @State private var query = ""
+    @FocusState private var focused: Bool
+
+    struct Command: Identifiable {
+        let id = UUID()
+        let title: String
+        let subtitle: String
+        let icon: String
+        let run: () -> Void
+    }
+
+    private var commands: [Command] {
+        var c: [Command] = [
+            .init(title: "New conversation", subtitle: "Start a fresh thread", icon: "square.and.pencil") { model.newChat() },
+            .init(title: "Projects", subtitle: "Folders, files, custom instructions", icon: "folder") {
+                model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id; model.projectsOpen = true
+            },
+            .init(title: "Memory", subtitle: "What GINEXUS knows about you", icon: "brain") { model.openMemory() },
+            .init(title: "Models", subtitle: "Download / manage local models", icon: "cube.box") { model.openModels() },
+            .init(title: "Scheduled tasks", subtitle: "Routine automation", icon: "clock.arrow.circlepath") { model.openSchedules() },
+            .init(title: "Connections", subtitle: "MCP servers & exposed tools", icon: "point.3.connected.trianglepath.dotted") { model.connectionsOpen = true },
+            .init(title: "Settings", subtitle: "Preferences & integrations", icon: "gearshape") { model.openSettings() },
+            .init(title: model.deepResearchMode ? "Disarm Deep Research" : "Arm Deep Research",
+                  subtitle: "Search the web → cited report", icon: "binoculars.fill") { model.toggleDeepResearch() },
+            .init(title: model.autonomous ? "Switch to HITL (approve each action)" : "Switch to Autonomous",
+                  subtitle: "Human-in-the-loop vs. unattended execution",
+                  icon: model.autonomous ? "hand.raised.fill" : "bolt.fill") { model.autonomous.toggle() },
+        ]
+        for m in model.models {
+            let on = m.id == model.selectedModel
+            c.append(.init(title: "Model: \(m.label)", subtitle: on ? "Current model" : "Switch the active model",
+                           icon: on ? "checkmark.circle.fill" : "cpu") { model.selectedModel = m.id })
+        }
+        return c
+    }
+
+    private var filtered: [Command] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return commands }
+        return commands.filter { $0.title.lowercased().contains(q) || $0.subtitle.lowercased().contains(q) }
+    }
+
+    private func run(_ c: Command) { model.paletteOpen = false; c.run() }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.45).ignoresSafeArea().onTapGesture { model.paletteOpen = false }
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 13, weight: .semibold)).foregroundStyle(Brand.bone400)
+                    TextField("Search commands…", text: $query)
+                        .textFieldStyle(.plain).font(Brand.body(15)).foregroundStyle(Brand.bone50).focused($focused)
+                        .onSubmit { if let first = filtered.first { run(first) } }
+                    Text("ESC").font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.bone400)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .padding(.horizontal, 16).padding(.vertical, 14)
+                Divider().overlay(Brand.line1)
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        if filtered.isEmpty {
+                            Text("No matching commands").font(Brand.mono(12)).foregroundStyle(Brand.bone400)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 14).padding(.vertical, 18)
+                        }
+                        ForEach(filtered) { c in CommandRow(c: c) { run(c) } }
+                    }
+                    .padding(8)
+                }
+                .frame(maxHeight: 360)
+            }
+            .frame(width: 540)
+            .background(Brand.panelFill)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 16)) }
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.14), lineWidth: 1))
+            .shadow(color: .black.opacity(0.5), radius: 30, x: 0, y: 16)
+            .padding(.top, 116)
+        }
+        .onExitCommand { model.paletteOpen = false }
+        .onAppear { DispatchQueue.main.async { focused = true } }
+    }
+}
+
+private struct CommandRow: View {
+    let c: CommandPalette.Command
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: c.icon).font(.system(size: 13, weight: .medium)).foregroundStyle(Brand.ember500).frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(c.title).font(Brand.body(13.5, weight: .medium)).foregroundStyle(Brand.bone50).lineLimit(1)
+                    Text(c.subtitle).font(Brand.mono(10)).foregroundStyle(Brand.bone400).lineLimit(1)
+                }
+                Spacer(minLength: 6)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(hover ? Brand.ink600 : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).onHover { h in hover = h }
+    }
+}
+
+// MARK: - starter-prompt card (empty-state) — icon tile + title + route, hover-lift
+private struct StarterCard: View {
+    let icon: String
+    let title: String
+    let route: String
+    let disabled: Bool
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: icon).font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Brand.ember500).frame(width: 32, height: 32)
+                    .background(Brand.ember500.opacity(0.10)).clipShape(RoundedRectangle(cornerRadius: 8))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(Brand.body(14, weight: .medium)).foregroundStyle(Brand.bone50)
+                        .lineLimit(1).truncationMode(.tail)
+                    Text(route).font(Brand.mono(10.5)).foregroundStyle(Brand.bone400)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "arrow.up.forward").font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(hover ? Brand.ember500 : Brand.bone400)
+            }
+            .padding(.horizontal, 15).padding(.vertical, 13)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 12)) }
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(hover ? Brand.ember500.opacity(0.45) : Brand.line1, lineWidth: 1))
+            .shadow(color: .black.opacity(hover ? 0.28 : 0), radius: hover ? 12 : 0, x: 0, y: 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(disabled).opacity(disabled ? 0.55 : 1)
+        .onHover { h in withAnimation(Brand.ease) { hover = h } }
+    }
+}
+
+// MARK: - Connections model — the core's built-in MCP host surface + user-added external servers.
+/// One card in the Connections grid. Built-ins are always-on (gated per call); external servers can
+/// be toggled / removed. `tools` are the real exposed tool names (a capability map, not a metric);
+/// `connected` reflects real state (built-in flags / a server's enabled bit), never a hardcoded count.
+struct ConnServer: Identifiable {
+    let id: String
+    let icon: String
+    let name: String
+    let subtitle: String
+    let proto: String          // STDIO | HTTP | UDS
+    let tools: [String]
+    let connected: Bool
+    let builtin: Bool
+    var external: McpServerConfig? = nil   // set for user-added servers (drives toggle + remove)
+}
+
+extension AppModel {
+    /// The Connections surface: the core's six built-in servers (state from real flags) followed by
+    /// any user-added external MCP servers.
+    var connectionServers: [ConnServer] {
+        var list: [ConnServer] = [
+            ConnServer(id: "fs", icon: "folder", name: "Filesystem",
+                       subtitle: "Sandboxed read/write · ~/ confined", proto: "STDIO",
+                       tools: ["read_file", "write_file", "search", "move"], connected: true, builtin: true),
+            ConnServer(id: "web", icon: "globe", name: "Web & Search",
+                       subtitle: "Fetch + search the open web", proto: "HTTP",
+                       tools: ["search", "fetch", "extract"], connected: true, builtin: true),
+            ConnServer(id: "term", icon: "terminal", name: "Safe Terminal",
+                       subtitle: "Allow-listed · gated mutations", proto: "STDIO",
+                       tools: ["run", "which", "env"], connected: true, builtin: true),
+            ConnServer(id: "mem", icon: "brain.head.profile", name: "Memory",
+                       subtitle: "Two-tier · semantic recall", proto: "UDS",
+                       tools: ["recall", "remember", "consolidate"], connected: true, builtin: true),
+            ConnServer(id: "obsidian", icon: "books.vertical.fill", name: "Obsidian Vault",
+                       subtitle: "Read/search · write-gated", proto: "STDIO",
+                       tools: ["read_note", "search_vault", "write_note"], connected: obsidianAvailable, builtin: true),
+            ConnServer(id: "forge", icon: "sparkles", name: "NexusForge",
+                       subtitle: "Image & video generation", proto: "HTTP",
+                       tools: ["image", "video"], connected: settings.settings.mediaSidecarEnabled, builtin: true),
+        ]
+        for s in mcpServers {
+            list.append(ConnServer(id: s.id.uuidString, icon: "puzzlepiece.extension.fill", name: s.name,
+                                   subtitle: s.command, proto: "STDIO", tools: [],
+                                   connected: s.enabled, builtin: false, external: s))
+        }
+        return list
+    }
+    /// Servers reporting connected (built-in available + external enabled).
+    var connectedServerCount: Int { connectionServers.filter { $0.connected }.count }
+    /// Total exposed tools across connected servers — derived from the capability map, not invented.
+    var exposedToolCount: Int { connectionServers.filter { $0.connected }.reduce(0) { $0 + $1.tools.count } }
 }
 
 // MARK: - headless render-safe mirror of the stream (for ImageRenderer verification)

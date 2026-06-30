@@ -462,6 +462,8 @@ final class AppModel: ObservableObject {
 
     // MARK: SP-Connect — external MCP integrations (Notion, Shopify, …)
     @Published var connectionsOpen = false
+    /// ⌘K command palette overlay — quick navigation + model/mode switches.
+    @Published var paletteOpen = false
     @Published var notionTokenDraft = ""
 
     var mcpServers: [McpServerConfig] { settings.settings.mcpServers }
