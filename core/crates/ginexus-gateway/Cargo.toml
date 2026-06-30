@@ -12,4 +12,5 @@ thiserror.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
+tokio.workspace = true
 ginexus-agent.workspace = true

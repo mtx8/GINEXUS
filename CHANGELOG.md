@@ -23,6 +23,28 @@ running history.
 
 ---
 
+## 2026-07-01 — Hermes incorporation #3: error taxonomy + one-shot retry (branch `feat/hermes-incorporation`)
+
+Phase A #3. Makes every model call resilient to transient local-server failures (Ollama cold start,
+timeout, connection refused, 5xx) instead of surfacing them as a fake `"model error: …"` answer.
+
+- **Pure taxonomy** (`core/crates/ginexus-gateway/src/lib.rs`): `classify_error(status, is_timeout,
+  is_connect) → ErrorClass` (Timeout/Connect/RateLimit/ServerError/ClientError/Unknown) + `retryable()`.
+  Adapted from Hermes `error_classifier.py`. 4xx (≠429) and Unknown are NOT retried (won't self-heal).
+- **One-shot retry** (`send_with_retry`): on a retryable class, wait 300ms and retry the request exactly
+  once; the closure rebuilds the (consumed) `RequestBuilder`. Wired into `complete_with_tools` and
+  `complete_with_tools_streaming`; streaming retries only the INITIAL request (a mid-stream error is
+  surfaced, never silently swallowed, to avoid re-emitting already-streamed tokens).
+- **PSS/SEC gate: PASS (CLEAN).** The retry is model *inference* only — tools execute downstream in the
+  agent loop with the HITL biometric gate intact, so a retry can NEVER double-execute an irreversible
+  action or bypass approval. One retry only (no storm); no secret leakage (token stays in the header,
+  never in error strings). `tokio` added to the gateway crate = the existing workspace pin.
+- **Code review: APPROVE.** Documented the local-first idempotency assumption (honor `Retry-After` /
+  reconsider 5xx-retry if a remote billed API is ever fronted).
+- **141 Rust tests (2 new classifier tests), 0 failures.** TDD: stub → RED → implement → GREEN.
+
+---
+
 ## 2026-07-01 — Hermes incorporation #2: hybrid memory recall (branch `feat/hermes-incorporation`)
 
 Phase A #2 of the Hermes plan. Upgrades long-term recall from **either/or** (semantic OR keyword)

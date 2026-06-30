@@ -242,17 +242,9 @@ impl Gateway {
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
-        let resp = self
-            .client
-            .post(format!("{}/chat/completions", ep.api_base))
-            .bearer_auth(&ep.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("request failed: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("model server HTTP {}", resp.status()));
-        }
+        // One-shot retry on transient failures (cold-start connect refusal / timeout / 429 / 5xx).
+        let url = format!("{}/chat/completions", ep.api_base);
+        let resp = send_with_retry(|| self.client.post(&url).bearer_auth(&ep.api_key).json(&body)).await?;
         let v: Value = resp.json().await.map_err(|e| format!("bad response: {e}"))?;
         let msg = &v["choices"][0]["message"];
         let content = msg.get("content").and_then(|c| c.as_str()).map(|s| s.to_string());
@@ -291,17 +283,10 @@ impl Gateway {
         if !tools.is_empty() {
             body["tools"] = json!(tools);
         }
-        let resp = self
-            .client
-            .post(format!("{}/chat/completions", ep.api_base))
-            .bearer_auth(&ep.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| format!("request failed: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("model server HTTP {}", resp.status()));
-        }
+        // One-shot retry on transient failures, same as the non-streaming path (only the INITIAL
+        // request is retried — once the body starts streaming a mid-stream error is surfaced as-is).
+        let url = format!("{}/chat/completions", ep.api_base);
+        let resp = send_with_retry(|| self.client.post(&url).bearer_auth(&ep.api_key).json(&body)).await?;
 
         let mut content = String::new();
         let mut emitted_len = 0usize; // bytes of displayable (think-stripped) content already forwarded
@@ -414,6 +399,97 @@ fn visible_content(content: &str) -> &str {
         return "";
     }
     content
+}
+
+/// Backoff before the single retry of a transient model-server failure. Short — local servers (Ollama)
+/// usually recover within a cold-start window; one brief pause avoids a thundering re-request.
+const RETRY_BACKOFF_MS: u64 = 300;
+
+/// Classification of a model-server transport failure, used to decide whether ONE retry is worthwhile.
+/// Ported in spirit from Hermes `error_classifier.py` (FailoverReason) — deliberately minimal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorClass {
+    /// The request timed out.
+    Timeout,
+    /// Could not establish a connection (server cold/down) — the common Ollama cold-start case.
+    Connect,
+    /// HTTP 429 — rate limited.
+    RateLimit,
+    /// HTTP 5xx — server-side, often transient.
+    ServerError,
+    /// HTTP 4xx (other than 429) — our request is wrong; retrying won't help.
+    ClientError,
+    /// Parse error or anything unclassified — don't retry blindly.
+    Unknown,
+}
+
+impl ErrorClass {
+    /// Transient classes worth exactly ONE retry. Client errors and unknowns are not retried — they
+    /// won't fix themselves and a retry only doubles latency before the same failure surfaces.
+    pub fn retryable(self) -> bool {
+        matches!(self, ErrorClass::Timeout | ErrorClass::Connect | ErrorClass::RateLimit | ErrorClass::ServerError)
+    }
+}
+
+/// Classify a transport outcome. `status` is the HTTP status when a response came back; `is_timeout`/
+/// `is_connect` come from the transport error when no response arrived at all.
+pub fn classify_error(status: Option<u16>, is_timeout: bool, is_connect: bool) -> ErrorClass {
+    if let Some(s) = status {
+        return match s {
+            429 => ErrorClass::RateLimit,
+            500..=599 => ErrorClass::ServerError,
+            400..=499 => ErrorClass::ClientError,
+            _ => ErrorClass::Unknown,
+        };
+    }
+    if is_timeout {
+        ErrorClass::Timeout
+    } else if is_connect {
+        ErrorClass::Connect
+    } else {
+        ErrorClass::Unknown
+    }
+}
+
+/// Send one request, mapping a non-success response or transport error into `(ErrorClass, message)`.
+async fn try_send(rb: reqwest::RequestBuilder) -> Result<reqwest::Response, (ErrorClass, String)> {
+    match rb.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                Ok(resp)
+            } else {
+                Err((classify_error(Some(status.as_u16()), false, false),
+                     format!("model server HTTP {status}")))
+            }
+        }
+        Err(e) => Err((classify_error(None, e.is_timeout(), e.is_connect()),
+                       format!("request failed: {e}"))),
+    }
+}
+
+/// Send a request built by `build`, retrying ONCE after a short backoff if the failure is transient
+/// (timeout / connect / 429 / 5xx). `build` is a closure so the request can be reconstructed for the
+/// retry (a `RequestBuilder` is consumed by `send`). Non-transient failures surface immediately.
+///
+/// Assumes the target is the local-first chat-completions server (Ollama/MLX), where re-POSTing is
+/// effectively idempotent. If a remote, billed, rate-limited API is ever fronted here, revisit: honor
+/// `Retry-After` on 429 and reconsider retrying a 5xx the server may have partially processed.
+async fn send_with_retry<F>(build: F) -> Result<reqwest::Response, String>
+where
+    F: Fn() -> reqwest::RequestBuilder,
+{
+    match try_send(build()).await {
+        Ok(resp) => Ok(resp),
+        Err((class, msg)) => {
+            if class.retryable() {
+                tokio::time::sleep(std::time::Duration::from_millis(RETRY_BACKOFF_MS)).await;
+                try_send(build()).await.map_err(|(_, m)| m)
+            } else {
+                Err(msg)
+            }
+        }
+    }
 }
 
 /// Build the shared blocking embed client once (connection pool + TLS config reused across calls).
@@ -558,6 +634,29 @@ impl ModelCall for BoundModel<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_transient_failures_are_retryable() {
+        assert_eq!(classify_error(Some(429), false, false), ErrorClass::RateLimit);
+        assert_eq!(classify_error(Some(503), false, false), ErrorClass::ServerError);
+        assert_eq!(classify_error(Some(500), false, false), ErrorClass::ServerError);
+        assert_eq!(classify_error(None, true, false), ErrorClass::Timeout);
+        assert_eq!(classify_error(None, false, true), ErrorClass::Connect);
+        for c in [ErrorClass::RateLimit, ErrorClass::ServerError, ErrorClass::Timeout, ErrorClass::Connect] {
+            assert!(c.retryable(), "{c:?} should be retried once");
+        }
+    }
+
+    #[test]
+    fn classify_client_and_unknown_failures_are_not_retryable() {
+        assert_eq!(classify_error(Some(400), false, false), ErrorClass::ClientError);
+        assert_eq!(classify_error(Some(404), false, false), ErrorClass::ClientError);
+        assert_eq!(classify_error(Some(422), false, false), ErrorClass::ClientError);
+        assert_eq!(classify_error(None, false, false), ErrorClass::Unknown);
+        // A 4xx means our request is wrong (bad model name, malformed body) — retrying just doubles latency.
+        assert!(!ErrorClass::ClientError.retryable());
+        assert!(!ErrorClass::Unknown.retryable());
+    }
 
     #[test]
     fn routing_policy() {
