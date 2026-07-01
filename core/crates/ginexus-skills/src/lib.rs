@@ -13,6 +13,8 @@
 //!   - Children run with a SCRUBBED env (no inherited secrets), a confined working dir, in their own
 //!     process group (killed as a tree on timeout); output is bounded (no OOM), stdin is null.
 
+pub mod playbooks; // Learning-loop B2: prose procedural "playbooks" (read + view; write side is B2b)
+
 use ginexus_agent::{Tool, ToolResult};
 use serde::Deserialize;
 use serde_json::{json, Value};

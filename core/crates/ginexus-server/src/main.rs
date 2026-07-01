@@ -47,6 +47,8 @@ struct AppState {
     /// Single-flight for the background memory curator (learning loop B1): 1 permit, so at most one
     /// curation pass runs at a time — a fast cadence can't pile up overlapping local-model calls.
     curation_gate: Arc<tokio::sync::Semaphore>,
+    /// Loaded prose procedural playbooks (learning loop B2a). Only user-origin ones enter the prompt.
+    playbooks: Arc<ginexus_skills::playbooks::PlaybookLibrary>,
 }
 
 /// Prepend the core-memory system preamble (if any) so the model always has persistent context.
@@ -106,9 +108,13 @@ fn conductor_system() -> String {
     )
 }
 
-/// Agent message stack: Conductor role + base guidance + memory preamble + the conversation.
-fn agent_messages(memory: &MemoryStore, raw: Vec<Value>) -> Vec<Value> {
+/// Agent message stack: Conductor role + base guidance + playbook index + memory preamble + the
+/// conversation. `playbook_index` is the USER-origin playbook index (empty when there are none) — B2a.
+fn agent_messages(memory: &MemoryStore, playbook_index: &str, raw: Vec<Value>) -> Vec<Value> {
     let mut messages = with_memory(memory, raw);
+    if !playbook_index.is_empty() {
+        messages.insert(0, json!({"role": "system", "content": playbook_index}));
+    }
     messages.insert(0, json!({"role": "system", "content": AGENT_GUIDANCE}));
     messages.insert(0, json!({"role": "system", "content": conductor_system()}));
     messages
@@ -578,6 +584,17 @@ async fn run_server() {
         eprintln!("loaded skills [{}]: {}", skills_dir.display(), loaded.summary.join(", "));
     }
 
+    // Learning-loop B2a: prose procedural "playbooks" (read-only). A USER-authored playbook's
+    // description enters the system-prompt index (see agent_messages); AGENT-authored ones (B2b) are
+    // never in the standing prompt — pull-only via `playbook_view`, tagged data-not-instruction.
+    let playbooks_dir = sd.join("playbooks");
+    let _ = std::fs::create_dir_all(playbooks_dir.join("user"));
+    let playbooks = Arc::new(ginexus_skills::playbooks::load_playbooks(&playbooks_dir));
+    registry.register(ginexus_skills::playbooks::playbook_view_tool(playbooks.clone()));
+    if !playbooks.is_empty() {
+        eprintln!("loaded {} playbook(s) [{}]", playbooks.len(), playbooks_dir.display());
+    }
+
     // SP5: OS-bridge tools (Calendar/Shortcuts/system) — registered ONLY when the signed app
     // injects its tool-host socket + token. Execution runs in the app (TCC attribution); the core
     // advertises schemas and forwards calls. A headless core (no app) omits them.
@@ -637,6 +654,7 @@ async fn run_server() {
         memory,
         schedules: scheduler::ScheduleStore::open(sd.join("run/schedules.json")),
         curation_gate: Arc::new(tokio::sync::Semaphore::new(1)),
+        playbooks,
     });
 
     // Heartbeat: run due scheduled tasks unattended (read-only tools, kill-switch-respecting).
@@ -1025,7 +1043,7 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             // conversation (no system/memory preamble) to hand the curator as DATA after the run.
             let curate = body.get("curate").and_then(|v| v.as_bool()).unwrap_or(false);
             let curation_raw = if curate { raw.clone() } else { Vec::new() };
-            let messages = agent_messages(&state.memory, raw);
+            let messages = agent_messages(&state.memory, state.playbooks.system_index(), raw);
             let grants = parse_grants(&body);
             // Autonomy mode: "autonomous" runs irreversible tools unattended EXCEPT hard-gated ones
             // (money/comms/legal/delete/arbitrary-exec); default is human-in-the-loop.
@@ -1099,7 +1117,7 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             // Learning loop B1 (opt-in): keep the raw conversation to curate as DATA after the run.
             let curate = body.get("curate").and_then(|v| v.as_bool()).unwrap_or(false);
             let curation_raw = if curate { raw.clone() } else { Vec::new() };
-            let messages = agent_messages(&state.memory, raw);
+            let messages = agent_messages(&state.memory, state.playbooks.system_index(), raw);
             let grants = parse_grants(&body);
             let mode = match body.get("mode").and_then(|m| m.as_str()) {
                 Some("autonomous") => ginexus_agent::Mode::Autonomous,

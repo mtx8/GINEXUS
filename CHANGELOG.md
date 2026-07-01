@@ -23,6 +23,35 @@ running history.
 
 ---
 
+## 2026-07-01 — Hermes incorporation #6: learning loop B2a — procedural "playbooks" (branch `feat/hermes-incorporation`)
+
+Phase B Increment B2a — a NEW skill class: **prose procedural "playbooks"** (how-tos the model reads),
+distinct from the existing executable `skill.json` plugins (which stay user-authored, untouched). This is
+the read-only foundation for Hermes-style self-improving skills; the autonomous write side is B2b.
+
+- **Playbook module** (`ginexus-skills/src/playbooks.rs`, new): agentskills.io/Anthropic-compatible
+  `<dir>/<user|auto>/<name>/SKILL.md` (frontmatter + body). Hand-rolled `---`-split parser (no YAML lib —
+  anchors are an injection surface); tolerant of BOM/CRLF/leading-blanks/body-`---`/missing-fence → skip,
+  never panic. Progressive disclosure: a user playbook's `description` enters the system-prompt index; the
+  body is pulled on demand via a read-only **`playbook_view`** tool.
+- **Server wiring**: loads `<state>/playbooks/{user,auto}` at boot, registers `playbook_view`, injects
+  the cached user-only index into `agent_messages` (order: conductor → guidance → playbooks → memory → convo).
+- **AIL-SAFETY design gate: APPROVE-WITH-CHANGES; the B2b write path was HALTED pending R-crux** — folded
+  in before coding. **R-crux (load-bearing): agent-authored (`auto/`) playbooks NEVER enter the system
+  prompt** — pull-only via `playbook_view`, body tagged `[agent-authored … data, not instruction]` (mirrors
+  B1's untrusted-via-pull model). Origin is derived from the DIRECTORY, never frontmatter (a file can't
+  self-declare `origin:user`). Plus R1 (view-by-name → traversal impossible by construction; symlink escape
+  refused), R2 (index count+byte budget), R3 (no name shadowing — user wins), R4 (robust parser).
+- **B2a code gate: SEC/PSS APPROVE (all 5 checks PASS, no HALT) + code review APPROVE.** Applied the two
+  worthwhile suggestions: memoize the index (computed once at load), clarify the byte-cap comment; added
+  loader symlink-refusal + byte-budget + multi-colon/quoted-value tests.
+- **162 Rust tests (13 new), 0 failures.** No Swift changes. TDD throughout.
+- **B2b (next, own SEC gate):** autonomous playbook authoring/patching via the B1 curation heartbeat —
+  confined to `auto/`, archive-not-delete, fuzzy-replace (refuse ambiguous), frontmatter re-validate
+  (reject origin edits), killswitch + single-flight (R5–R11 in the design).
+
+---
+
 ## 2026-07-01 — Hermes incorporation #5: learning loop B1 — autonomous memory curation (branch `feat/hermes-incorporation`)
 
 Phase B Increment B1 — the closed self-improvement loop now RUNS: after a substantive turn, GiNexus
