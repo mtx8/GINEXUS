@@ -23,6 +23,38 @@ running history.
 
 ---
 
+## 2026-07-01 — Hermes incorporation #8: learning loop B3 — inactivity curator (Phase B COMPLETE) (branch `feat/hermes-incorporation`)
+
+Phase B Increment B3 — the self-improvement loop now maintains itself when idle: after ~5 min of no
+agent activity (and work since the last pass), GiNexus autonomously refreshes its durable profile block
+from long-term memory. Finishes Phase B.
+
+- **Idle trigger** (`ginexus-server`): `should_consolidate` (pure, unit-tested) + `last_activity` /
+  `last_consolidated` atomics bumped on both agent routes; the heartbeat fires the pass at most once per
+  idle period. Single-flight (shares B1/B2's `curation_gate`), killswitch-gated (re-checked immediately
+  before the autonomous write), audited (`consolidate_idle`).
+- **Reversible** (`ginexus-memory` `archive_block`): the prior profile is snapshotted to an append-only
+  `blocks-archive.jsonl` before overwrite (undo trail).
+- **Refactor:** extracted `consolidate_profile` (shared by `/v1/consolidate` and the idle trigger) —
+  route behavior preserved (Ok(Some)→profile, Ok(None)→no-memory, Err→502).
+- **SEC/PSS gate: APPROVE-WITH-CHANGES → required change applied.** The gate caught the one novel risk:
+  autonomous distillation of *untrusted* archival facts (imported ChatGPT history / web / tool output)
+  into the always-injected trusted profile = laundering untrusted content into unreviewed standing
+  context. **Fix: the autonomous path is `trusted_only`** — it distills ONLY `Origin::Trusted` facts;
+  the human-reviewed `/v1/consolidate` keeps all-origin (operator sees the result). Also applied the
+  should-fix (killswitch re-check before the write). Catastrophic path was already contained by
+  HITL-in-code (irreversible actions gate on tool flags, not profile text). **Code review: APPROVE.**
+- **172 Rust tests (2 new), 0 failures.** No Swift changes. TDD (pure decision + snapshot).
+- Deferred (nice-to-have, per gate): mark the B3 block as machine-distilled in `system_preamble`;
+  `blocks-archive.jsonl` rotation/cap; playbook-umbrella merge.
+
+**PHASE B COMPLETE** (B1 memory curation · B2a playbooks · B2b authoring · B3 inactivity curator). The
+closed self-improvement loop is fully operational: GiNexus curates memory + procedural skills after
+substantive turns, and refreshes its self-model when idle — locally, free, and PSS-gated end to end.
+Next: **Phase C** (ProviderTransport → RPC programmatic-tool-calling → real cron → gateway/DM-pairing).
+
+---
+
 ## 2026-07-01 — Hermes incorporation #7: learning loop B2b — autonomous playbook authoring (branch `feat/hermes-incorporation`)
 
 Phase B Increment B2b — the closed loop now improves its PROCEDURAL skills too: after a turn that

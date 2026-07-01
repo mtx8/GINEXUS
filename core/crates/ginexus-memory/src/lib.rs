@@ -128,6 +128,23 @@ impl MemoryStore {
         self.core.lock().unwrap().clone()
     }
 
+    /// Append the CURRENT value of core block `name` (if any) to an append-only archive before it is
+    /// overwritten — a lightweight undo trail for autonomous consolidation (learning loop B3). Best-effort.
+    pub fn archive_block(&self, name: &str) {
+        let Some(value) = self.get_block(name) else { return };
+        let rec = serde_json::json!({"ts": now_ms(), "name": name, "value": value});
+        if let Ok(line) = serde_json::to_string(&rec) {
+            let _g = self.archival.lock().unwrap(); // serialize with fact appends
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.dir.join("blocks-archive.jsonl"))
+            {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    }
+
     pub fn append_fact(&self, text: &str, origin: Origin) {
         let emb = self.embedder().and_then(|e| e(text));
         let f = Fact { ts: now_ms(), text: text.to_string(), origin, emb };
@@ -705,6 +722,21 @@ mod tests {
         assert_eq!(facts.len(), 2);
         assert!(facts.iter().all(|f| f.origin == Origin::Untrusted),
                 "curation writes are forced untrusted in code");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn archive_block_records_only_the_prior_value() {
+        let dir = tmp();
+        let m = MemoryStore::open(dir.clone());
+        m.set_block("profile", "version one");
+        m.archive_block("profile"); // snapshot BEFORE overwrite
+        m.set_block("profile", "version two");
+        let archive = std::fs::read_to_string(dir.join("blocks-archive.jsonl")).unwrap();
+        assert!(archive.contains("version one"), "the pre-overwrite value is archived");
+        assert!(!archive.contains("version two"), "only the snapshotted (old) value is recorded");
+        // Archiving a non-existent block is a no-op (no panic, nothing written).
+        m.archive_block("nonexistent");
         std::fs::remove_dir_all(&dir).ok();
     }
 
