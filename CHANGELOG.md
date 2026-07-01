@@ -23,6 +23,32 @@ running history.
 
 ---
 
+## 2026-07-01 — Hermes incorporation #7: learning loop B2b — autonomous playbook authoring (branch `feat/hermes-incorporation`)
+
+Phase B Increment B2b — the closed loop now improves its PROCEDURAL skills too: after a turn that
+demonstrated a reusable how-to, GiNexus may autonomously author an agent playbook. The most sensitive
+surface (an agent writing files); shipped write/overwrite-only (no fuzzy patch → no ambiguous-match risk).
+
+- **`playbook_write`** (`ginexus-skills/src/playbooks.rs`): creates/updates `auto/<name>/SKILL.md` with the
+  gate's hard controls — **R5** we compose the frontmatter (description newline-stripped + quote-neutralized;
+  origin is dir-derived, never frontmatter → an agent playbook can never become trusted/enter the index);
+  **R6** whitelist name `[A-Za-z0-9_-]` (traversal impossible) + `auto/` AND per-playbook-dir symlink refusal;
+  **R7** archive-not-delete, fail-closed + rotation-bounded (`auto/.archive`, keep 5); **R9** global cap of 64.
+- **`curate_playbooks`** (`ginexus-agent/src/curator.rs`): single-shot, transcript-as-DATA, runs ONLY
+  `playbook_write` (allowlist + name filter, double-contained), capped at 2/pass, never panics.
+- **`maybe_curate`** (`ginexus-server`): shared helper wired into both agent routes — **R10** killswitch
+  no-op + single `curation_gate` permit shared by memory (B1) + playbook (B2b) curation; std killswitch
+  guard provably not held across `.await`. Audits `{saved, playbooks}`.
+- **SEC/PSS gate: PASS, no HALT (LOW risk)** — R5–R11 all verified in code + test-covered; a malicious
+  transcript cannot forge trusted origin, reach the system prompt, escape `auto/`, or execute anything.
+  **Code review: APPROVE.** Applied the one defense-in-depth note (per-playbook-dir symlink refusal).
+- **170 Rust tests (8 new), 0 failures.** No Swift changes. TDD throughout.
+- Notes: fuzzy `playbook_patch` (design R8) intentionally omitted (overwrite-only is safer); freshly
+  written agent playbooks activate on next boot (immutable loaded library — safer). **Phase B COMPLETE
+  except B3** (inactivity curator). Next: B3, then Phase C.
+
+---
+
 ## 2026-07-01 — Hermes incorporation #6: learning loop B2a — procedural "playbooks" (branch `feat/hermes-incorporation`)
 
 Phase B Increment B2a — a NEW skill class: **prose procedural "playbooks"** (how-tos the model reads),

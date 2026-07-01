@@ -49,6 +49,9 @@ struct AppState {
     curation_gate: Arc<tokio::sync::Semaphore>,
     /// Loaded prose procedural playbooks (learning loop B2a). Only user-origin ones enter the prompt.
     playbooks: Arc<ginexus_skills::playbooks::PlaybookLibrary>,
+    /// Root dir for playbooks — the background playbook curator (B2b) writes agent playbooks under its
+    /// `auto/` subdir. (The loaded `playbooks` library above is immutable until the next boot.)
+    playbooks_dir: PathBuf,
 }
 
 /// Prepend the core-memory system preamble (if any) so the model always has persistent context.
@@ -144,6 +147,41 @@ fn build_curation_registry(memory: &Arc<MemoryStore>) -> ToolRegistry {
         reg.register(t);
     }
     reg
+}
+
+/// Fire-and-forget the learning-loop curation pass over the just-finished conversation (memory + agent
+/// playbooks). Single-flight (skips if one is already running); no-op if the kill switch is engaged;
+/// runs on the fast local tier; failures are swallowed + audited — it can NEVER affect the response the
+/// user already received. Callers pass the RAW conversation (no system/memory preamble) + the final answer.
+fn maybe_curate(state: &Arc<AppState>, transcript_raw: Vec<Value>, answer: String) {
+    let Ok(permit) = state.curation_gate.clone().try_acquire_owned() else {
+        return; // a curation pass is already in flight — skip this one
+    };
+    let st = state.clone();
+    let mut transcript = transcript_raw;
+    transcript.push(json!({"role": "assistant", "content": answer}));
+    tokio::spawn(async move {
+        let _permit = permit; // held for the task lifetime → single-flight
+        // R10: respect the kill switch — a background writer must not run when the operator has halted.
+        if st.killswitch.lock().unwrap().guard().is_err() {
+            return;
+        }
+        let model = st.gateway.select(None, "chat", "normal", true); // latency-sensitive → fast tier
+        let bound = BoundModel { gateway: &st.gateway, model };
+
+        // B1: memory curation (forced-untrusted, remember-only allowlist).
+        let mem_reg = build_curation_registry(&st.memory);
+        let facts = ginexus_agent::curator::curate_memory(&bound, &mem_reg, &transcript).await;
+
+        // B2b: procedural-playbook curation (playbook_write-only allowlist, confined to auto/).
+        let mut pb_reg = ToolRegistry::new();
+        for t in ginexus_skills::playbooks::playbook_curation_tools(st.playbooks_dir.clone()) {
+            pb_reg.register(t);
+        }
+        let plays = ginexus_agent::curator::curate_playbooks(&bound, &pb_reg, &transcript).await;
+
+        let _ = st.audit.record("curate", json!({"saved": facts, "playbooks": plays}));
+    });
 }
 
 /// Context-compaction summary as JSON — or `None` when nothing was trimmed (so the UI shows a
@@ -589,6 +627,7 @@ async fn run_server() {
     // never in the standing prompt — pull-only via `playbook_view`, tagged data-not-instruction.
     let playbooks_dir = sd.join("playbooks");
     let _ = std::fs::create_dir_all(playbooks_dir.join("user"));
+    let playbooks_root = playbooks_dir.clone();
     let playbooks = Arc::new(ginexus_skills::playbooks::load_playbooks(&playbooks_dir));
     registry.register(ginexus_skills::playbooks::playbook_view_tool(playbooks.clone()));
     if !playbooks.is_empty() {
@@ -655,6 +694,7 @@ async fn run_server() {
         schedules: scheduler::ScheduleStore::open(sd.join("run/schedules.json")),
         curation_gate: Arc::new(tokio::sync::Semaphore::new(1)),
         playbooks,
+        playbooks_dir: playbooks_root,
     });
 
     // Heartbeat: run due scheduled tasks unattended (read-only tools, kill-switch-respecting).
@@ -1076,24 +1116,10 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             }
             json_ok(&mut stream, agent_resp).await;
 
-            // Learning loop B1: AFTER the user's answer is sent, optionally curate memory in the
-            // background. Single-flight (skip if one is already running), fast local tier, the curator
-            // gets ONLY `memory_curation_tools` (forced-untrusted allowlist), and any failure is
-            // swallowed + audited — it can never affect the response the user already received.
+            // Learning loop: AFTER the user's answer is sent, optionally curate memory + playbooks in
+            // the background (see `maybe_curate` — single-flight, killswitch-gated, fast tier, swallowed).
             if let Some(answer) = curation_input {
-                if let Ok(permit) = state.curation_gate.clone().try_acquire_owned() {
-                    let st = state.clone();
-                    let mut transcript = curation_raw;
-                    transcript.push(json!({"role": "assistant", "content": answer}));
-                    tokio::spawn(async move {
-                        let _permit = permit; // held until the task ends → enforces single-flight
-                        let reg = build_curation_registry(&st.memory); // allowlist: forced-untrusted `remember` only
-                        let model = st.gateway.select(None, "chat", "normal", true); // latency-sensitive → fast tier
-                        let bound = BoundModel { gateway: &st.gateway, model };
-                        let saved = ginexus_agent::curator::curate_memory(&bound, &reg, &transcript).await;
-                        let _ = st.audit.record("curate", json!({"saved": saved}));
-                    });
-                }
+                maybe_curate(&state, curation_raw, answer);
             }
         }
         ("POST", "/v1/agent/stream") => {
@@ -1166,22 +1192,10 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                     done["compaction"] = c;
                 }
                 let _ = tx.send(format!("event: done\ndata: {}\n\n", done));
-                // Learning loop B1: background memory curation after the done frame is queued. Same
-                // single-flight / fast-tier / allowlist / swallow+audit contract as the /v1/agent path.
+                // Learning loop: background memory + playbook curation after the done frame is queued
+                // (see `maybe_curate` — same single-flight / killswitch / fast-tier / swallow+audit contract).
                 if let Some(answer) = curation_answer {
-                    if let Ok(permit) = state.curation_gate.clone().try_acquire_owned() {
-                        let st = state.clone();
-                        let mut transcript = curation_raw;
-                        transcript.push(json!({"role": "assistant", "content": answer}));
-                        tokio::spawn(async move {
-                            let _permit = permit; // single-flight until the pass completes
-                            let reg = build_curation_registry(&st.memory); // allowlist: forced-untrusted `remember` only
-                            let model = st.gateway.select(None, "chat", "normal", true); // fast tier
-                            let bound = BoundModel { gateway: &st.gateway, model };
-                            let saved = ginexus_agent::curator::curate_memory(&bound, &reg, &transcript).await;
-                            let _ = st.audit.record("curate", json!({"saved": saved}));
-                        });
-                    }
+                    maybe_curate(&state, curation_raw, answer);
                 }
                 // tx + the closures' senders drop when this future completes → rx closes → drain ends.
             };
