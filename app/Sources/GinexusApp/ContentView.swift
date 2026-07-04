@@ -46,6 +46,15 @@ struct ContentView: View {
             Wordmark(size: 26)
             Text(model.spineStatus.isEmpty ? "Waking the local core…" : model.spineStatus)
                 .font(Brand.body(12)).foregroundStyle(Brand.bone300)
+            // Recovery: the core may never come up (bad endpoint, crash). Settings + retry stay
+            // reachable from the boot screen — parity with the old always-reachable rail icon.
+            HStack(spacing: 10) {
+                Button { model.restartCore() } label: { BrandChip(icon: "arrow.clockwise", label: "Retry") }
+                    .buttonStyle(.plain).help("Respawn the local core")
+                Button { model.openSettings() } label: { BrandChip(icon: "gearshape", label: "Settings") }
+                    .buttonStyle(.plain).help("Fix endpoints, vault, or connections")
+            }
+            .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -135,7 +144,7 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain).disabled(!model.connected || model.sending)
-        .onHover { hoveredNav = $0 ? "new" : nil }
+        .onHover { if $0 { hoveredNav = "new" } else if hoveredNav == "new" { hoveredNav = nil } }
         .help("New conversation")
     }
 
@@ -146,7 +155,7 @@ struct ContentView: View {
         }
         .buttonStyle(.plain).disabled(!enabled)
         .opacity(enabled ? 1 : 0.5)
-        .onHover { hoveredNav = $0 ? id : nil }
+        .onHover { if $0 { hoveredNav = id } else if hoveredNav == id { hoveredNav = nil } }
         .overlay(alignment: .trailing) {
             if animating {
                 Image(systemName: "arrow.down.circle").font(.system(size: 10, weight: .semibold))
@@ -222,7 +231,6 @@ struct ContentView: View {
     }
 
     private var statusColor: Color { model.sending ? Brand.warning : (model.connected ? Brand.success : Brand.bone400) }
-    private var statusLabel: String { model.sending ? "THINKING" : (model.connected ? "ONLINE" : "OFFLINE") }
 
     // MARK: ── detail: header + stream (or Home) + composer ────────────────────
     private var detail: some View {
@@ -302,10 +310,27 @@ struct ContentView: View {
                 Divider().overlay(Brand.line1)
                 StampText(text: "Context Budget", size: 10)
                 ContextBudgetGauge(usage: model.lastUsage, compaction: model.lastCompaction)
+                Divider().overlay(Brand.line1)
+                StampText(text: "Capabilities", size: 10)
+                capabilityRow("eye.fill", "Vision", on: model.visionAvailable, note: model.visionStatus)
+                capabilityRow("books.vertical.fill", "Obsidian vault", on: model.obsidianAvailable)
+                capabilityRow("photo.fill.on.rectangle.fill", "Image generation",
+                              on: model.settings.settings.mediaSidecarEnabled)
             }
             .padding(16).frame(width: 260)
             .background(Brand.ink700)
         }
+    }
+
+    private func capabilityRow(_ icon: String, _ label: String, on: Bool, note: String = "") -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).font(.system(size: 11, weight: .medium))
+                .foregroundStyle(on ? Brand.ember500 : Brand.bone400).frame(width: 16)
+            Text(label).font(Brand.body(12)).foregroundStyle(on ? Brand.bone100 : Brand.bone300)
+            Spacer(minLength: 6)
+            StatusDot(color: on ? Brand.success : Brand.bone400, size: 5)
+        }
+        .help(note)
     }
 
     /// Model picker — a composer chip (Counterpart BigInput grammar: controls live IN the composer).
@@ -1762,8 +1787,7 @@ private struct VoiceWaveformIcon: View {
             HStack(spacing: 2.5) {
                 ForEach(0..<bars, id: \.self) { i in
                     Capsule()
-                        .fill(LinearGradient(colors: [Brand.ember300, Brand.ember600],
-                                             startPoint: .top, endPoint: .bottom))
+                        .fill(Brand.ember500)
                         .frame(width: 3, height: height(i, t, level))
                 }
             }

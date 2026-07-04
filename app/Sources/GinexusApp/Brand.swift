@@ -61,10 +61,6 @@ enum Brand {
     static let cardFill = ink700
     /// Floating-panel fill — flat recessed surface.
     static let panelFill = ink850
-    /// Top sheen — retired. Fully transparent so any straggler usage renders nothing.
-    static let topSheen = Color.clear
-    /// Canvas glow — retired. The canvas is pure matte ink900.
-    static let canvasGlow = Color.clear
 
     // MARK: motion — ONE brand curve for everything
     static let ease = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.45)
