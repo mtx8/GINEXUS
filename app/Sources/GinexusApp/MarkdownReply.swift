@@ -32,7 +32,8 @@ struct MarkdownReply: View {
         switch block {
         case .paragraph(let s):
             Text(ReplyParser.inline(s))
-                .font(.system(size: 14))
+                .font(.system(size: 14.5))
+                .lineSpacing(5)
                 .foregroundStyle(Brand.bone50)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -48,8 +49,8 @@ struct MarkdownReply: View {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, it in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("•").foregroundStyle(Brand.ember500).font(.system(size: 14, weight: .bold))
-                        Text(ReplyParser.inline(it)).font(.system(size: 14)).foregroundStyle(Brand.bone50)
+                        Text("•").foregroundStyle(Brand.ember500).font(.system(size: 14.5, weight: .bold))
+                        Text(ReplyParser.inline(it)).font(.system(size: 14.5)).lineSpacing(4).foregroundStyle(Brand.bone50)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -61,7 +62,7 @@ struct MarkdownReply: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("\(i + 1).").foregroundStyle(Brand.ember500)
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        Text(ReplyParser.inline(it)).font(.system(size: 14)).foregroundStyle(Brand.bone50)
+                        Text(ReplyParser.inline(it)).font(.system(size: 14.5)).lineSpacing(4).foregroundStyle(Brand.bone50)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -81,12 +82,12 @@ struct MarkdownReply: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
         case .rule:
-            Rectangle().fill(Color.white.opacity(0.10)).frame(height: 1).padding(.vertical, 2)
+            Rectangle().fill(Brand.line1).frame(height: 1).padding(.vertical, 2)
 
         case .quote(let s):
             HStack(spacing: 10) {
                 Rectangle().fill(Brand.ember500.opacity(0.7)).frame(width: 3)
-                Text(ReplyParser.inline(s)).font(.system(size: 14)).italic()
+                Text(ReplyParser.inline(s)).font(.system(size: 14.5)).italic().lineSpacing(4)
                     .foregroundStyle(Brand.bone50.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true)
             }

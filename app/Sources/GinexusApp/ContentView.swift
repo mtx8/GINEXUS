@@ -522,10 +522,10 @@ struct ContentView: View {
                         if item.done {
                             HStack(spacing: 6) {
                                 Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Brand.success)
-                                Text("Completed").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                                Text("Completed").font(Brand.body(11.5)).foregroundStyle(Brand.bone300)
                             }
                         } else {
-                            Text("Running…").font(Brand.mono(11)).foregroundStyle(Brand.ember300)
+                            Text("Running…").font(Brand.body(11.5)).foregroundStyle(Brand.ember300)
                         }
                     }
                 }
@@ -771,9 +771,9 @@ struct ContentView: View {
                     Image(systemName: att.kind == "image" ? "photo" : "doc.text")
                         .font(.system(size: 11)).foregroundStyle(Brand.ember500)
                 }
-                Text(att.name).font(Brand.mono(11)).foregroundStyle(Brand.bone50).lineLimit(1)
+                Text(att.name).font(Brand.body(12)).foregroundStyle(Brand.bone50).lineLimit(1)
                 if att.kind == "image", !model.visionAvailable, !model.visionStatus.isEmpty {
-                    Text(model.visionStatus).font(Brand.mono(9, weight: .bold)).kerning(0.5).foregroundStyle(Brand.bone300)
+                    Text(model.visionStatus).font(.system(size: 9.5, weight: .semibold)).foregroundStyle(Brand.bone300)
                 }
                 Button(action: { model.clearAttachment() }) {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundStyle(Brand.bone400)
@@ -789,23 +789,24 @@ struct ContentView: View {
     /// Model manager — download models (Ollama registry tags or Hugging Face GGUF), with live progress.
     private var modelsSheet: some View {
         ZStack {
-            Brand.ink900.ignoresSafeArea()
+            Brand.ink850.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("MODELS").font(Brand.display(15, weight: .bold)).kerning(2).foregroundStyle(Brand.bone50)
+                    StampText(text: "Models", size: 13, color: Brand.bone50)
                     if !model.ollamaVersion.isEmpty {
                         Text("Ollama \(model.ollamaVersion)").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
                     }
                     Spacer()
-                    Button("DONE") { model.modelsOpen = false }
-                        .buttonStyle(.plain).font(Brand.display(12, weight: .bold)).foregroundStyle(Brand.ember500)
+                    Button { model.modelsOpen = false } label: { TacticalLabel(text: "Done") }
+                        .buttonStyle(.plain)
                 }
                 if model.ollamaNeedsUpgradeForVision {
                     Text("Vision models (e.g. Qwen3-VL) need Ollama ≥ 0.12.7 — upgrade Ollama to enable image understanding. Text models still pull fine.")
-                        .font(Brand.mono(11)).foregroundStyle(Brand.ember300)
+                        .font(Brand.body(11.5)).foregroundStyle(Brand.ember300)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Brand.ember500.opacity(0.12)).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.ember700.opacity(0.7), lineWidth: 1))
                 }
                 Eyebrow(text: "Suggested (Apache-2.0)")
                 HStack(spacing: 8) {
@@ -868,11 +869,12 @@ struct ContentView: View {
                     TextField("search Hugging Face, or paste a tag / hf.co/<org>/<repo>:<QUANT>", text: $model.pullInput)
                         .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
                         .padding(10).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
                         .onChange(of: model.pullInput) { _, _ in model.scheduleHFSearch() }
                         .onSubmit { model.pullModel(model.pullInput) }
                     Button(action: { model.pullModel(model.pullInput) }) {
-                        Text("PULL").font(Brand.display(12, weight: .bold)).kerning(1)
-                            .padding(.horizontal, 14).padding(.vertical, 10)
+                        Text("Pull").font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 18).padding(.vertical, 9)
                             .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(Capsule())
                     }.buttonStyle(.plain).disabled(model.pulling)
                 }
@@ -894,29 +896,29 @@ struct ContentView: View {
     /// Memory browser — core blocks (incl. the consolidated profile) + searchable archival facts.
     private var memorySheet: some View {
         ZStack {
-            Brand.ink900.ignoresSafeArea()
+            Brand.ink850.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("MEMORY").font(Brand.display(15, weight: .bold)).kerning(2).foregroundStyle(Brand.bone50)
+                    StampText(text: "Memory", size: 13, color: Brand.bone50)
                     Text("\(model.memFactsCount) facts").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
                     Spacer()
                     if model.memLoading { ProgressView().controlSize(.small) }
-                    Button("BUILD PROFILE") { model.buildProfile() }
-                        .buttonStyle(.plain).font(Brand.display(12, weight: .bold)).foregroundStyle(Brand.ember500)
+                    Button { model.buildProfile() } label: { TacticalLabel(text: "Build Profile", tint: Brand.ember300) }
+                        .buttonStyle(.plain)
                         .disabled(!model.connected || model.sending)
                         .help("Summarize what GINEXUS knows about you from memory, and keep it in mind")
-                    Button("DONE") { model.memoryOpen = false }
-                        .buttonStyle(.plain).font(Brand.display(12, weight: .bold)).foregroundStyle(Brand.bone300)
+                    Button { model.memoryOpen = false } label: { TacticalLabel(text: "Done") }
+                        .buttonStyle(.plain)
                 }
                 ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         if model.memBlocks.isEmpty {
                             HStack {
-                                Text("Nothing learned about you yet — tap BUILD PROFILE, or")
-                                    .font(Brand.mono(12)).foregroundStyle(Brand.bone300)
-                                Button("WRITE ONE") { model.newProfileBlock() }
-                                    .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ember500)
+                                Text("Nothing learned about you yet — tap Build Profile, or")
+                                    .font(Brand.body(12.5)).foregroundStyle(Brand.bone300)
+                                Button("write one") { model.newProfileBlock() }
+                                    .buttonStyle(.plain).font(.system(size: 12, weight: .semibold)).foregroundStyle(Brand.ember500)
                             }.fixedSize(horizontal: false, vertical: true)
                         }
                         ForEach(model.memBlocks) { b in
@@ -925,8 +927,8 @@ struct ContentView: View {
                                     Eyebrow(text: b.name, color: Brand.ember500)
                                     Spacer()
                                     if model.editingBlock != b.name {
-                                        Button("EDIT") { model.beginEditBlock(b.name, value: b.value) }
-                                            .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
+                                        Button("Edit") { model.beginEditBlock(b.name, value: b.value) }
+                                            .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone300)
                                     }
                                 }
                                 if model.editingBlock == b.name {
@@ -937,11 +939,11 @@ struct ContentView: View {
                                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember600.opacity(0.5), lineWidth: 1))
                                     HStack {
                                         Spacer()
-                                        Button("CANCEL") { model.cancelEditBlock() }
-                                            .buttonStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone300)
-                                        Button("SAVE") { model.saveBlock() }
-                                            .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ink900)
-                                            .padding(.horizontal, 14).padding(.vertical, 7)
+                                        Button("Cancel") { model.cancelEditBlock() }
+                                            .buttonStyle(.plain).font(Brand.body(11.5)).foregroundStyle(Brand.bone300)
+                                        Button("Save") { model.saveBlock() }
+                                            .buttonStyle(.plain).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                                            .padding(.horizontal, 16).padding(.vertical, 7)
                                             .background(Brand.ember500).clipShape(Capsule())
                                     }
                                 } else {
@@ -952,7 +954,7 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                             .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
                         }
-                        Divider().overlay(Color.white.opacity(0.08))
+                        Divider().overlay(Brand.line1)
                         ForEach(Array(model.memResults.enumerated()), id: \.offset) { idx, f in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(f.origin == "untrusted" ? "DATA" : "·").font(Brand.mono(8, weight: .bold))
@@ -989,9 +991,10 @@ struct ContentView: View {
                         }
                     }
                     .padding(10).background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
                     Button(action: { model.searchMemory() }) {
-                        Text("SEARCH").font(Brand.display(12, weight: .bold)).kerning(1)
-                            .padding(.horizontal, 14).padding(.vertical, 10)
+                        Text("Search").font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 18).padding(.vertical, 9)
                             .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(Capsule())
                     }.buttonStyle(.plain)
                 }
@@ -1010,9 +1013,10 @@ struct ContentView: View {
     }
     private func pickChip(_ title: String, _ ref: String) -> some View {
         Button(action: { model.pullModel(ref) }) {
-            Text(title).font(Brand.display(11, weight: .bold)).kerning(0.5).foregroundStyle(Brand.ember500)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember500.opacity(0.4), lineWidth: 1))
+            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.ember300)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(Brand.ink600, in: Capsule())
+                .overlay(Capsule().stroke(Brand.ember700.opacity(0.6), lineWidth: 1))
         }
         .buttonStyle(.plain).disabled(model.pulling).help("Pull \(ref)")
     }
@@ -1036,13 +1040,10 @@ private struct ScheduledTasksSheet: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "clock.arrow.circlepath").font(.system(size: 12)).foregroundStyle(Brand.ember500)
-                Text("SCHEDULED TASKS").font(Brand.mono(12, weight: .bold)).kerning(2).foregroundStyle(Brand.bone100)
+                StampText(text: "Scheduled Tasks", size: 12, color: Brand.bone50)
                 Spacer()
                 Button(action: model.openNewScheduleSheet) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "plus").font(.system(size: 11, weight: .bold))
-                        Text("NEW").font(Brand.mono(10, weight: .bold)).kerning(1)
-                    }.foregroundStyle(Brand.ember500)
+                    TacticalLabel(text: "New", icon: "plus", tint: Brand.ember300)
                 }.buttonStyle(.plain).help("New scheduled task")
                 Button { model.schedulesOpen = false } label: {
                     Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.bone300)
@@ -1054,7 +1055,7 @@ private struct ScheduledTasksSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Tasks run on their own in the background. Each one follows your instructions and can read files you attach. Read-only by default — anything irreversible waits for your approval.")
-                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+                        .font(Brand.body(11.5)).foregroundStyle(Brand.bone300).fixedSize(horizontal: false, vertical: true)
 
                     if model.schedules.isEmpty {
                         emptyState
@@ -1072,13 +1073,13 @@ private struct ScheduledTasksSheet: View {
     private var emptyState: some View {
         VStack(spacing: 10) {
             Image(systemName: "clock.badge.questionmark").font(.system(size: 30)).foregroundStyle(Brand.bone400)
-            Text("No scheduled tasks yet").font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone200)
+            Text("No scheduled tasks yet").font(Brand.body(13, weight: .semibold)).foregroundStyle(Brand.bone200)
             Text("Create one to run routine work automatically — a morning digest, a weekly report, a recurring check.")
-                .font(Brand.mono(10)).foregroundStyle(Brand.bone400).multilineTextAlignment(.center)
+                .font(Brand.body(11.5)).foregroundStyle(Brand.bone300).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Button(action: model.openNewScheduleSheet) {
-                Text("NEW TASK").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
-                    .padding(.horizontal, 18).padding(.vertical, 10)
+                Text("New Task").font(.system(size: 12, weight: .semibold)).foregroundStyle(Brand.ink900)
+                    .padding(.horizontal, 20).padding(.vertical, 9)
                     .background(Brand.ember500).clipShape(Capsule())
             }.buttonStyle(.plain).padding(.top, 4)
         }
@@ -1088,7 +1089,7 @@ private struct ScheduledTasksSheet: View {
     private func taskCard(_ task: ScheduledTask) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(task.displayTitle).font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone100).lineLimit(1)
+                Text(task.displayTitle).font(Brand.body(13, weight: .semibold)).foregroundStyle(Brand.bone50).lineLimit(1)
                 Spacer(minLength: 8)
                 Toggle("", isOn: Binding(get: { task.enabled }, set: { model.toggleSchedule(task.id, enabled: $0) }))
                     .labelsHidden().toggleStyle(.switch).tint(Brand.ember500).help(task.enabled ? "Pause" : "Resume")
@@ -1105,7 +1106,7 @@ private struct ScheduledTasksSheet: View {
             }
 
             if task.prompt.trimmingCharacters(in: .whitespacesAndNewlines) != task.displayTitle {
-                Text(task.prompt).font(Brand.mono(10)).foregroundStyle(Brand.bone300).lineLimit(2)
+                Text(task.prompt).font(Brand.body(11.5)).foregroundStyle(Brand.bone300).lineLimit(2)
             }
 
             if !task.attachments.isEmpty {
@@ -1118,8 +1119,8 @@ private struct ScheduledTasksSheet: View {
 
             if !task.lastResult.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("LAST RESULT").font(Brand.mono(8, weight: .bold)).kerning(1).foregroundStyle(Brand.bone400)
-                    Text(task.lastResult).font(Brand.mono(10)).foregroundStyle(Brand.bone300).lineLimit(4)
+                    StampText(text: "Last result", size: 8.5, color: Brand.bone400)
+                    Text(task.lastResult).font(Brand.body(11)).foregroundStyle(Brand.bone300).lineLimit(4)
                 }
                 .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 6))
@@ -1134,7 +1135,7 @@ private struct ScheduledTasksSheet: View {
     private func metaChip(_ icon: String, _ text: String) -> some View {
         HStack(spacing: 4) {
             Image(systemName: icon).font(.system(size: 8))
-            Text(text).font(Brand.mono(9))
+            Text(text).font(.system(size: 9.5, weight: .medium))
         }
         .foregroundStyle(Brand.bone300)
         .padding(.horizontal, 7).padding(.vertical, 3)
@@ -1150,29 +1151,29 @@ private struct ScheduleEditorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("NEW SCHEDULED TASK").font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+            StampText(text: "New Scheduled Task", size: 12, color: Brand.bone50)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Name").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Text("Name").font(Brand.body(12)).foregroundStyle(Brand.bone300)
                 TextField("e.g. Morning news digest", text: $model.schedDraftName)
-                    .textFieldStyle(.plain).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
+                    .textFieldStyle(.plain).font(Brand.body(13.5)).foregroundStyle(Brand.bone50)
                     .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Instructions").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Text("Instructions").font(Brand.body(12)).foregroundStyle(Brand.bone300)
                 Text("What GINEXUS should do each time this runs. Be specific.")
-                    .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                    .font(Brand.body(11)).foregroundStyle(Brand.bone400)
                 TextEditor(text: $model.schedDraftPrompt)
-                    .font(Brand.mono(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                    .font(Brand.body(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
                     .frame(minHeight: 96)
                     .padding(8).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Runs").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Text("Runs").font(Brand.body(12)).foregroundStyle(Brand.bone300)
                 Picker("", selection: $model.schedDraftEverySecs) {
                     ForEach(ScheduleCadence.allCases) { c in Text(c.label).tag(c.rawValue) }
                 }
@@ -1181,14 +1182,14 @@ private struct ScheduleEditorSheet: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("Files").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                    Text("Files").font(Brand.body(12)).foregroundStyle(Brand.bone300)
                     Spacer()
                     Button("Add file…", action: model.addFilesToScheduleDraft)
-                        .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ember500)
+                        .buttonStyle(.plain).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ember500)
                 }
                 if model.schedDraftFiles.isEmpty {
                     Text("Optional — attach documents the task should read each run.")
-                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                        .font(Brand.body(11)).foregroundStyle(Brand.bone400)
                 } else {
                     VStack(spacing: 3) {
                         ForEach(model.schedDraftFiles, id: \.self) { f in
@@ -1208,11 +1209,11 @@ private struct ScheduleEditorSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { model.scheduleSheetOpen = false }
-                    .buttonStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone200)
+                    .buttonStyle(.plain).font(Brand.body(12.5)).foregroundStyle(Brand.bone200)
                     .padding(.horizontal, 18).padding(.vertical, 10)
                 Button(action: model.saveScheduleSheet) {
-                    Text("CREATE").font(Brand.mono(12, weight: .bold)).kerning(1.4).foregroundStyle(Brand.ink900)
-                        .padding(.horizontal, 22).padding(.vertical, 12)
+                    Text("Create").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                        .padding(.horizontal, 24).padding(.vertical, 10)
                         .background(Brand.ember500).clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
@@ -1234,10 +1235,10 @@ private struct ConnectionsSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "point.3.connected.trianglepath.dotted").font(.system(size: 13)).foregroundStyle(Brand.ember500)
-                Text("CONNECTIONS").font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+                StampText(text: "Connections", size: 12, color: Brand.bone50)
                 Spacer()
-                Button("DONE") { model.connectionsOpen = false }
-                    .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).kerning(1).foregroundStyle(Brand.ember500)
+                Button { model.connectionsOpen = false } label: { TacticalLabel(text: "Done") }
+                    .buttonStyle(.plain)
             }
             .padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 14)
             Divider().overlay(Brand.line1)
@@ -1251,12 +1252,13 @@ private struct ConnectionsSheet: View {
                         Spacer()
                         Button { withAnimation(Brand.ease) { showAddForm.toggle() } } label: {
                             HStack(spacing: 5) {
-                                Image(systemName: showAddForm ? "xmark" : "plus").font(.system(size: 10, weight: .bold))
-                                Text(showAddForm ? "CLOSE" : "ADD").font(Brand.mono(10, weight: .bold)).kerning(1)
+                                Image(systemName: showAddForm ? "xmark" : "plus").font(.system(size: 10, weight: .semibold))
+                                Text(showAddForm ? "Close" : "Add").font(.system(size: 11, weight: .semibold))
                             }
-                            .foregroundStyle(Brand.ember500)
-                            .padding(.horizontal, 11).padding(.vertical, 7)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember500.opacity(0.4), lineWidth: 1))
+                            .foregroundStyle(Brand.ember300)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Brand.ink600, in: Capsule())
+                            .overlay(Capsule().stroke(Brand.line1, lineWidth: 1))
                         }.buttonStyle(.plain).help("Add an MCP server")
                     }
 
@@ -1274,7 +1276,7 @@ private struct ConnectionsSheet: View {
             }
         }
         .frame(width: 760, height: 660)
-        .background(Brand.ink900)
+        .background(Brand.ink850)
     }
 
     /// The core itself — the always-on Rust MCP host — summarized with live connected/tool counts.
@@ -1308,16 +1310,16 @@ private struct ConnectionsSheet: View {
     private var addServerForm: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Connect external tools over MCP. Tool calls are approval-gated; writes need your biometric OK. Changes apply after restarting GINEXUS.")
-                .font(Brand.mono(10)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
+                .font(Brand.body(11.5)).foregroundStyle(Brand.bone300).fixedSize(horizontal: false, vertical: true)
             presetRow("Notion", hint: "Internal integration token (“ntn_” / “secret_”).",
                       placeholder: "Notion integration token", token: $model.notionTokenDraft, connect: model.connectNotion)
             presetRow("GitHub", hint: "Personal access token (repo / issues scopes).",
                       placeholder: "GitHub PAT (ghp_… / github_pat_…)", token: $model.githubTokenDraft, connect: model.connectGitHub)
             Divider().overlay(Brand.line1)
             VStack(alignment: .leading, spacing: 6) {
-                Text("ADD A SERVER").font(Brand.mono(10, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone300)
+                StampText(text: "Add a server", size: 10)
                 Text("Any MCP server with a stdio command — e.g. Shopify: npx -y @shopify/dev-mcp")
-                    .font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                    .font(Brand.body(11)).foregroundStyle(Brand.bone400)
                 field("Name (e.g. shopify)", $model.mcpCustomName)
                 field("Command (e.g. npx -y @shopify/dev-mcp)", $model.mcpCustomCommand)
                 HStack(spacing: 8) {
@@ -1327,8 +1329,8 @@ private struct ConnectionsSheet: View {
                 HStack {
                     Spacer()
                     Button(action: model.addCustomMcp) {
-                        Text("ADD SERVER").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
-                            .padding(.horizontal, 16).padding(.vertical, 10)
+                        Text("Add Server").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                            .padding(.horizontal, 18).padding(.vertical, 9)
                             .background(Brand.ember500).clipShape(Capsule())
                     }.buttonStyle(.plain)
                     .disabled(model.mcpCustomName.trimmingCharacters(in: .whitespaces).isEmpty
@@ -1344,16 +1346,16 @@ private struct ConnectionsSheet: View {
     private func presetRow(_ title: String, hint: String, placeholder: String,
                            token: Binding<String>, connect: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100)
-            Text(hint).font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+            Text(title).font(Brand.body(13, weight: .semibold)).foregroundStyle(Brand.bone50)
+            Text(hint).font(Brand.body(11)).foregroundStyle(Brand.bone400)
             HStack(spacing: 8) {
                 SecureField(placeholder, text: token)
                     .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
                     .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
                 Button(action: connect) {
-                    Text("CONNECT").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
-                        .padding(.horizontal, 16).padding(.vertical, 11)
+                    Text("Connect").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                        .padding(.horizontal, 18).padding(.vertical, 10)
                         .background(Brand.ember500).clipShape(Capsule())
                 }
                 .buttonStyle(.plain).disabled(token.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -1483,21 +1485,21 @@ private struct ProjectEditorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(model.editingProjectID == nil ? "NEW PROJECT" : "EDIT PROJECT")
-                .font(Brand.mono(13, weight: .bold)).kerning(2).foregroundStyle(Brand.bone200)
+            StampText(text: model.editingProjectID == nil ? "New Project" : "Edit Project",
+                      size: 12, color: Brand.bone50)
             VStack(alignment: .leading, spacing: 6) {
-                Text("Name").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Text("Name").font(Brand.body(12)).foregroundStyle(Brand.bone300)
                 TextField("e.g. Taxes 2026", text: $model.projectDraftName)
-                    .textFieldStyle(.plain).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
+                    .textFieldStyle(.plain).font(Brand.body(13.5)).foregroundStyle(Brand.bone50)
                     .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text("Custom instructions").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                Text("Custom instructions").font(Brand.body(12)).foregroundStyle(Brand.bone300)
                 Text("Steers every chat in this project. Files you add here ground its answers.")
-                    .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                    .font(Brand.body(11)).foregroundStyle(Brand.bone400)
                 TextEditor(text: $model.projectDraftInstructions)
-                    .font(Brand.mono(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
+                    .font(Brand.body(13)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
                     .frame(minHeight: 100)
                     .padding(8).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
@@ -1505,19 +1507,19 @@ private struct ProjectEditorSheet: View {
             // Files — works for a brand-new project (staged, copied on Create) and an existing one.
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("Files").font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                    Text("Files").font(Brand.body(12)).foregroundStyle(Brand.bone300)
                     Spacer()
                     Button("Add file…") {
                         if let id = model.editingProjectID { model.addFilesToProject(id) } else { model.addFilesToDraft() }
-                    }.buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ember500)
+                    }.buttonStyle(.plain).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ember500)
                     Button("Add folder…") {
                         if let id = model.editingProjectID { model.addFolderToProject(id) } else { model.addFolderToDraft() }
-                    }.buttonStyle(.plain).font(Brand.mono(11)).foregroundStyle(Brand.bone300)
+                    }.buttonStyle(.plain).font(Brand.body(11.5)).foregroundStyle(Brand.bone300)
                 }
                 let files: [URL] = model.editingProjectID.map { model.projectFiles($0) } ?? model.projectDraftFiles
                 if files.isEmpty {
                     Text("Optional — GINEXUS can read files you add in this project's chats.")
-                        .font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                        .font(Brand.body(11)).foregroundStyle(Brand.bone400)
                 } else {
                     VStack(spacing: 3) {
                         ForEach(files, id: \.self) { f in
@@ -1537,12 +1539,12 @@ private struct ProjectEditorSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { model.projectSheetOpen = false }
-                    .buttonStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone200)
+                    .buttonStyle(.plain).font(Brand.body(12.5)).foregroundStyle(Brand.bone200)
                     .padding(.horizontal, 18).padding(.vertical, 10)
                 Button(action: model.saveProjectSheet) {
-                    Text(model.editingProjectID == nil ? "CREATE" : "SAVE")
-                        .font(Brand.mono(12, weight: .bold)).kerning(1.4).foregroundStyle(Brand.ink900)
-                        .padding(.horizontal, 22).padding(.vertical, 12)
+                    Text(model.editingProjectID == nil ? "Create" : "Save")
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                        .padding(.horizontal, 24).padding(.vertical, 10)
                         .background(Brand.ember500).clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
@@ -1564,13 +1566,10 @@ private struct ProjectsSheet: View {
             // Top bar — title, NEW, and a clear close (no more overlap with the ACTIVE badge).
             HStack(spacing: 10) {
                 Image(systemName: "folder.fill").font(.system(size: 12)).foregroundStyle(Brand.ember500)
-                Text("PROJECTS").font(Brand.mono(12, weight: .bold)).kerning(2).foregroundStyle(Brand.bone100)
+                StampText(text: "Projects", size: 12, color: Brand.bone50)
                 Spacer()
                 Button(action: model.openNewProjectSheet) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "plus").font(.system(size: 11, weight: .bold))
-                        Text("NEW").font(Brand.mono(10, weight: .bold)).kerning(1)
-                    }.foregroundStyle(Brand.ember500)
+                    TacticalLabel(text: "New", icon: "plus", tint: Brand.ember300)
                 }.buttonStyle(.plain).help("New project")
                 Button { model.projectsOpen = false } label: {
                     Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.bone300)
@@ -1588,7 +1587,7 @@ private struct ProjectsSheet: View {
                                 HStack(spacing: 8) {
                                     Image(systemName: "folder.fill").font(.system(size: 11))
                                         .foregroundStyle(p.id == model.activeProjectID ? Brand.ember500 : Brand.bone300)
-                                    Text(p.name).font(Brand.mono(12)).foregroundStyle(Brand.bone50).lineLimit(1)
+                                    Text(p.name).font(Brand.body(13)).foregroundStyle(Brand.bone50).lineLimit(1)
                                     Spacer(minLength: 0)
                                     if p.id == model.activeProjectID {
                                         Circle().fill(Brand.ember500).frame(width: 5, height: 5)
@@ -1602,7 +1601,7 @@ private struct ProjectsSheet: View {
                         if model.projects.isEmpty {
                             VStack(spacing: 8) {
                                 Image(systemName: "folder.badge.plus").font(.system(size: 22)).foregroundStyle(Brand.bone400)
-                                Text("No projects yet").font(Brand.mono(11)).foregroundStyle(Brand.bone400)
+                                Text("No projects yet").font(Brand.body(11.5)).foregroundStyle(Brand.bone400)
                             }.frame(maxWidth: .infinity).padding(.top, 28)
                         }
                     }.padding(10)
@@ -1618,11 +1617,11 @@ private struct ProjectsSheet: View {
                     } else {
                         VStack(spacing: 14) {
                             Image(systemName: "folder").font(.system(size: 34)).foregroundStyle(Brand.bone400)
-                            Text("Select a project, or create one").font(Brand.mono(13)).foregroundStyle(Brand.bone300)
+                            Text("Select a project, or create one").font(Brand.body(13)).foregroundStyle(Brand.bone300)
                             Button { model.openNewProjectSheet() } label: {
-                                HStack(spacing: 6) { Image(systemName: "plus"); Text("NEW PROJECT").kerning(1) }
-                                    .font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ink900)
-                                    .padding(.horizontal, 18).padding(.vertical, 10).background(Brand.ember500)
+                                HStack(spacing: 6) { Image(systemName: "plus"); Text("New Project") }
+                                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Brand.ink900)
+                                    .padding(.horizontal, 20).padding(.vertical, 9).background(Brand.ember500)
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
                             }.buttonStyle(.plain)
                         }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1631,7 +1630,7 @@ private struct ProjectsSheet: View {
             }
         }
         .frame(width: 680, height: 510)
-        .background(Brand.ink900)
+        .background(Brand.ink850)
     }
 }
 
@@ -1657,7 +1656,7 @@ private struct ProjectDetail: View {
                     .textFieldStyle(.plain).font(Brand.display(17, weight: .bold)).foregroundStyle(Brand.bone50)
                     .onSubmit { model.updateProject(project.id, name: name) }
                 if model.activeProjectID == project.id {
-                    Text("• ACTIVE").font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.ember500)
+                    StampText(text: "Active", size: 8.5, color: Brand.ember500)
                 }
             }
 
@@ -1665,21 +1664,21 @@ private struct ProjectDetail: View {
             Button { model.openProjectAndChat(project.id) } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "bubble.left.and.text.bubble.right.fill").font(.system(size: 12))
-                    Text("OPEN — NEW CHAT IN THIS PROJECT").font(Brand.mono(11, weight: .bold)).kerning(1)
+                    Text("Open — new chat in this project").font(.system(size: 12.5, weight: .semibold))
                 }
-                .frame(maxWidth: .infinity).padding(.vertical, 11)
+                .frame(maxWidth: .infinity).padding(.vertical, 10)
                 .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(Capsule())
             }.buttonStyle(.plain)
 
             // Custom instructions
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("CUSTOM INSTRUCTIONS").font(Brand.mono(9, weight: .bold)).kerning(1.4).foregroundStyle(Brand.bone300)
+                    StampText(text: "Custom instructions", size: 9)
                     Spacer()
-                    Button("SAVE") { model.updateProject(project.id, name: name, instructions: instr) }
-                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500).help("Save instructions")
+                    Button("Save") { model.updateProject(project.id, name: name, instructions: instr) }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.ember500).help("Save instructions")
                 }
-                Text("Every thread in this project follows these.").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                Text("Every thread in this project follows these.").font(Brand.body(10.5)).foregroundStyle(Brand.bone400)
                 TextEditor(text: $instr)
                     .font(Brand.body(12)).foregroundStyle(Brand.bone50).scrollContentBackground(.hidden)
                     .frame(height: 80)
@@ -1690,30 +1689,30 @@ private struct ProjectDetail: View {
             // Files
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 12) {
-                    Text("FILES").font(Brand.mono(9, weight: .bold)).kerning(1.4).foregroundStyle(Brand.bone300)
+                    StampText(text: "Files", size: 9)
                     Spacer()
-                    Button("ADD FILE") { model.addFilesToProject(project.id) }
-                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.ember500)
-                    Button("ADD FOLDER") { model.addFolderToProject(project.id) }
-                        .buttonStyle(.plain).font(Brand.mono(10, weight: .bold)).foregroundStyle(Brand.bone300)
+                    Button("Add file") { model.addFilesToProject(project.id) }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.ember500)
+                    Button("Add folder") { model.addFolderToProject(project.id) }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone300)
                     Button { model.revealProjectFolderFor(project.id) } label: {
                         Image(systemName: "arrow.up.forward.app").font(.system(size: 12)).foregroundStyle(Brand.bone300)
                     }.buttonStyle(.plain).help("Reveal folder in Finder")
                 }
-                Text("GINEXUS can read these in this project's chats.").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                Text("GINEXUS can read these in this project's chats.").font(Brand.body(10.5)).foregroundStyle(Brand.bone400)
                 ScrollView {
                     VStack(spacing: 4) {
                         let files = model.projectFiles(project.id)
                         if files.isEmpty {
                             VStack(spacing: 7) {
                                 Image(systemName: "tray").font(.system(size: 20)).foregroundStyle(Brand.bone400)
-                                Text("No files yet — add files or a folder.").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                                Text("No files yet — add files or a folder.").font(Brand.body(11)).foregroundStyle(Brand.bone400)
                             }.frame(maxWidth: .infinity).padding(.vertical, 16)
                         }
                         ForEach(files, id: \.self) { f in
                             HStack(spacing: 8) {
                                 Image(systemName: Self.icon(for: f)).font(.system(size: 11)).foregroundStyle(Brand.ember500.opacity(0.85))
-                                Text(f.lastPathComponent).font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
+                                Text(f.lastPathComponent).font(Brand.body(12)).foregroundStyle(Brand.bone100).lineLimit(1)
                                 Spacer(minLength: 0)
                                 Button { model.removeProjectFile(project.id, f) } label: {
                                     Image(systemName: "trash").font(.system(size: 10))
@@ -1731,7 +1730,7 @@ private struct ProjectDetail: View {
                     model.selectedProjectID = model.projects.first?.id
                 } label: {
                     HStack(spacing: 4) { Image(systemName: "trash"); Text("Delete project") }
-                        .font(Brand.mono(10)).foregroundStyle(Brand.hi500)
+                        .font(Brand.body(11)).foregroundStyle(Brand.hi500)
                 }.buttonStyle(.plain).help("Delete this project")
             }
         }
@@ -1816,15 +1815,15 @@ private struct VoiceStatusBar: View {
         HStack(spacing: 10) {
             Circle().fill(dotColor).frame(width: 8, height: 8)
                 .overlay(Circle().stroke(dotColor.opacity(controller.state == .listening ? 0.35 : 0), lineWidth: 2).padding(-2))
-            Text(label).font(Brand.mono(11, weight: .bold)).kerning(1.6).foregroundStyle(Brand.bone200)
+            StampText(text: label, size: 10, color: Brand.bone200)
             level
             if !controller.lastTranscript.isEmpty {
                 Text("“\(controller.lastTranscript)”")
-                    .font(Brand.mono(11)).foregroundStyle(Brand.bone300).lineLimit(1).truncationMode(.tail)
+                    .font(Brand.body(12)).foregroundStyle(Brand.bone300).lineLimit(1).truncationMode(.tail)
             }
             Spacer(minLength: 0)
             if let err = controller.errorText {
-                Text(err).font(Brand.mono(10)).foregroundStyle(Brand.hi500).lineLimit(1)
+                Text(err).font(Brand.body(11)).foregroundStyle(Brand.hi500).lineLimit(1)
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -1959,12 +1958,12 @@ private struct StreamingText: View {
     @State private var on = true
     private let blink = Timer.publish(every: 0.53, on: .main, in: .common).autoconnect()
     var body: some View {
-        Text(attributed).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        Text(attributed).lineSpacing(5).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading).onReceive(blink) { _ in on.toggle() }
     }
     private var attributed: AttributedString {
-        var s = AttributedString(text); s.font = .system(size: 14); s.foregroundColor = Brand.bone50
-        var cursor = AttributedString("▌"); cursor.font = .system(size: 14); cursor.foregroundColor = on ? Brand.ember500 : .clear
+        var s = AttributedString(text); s.font = .system(size: 14.5); s.foregroundColor = Brand.bone50
+        var cursor = AttributedString("▌"); cursor.font = .system(size: 14.5); cursor.foregroundColor = on ? Brand.ember500 : .clear
         return s + cursor
     }
 }
@@ -2014,7 +2013,7 @@ private struct ConversationRow: View {
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.ember500.opacity(0.6), lineWidth: 1))
                     .onSubmit(onCommitRename)
                     .onExitCommand { renamingID = nil }
-                Text("Enter to save · Esc to cancel").font(Brand.mono(9)).foregroundStyle(Brand.bone400)
+                Text("Enter to save · Esc to cancel").font(Brand.body(10)).foregroundStyle(Brand.bone400)
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2150,9 +2149,9 @@ private struct CommandPalette: View {
                 .frame(maxHeight: 360)
             }
             .frame(width: 540)
-            .background(Brand.panelFill)
+            .background(Brand.ink700)
             .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.14), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Brand.line2, lineWidth: 1))
             .padding(.top, 116)
         }
         .onExitCommand { model.paletteOpen = false }
@@ -2170,7 +2169,7 @@ private struct CommandRow: View {
                 Image(systemName: c.icon).font(.system(size: 13, weight: .medium)).foregroundStyle(Brand.ember500).frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(c.title).font(Brand.body(13.5, weight: .medium)).foregroundStyle(Brand.bone50).lineLimit(1)
-                    Text(c.subtitle).font(Brand.mono(10)).foregroundStyle(Brand.bone400).lineLimit(1)
+                    Text(c.subtitle).font(Brand.body(11)).foregroundStyle(Brand.bone400).lineLimit(1)
                 }
                 Spacer(minLength: 6)
             }
@@ -2201,7 +2200,7 @@ private struct StarterCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(Brand.body(14, weight: .medium)).foregroundStyle(Brand.bone50)
                         .lineLimit(1).truncationMode(.tail)
-                    Text(route).font(Brand.mono(10.5)).foregroundStyle(Brand.bone400)
+                    Text(route).font(Brand.body(11)).foregroundStyle(Brand.bone400)
                 }
                 Spacer(minLength: 8)
                 Image(systemName: "arrow.up.forward").font(.system(size: 12, weight: .semibold))

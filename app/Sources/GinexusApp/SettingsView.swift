@@ -42,7 +42,7 @@ struct SettingsView: View {
 
     var body: some View {
         ZStack {
-            Brand.ink900.ignoresSafeArea()
+            Brand.ink850.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 14) {
                 header
                 ScrollView {
@@ -125,11 +125,11 @@ struct SettingsView: View {
                         .foregroundStyle(store.settings.obsidianVaultPath == nil ? Brand.muted : Brand.bone50)
                         .lineLimit(1).truncationMode(.middle).frame(maxWidth: 200, alignment: .leading)
                     Button("Choose…") { chooseVault() }
-                        .buttonStyle(.plain).font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Brand.ember500)
                     if store.settings.obsidianVaultPath != nil {
                         Button("Clear") { store.settings.obsidianVaultPath = nil }
-                            .buttonStyle(.plain).font(.system(size: 10, design: .monospaced))
+                            .buttonStyle(.plain).font(.system(size: 11))
                             .foregroundStyle(Brand.muted)
                     }
                 }
@@ -367,7 +367,7 @@ struct SettingsView: View {
             .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
     }
 
-    private var divider: some View { Divider().overlay(Color.white.opacity(0.06)) }
+    private var divider: some View { Divider().overlay(Brand.line1) }
 
     // MARK: vault picker (rejects iCloud per hard rule #1)
 
