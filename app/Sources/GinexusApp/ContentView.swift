@@ -11,29 +11,22 @@ struct ContentView: View {
     @State private var renamingID: UUID?                      // conversation being inline-renamed
     @State private var renameText = ""
     @State private var pendingDeleteConversation: ConversationMeta?
-    @State private var sidebarShown = true                    // collapse the conversations panel
-    @State private var contextShown = true                    // collapse the Context & Tools panel
+    @State private var hasBooted = false                      // boot gate — flips once the core is up
+    @State private var hoveredNav: String?                    // sidebar hover tracking
+    @State private var gaugesOpen = false                     // token/context popover
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
-        HStack(spacing: 0) {
-            iconRail   // far-left bar + icons — full height, untouched
-            // Everything else: a full-width GINEXUS header bar on top, panels + stream BELOW it.
-            VStack(spacing: 0) {
-                streamHeader
-                    .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 14)
-                Divider().overlay(Brand.line1)
-                HStack(spacing: 0) {
-                    leftColumn
-                    streamColumn
-                    rightColumn
-                }
-            }
+        Group {
+            if hasBooted { shell } else { bootScreen }
         }
-        .animation(Brand.ease(0.28), value: sidebarShown)
-        .animation(Brand.ease(0.28), value: contextShown)
-        .background(ZStack { Brand.ink900; Brand.canvasGlow }.ignoresSafeArea())
-        .frame(minWidth: 1180, minHeight: 680)
+        .background(Brand.ink900.ignoresSafeArea())
+        .frame(minWidth: 1100, minHeight: 640)
         .preferredColorScheme(.dark)
+        .onAppear { if model.connected { hasBooted = true } }
+        .onChange(of: model.connected) { _, on in
+            if on { withAnimation(Brand.ease) { hasBooted = true } }
+        }
         .overlay { if model.paletteOpen { CommandPalette(model: model) } }
         .animation(Brand.ease(0.18), value: model.paletteOpen)
         .sheet(isPresented: $model.memoryOpen) { memorySheet }
@@ -46,136 +39,78 @@ struct ContentView: View {
         .sheet(isPresented: $model.scheduleSheetOpen) { ScheduleEditorSheet(model: model) }
     }
 
-    // MARK: ── far-left icon rail ───────────────────────────────────────────────
-    private var iconRail: some View {
-        VStack(spacing: 6) {
-            GlyphMark(size: 38, spinning: model.sending).padding(.top, 16).padding(.bottom, 12)
-            railIcon("square.and.pencil", "New conversation", enabled: model.connected && !model.sending) { model.newChat() }
-            railIcon("folder", "Projects — folders, files, custom instructions", enabled: model.connected) {
-                model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id
-                model.projectsOpen = true
-            }
-            railIcon("clock.arrow.circlepath", "Scheduled tasks — routine automation", enabled: model.connected) { model.openSchedules() }
-            railIcon("brain", "Memory — what GINEXUS knows", enabled: model.connected) { model.openMemory() }
-            railIcon("cube.box", "Models — download / manage", enabled: model.connected, animating: model.pulling) { model.openModels() }
-            railIcon("gearshape", "Settings") { model.openSettings() }   // always reachable (recovery)
-            Spacer()
-            StatusDot(color: model.connected ? Brand.success : Brand.bone400, glow: model.connected, size: 8)
-                .padding(.bottom, 16)
-                .help(model.connected ? "Connected to the local core" : "Core offline")
+    // MARK: ── boot screen — shown until the local core reports healthy ────────
+    private var bootScreen: some View {
+        VStack(spacing: 18) {
+            GlyphMark(size: 44, spinning: true)
+            Wordmark(size: 26)
+            Text(model.spineStatus.isEmpty ? "Waking the local core…" : model.spineStatus)
+                .font(Brand.body(12)).foregroundStyle(Brand.bone300)
         }
-        .frame(width: 56)
-        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: ── shell: sidebar | detail ─────────────────────────────────────────
+    private var shell: some View {
+        HStack(spacing: 0) {
+            sidebar
+            Divider().overlay(Brand.line1)
+            detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    // MARK: ── sidebar (224pt) — wordmark, New Chat, nav, recent, footer ───────
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                GlyphMark(size: 15, spinning: model.sending)
+                Wordmark(size: 12)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 38).padding(.horizontal, 16).padding(.bottom, 16)
+
+            newChatButton.padding(.horizontal, 12).padding(.bottom, 14)
+
+            VStack(spacing: 2) {
+                navItem("folder", "Projects", id: "projects", enabled: model.connected) {
+                    model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id
+                    model.projectsOpen = true
+                }
+                navItem("brain", "Memory", id: "memory", enabled: model.connected) { model.openMemory() }
+                navItem("cube.box", "Models", id: "models", enabled: model.connected, animating: model.pulling) { model.openModels() }
+                navItem("point.3.connected.trianglepath.dotted", "Connections", id: "connections", enabled: model.connected) {
+                    model.connectionsOpen = true
+                }
+                navItem("clock.arrow.circlepath", "Schedules", id: "schedules", enabled: model.connected) { model.openSchedules() }
+            }
+            .padding(.horizontal, 12)
+
+            HStack(spacing: 8) {
+                StampText(text: "Recent", size: 10)
+                Spacer(minLength: 4)
+                scopeMenu
+            }
+            .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 4)
+
+            conversationsList
+
+            Divider().overlay(Brand.line1)
+            VStack(alignment: .leading, spacing: 2) {
+                navItem("gearshape", "Settings", id: "settings", enabled: true) { model.openSettings() }
+                HStack(spacing: 7) {
+                    StatusDot(color: statusColor, glow: model.connected, size: 5)
+                    Text(model.sending ? "Thinking" : (model.connected ? "Local" : "Offline"))
+                        .font(Brand.body(11)).foregroundStyle(Brand.bone400)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 9).padding(.vertical, 7)
+                .help(model.connected ? "Running fully on this Mac — nothing leaves it" : "Core offline")
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+        }
+        .frame(width: 224)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(Brand.ink850)
-        .overlay(alignment: .trailing) { Rectangle().fill(Brand.line1).frame(width: 1) }
-    }
-
-    private func railIcon(_ system: String, _ help: String, enabled: Bool = true,
-                          animating: Bool = false, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: system).font(.system(size: 16))
-                .foregroundStyle(animating ? Brand.ember500 : (enabled ? Brand.bone300 : Brand.bone400))
-                .symbolEffect(.pulse, isActive: animating)   // pulses while a model is downloading
-                .frame(width: 40, height: 40)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain).help(help).disabled(!enabled)
-    }
-
-    // MARK: ── left: conversations (floating panel) ─────────────────────────────
-    @ViewBuilder private var leftColumn: some View {
-        if sidebarShown {
-            conversationPanel
-                .frame(width: 256)
-                .padding(.leading, 14).padding(.vertical, 16)
-                .transition(.move(edge: .leading).combined(with: .opacity))
-        } else {
-            CollapsedTab(label: "Chats", expandIcon: "chevron.right") { sidebarShown = true }
-                .frame(maxHeight: .infinity, alignment: .top)   // top of the panel area (already below the header bar)
-                .padding(.leading, 12).padding(.vertical, 16)
-                .transition(.move(edge: .leading).combined(with: .opacity))
-        }
-    }
-
-    private var conversationPanel: some View {
-        FloatingPanel(
-            title: "Conversations",
-            collapseIcon: "chevron.left",
-            onCollapse: { sidebarShown = false },
-            headerAccessory: AnyView(
-                Button(action: { model.newChat() }) {
-                    Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(Brand.ember500)
-                }.buttonStyle(.plain).help("New conversation").disabled(!model.connected || model.sending)
-            )
-        ) {
-            VStack(spacing: 0) {
-                // Scope picker — one click to switch between regular chats and any project.
-                Menu {
-                    Button { model.setScope(nil) } label: {
-                        Label("All Chats", systemImage: model.activeProjectID == nil ? "checkmark" : "bubble.left.and.bubble.right")
-                    }
-                    if !model.projects.isEmpty {
-                        Divider()
-                        ForEach(model.projects) { p in
-                            Button { model.setScope(p.id) } label: {
-                                Label(p.name, systemImage: p.id == model.activeProjectID ? "checkmark" : "folder")
-                            }
-                        }
-                    }
-                    Divider()
-                    Button { model.openNewProjectSheet() } label: { Label("New project…", systemImage: "plus") }
-                    Button { model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id; model.projectsOpen = true } label: {
-                        Label("Manage projects…", systemImage: "folder.badge.gearshape")
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: model.activeProject != nil ? "folder.fill" : "bubble.left.and.bubble.right.fill")
-                            .font(.system(size: 11)).foregroundStyle(model.activeProject != nil ? Brand.ember500 : Brand.bone300)
-                        Text(model.activeProject?.name ?? "All Chats")
-                            .font(Brand.mono(12, weight: .bold)).foregroundStyle(Brand.bone100).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(Brand.bone400)
-                        Spacer(minLength: 0)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12).padding(.vertical, 9).contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(model.activeProject != nil ? Brand.ember500.opacity(0.07) : Color.clear)
-                Divider().overlay(Brand.line1)
-
-                if model.visibleConversations.isEmpty {
-                    Text(model.activeProject != nil ? "No threads in this project yet — tap +" : "No conversations yet")
-                        .font(Brand.mono(11)).foregroundStyle(Brand.bone400)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.top, 14)
-                    Spacer()
-                } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 3) {
-                            ForEach(model.visibleConversations) { c in
-                                ConversationRow(
-                                    c: c, selected: c.id == model.activeConversationID,
-                                    disabled: model.sending && c.id != model.activeConversationID,
-                                    renamingID: $renamingID, renameText: $renameText,
-                                    onSelect: { renamingID = nil; model.selectConversation(c.id) },
-                                    onCommitRename: { model.renameConversation(c.id, to: renameText); renamingID = nil },
-                                    onRequestRename: { renameText = c.title; renamingID = c.id },
-                                    onRequestDelete: { pendingDeleteConversation = c })
-                            }
-                        }
-                        .padding(8).animation(Brand.ease, value: model.conversations)
-                    }
-                }
-                Divider().overlay(Brand.line1)
-                HStack(spacing: 8) {
-                    StatusDot(color: statusColor, glow: model.connected, size: 7)
-                    Text("AGENT").font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.bone400)
-                    Text(statusLabel).font(Brand.mono(10, weight: .bold)).kerning(1).foregroundStyle(statusColor)
-                    Spacer()
-                }
-                .padding(.horizontal, 14).padding(.vertical, 11)
-            }
-        }
         .confirmationDialog(
             "Delete this conversation?",
             isPresented: Binding(get: { pendingDeleteConversation != nil }, set: { if !$0 { pendingDeleteConversation = nil } }),
@@ -186,68 +121,195 @@ struct ContentView: View {
         } message: { c in Text("\"\(c.title)\" will be permanently removed. This cannot be undone.") }
     }
 
+    private var newChatButton: some View {
+        Button { model.newChat() } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "square.and.pencil").font(.system(size: 12, weight: .semibold))
+                Text("New Chat").font(.system(size: 13, weight: .semibold))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Brand.bone50)
+            .padding(.horizontal, 11).padding(.vertical, 8)
+            .background(hoveredNav == "new" ? Brand.ink500 : Brand.ink700, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.ink400, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(!model.connected || model.sending)
+        .onHover { hoveredNav = $0 ? "new" : nil }
+        .help("New conversation")
+    }
+
+    private func navItem(_ icon: String, _ label: String, id: String, enabled: Bool,
+                         animating: Bool = false, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            RailItem(icon: icon, label: label, selected: false, hovered: hoveredNav == id)
+        }
+        .buttonStyle(.plain).disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .onHover { hoveredNav = $0 ? id : nil }
+        .overlay(alignment: .trailing) {
+            if animating {
+                Image(systemName: "arrow.down.circle").font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Brand.ember500).symbolEffect(.pulse, isActive: true)
+                    .padding(.trailing, 10)
+            }
+        }
+    }
+
+    /// Scope switcher — regular chats vs. a project's threads.
+    private var scopeMenu: some View {
+        Menu {
+            Button { model.setScope(nil) } label: {
+                Label("All Chats", systemImage: model.activeProjectID == nil ? "checkmark" : "bubble.left.and.bubble.right")
+            }
+            if !model.projects.isEmpty {
+                Divider()
+                ForEach(model.projects) { p in
+                    Button { model.setScope(p.id) } label: {
+                        Label(p.name, systemImage: p.id == model.activeProjectID ? "checkmark" : "folder")
+                    }
+                }
+            }
+            Divider()
+            Button { model.openNewProjectSheet() } label: { Label("New project…", systemImage: "plus") }
+            Button { model.selectedProjectID = model.activeProjectID ?? model.projects.first?.id; model.projectsOpen = true } label: {
+                Label("Manage projects…", systemImage: "folder.badge.gearshape")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: model.activeProject != nil ? "folder.fill" : "line.3.horizontal.decrease")
+                    .font(.system(size: 9)).foregroundStyle(model.activeProject != nil ? Brand.ember500 : Brand.bone400)
+                Text(model.activeProject?.name ?? "All").font(Brand.body(10, weight: .medium))
+                    .foregroundStyle(Brand.bone300).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold)).foregroundStyle(Brand.bone400)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("Switch between all chats and a project")
+    }
+
+    private var conversationsList: some View {
+        Group {
+            if model.visibleConversations.isEmpty {
+                VStack {
+                    Text(model.activeProject != nil ? "No threads in this project yet." : "No conversations yet.")
+                        .font(Brand.body(11)).foregroundStyle(Brand.bone400)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16).padding(.top, 10)
+                    Spacer(minLength: 0)
+                }
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.visibleConversations) { c in
+                            ConversationRow(
+                                c: c, selected: c.id == model.activeConversationID,
+                                disabled: model.sending && c.id != model.activeConversationID,
+                                renamingID: $renamingID, renameText: $renameText,
+                                onSelect: { renamingID = nil; model.selectConversation(c.id) },
+                                onCommitRename: { model.renameConversation(c.id, to: renameText); renamingID = nil },
+                                onRequestRename: { renameText = c.title; renamingID = c.id },
+                                onRequestDelete: { pendingDeleteConversation = c })
+                        }
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .animation(Brand.ease, value: model.conversations)
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
     private var statusColor: Color { model.sending ? Brand.warning : (model.connected ? Brand.success : Brand.bone400) }
     private var statusLabel: String { model.sending ? "THINKING" : (model.connected ? "ONLINE" : "OFFLINE") }
 
-    // MARK: ── center: execution stream ────────────────────────────────────────
-    // Center: just the execution stream + input — the GINEXUS header now lives in the top bar above.
-    private var streamColumn: some View {
+    // MARK: ── detail: header + stream (or Home) + composer ────────────────────
+    private var detail: some View {
         VStack(spacing: 0) {
-            executionStream
-            inputBar.frame(maxWidth: 760).frame(maxWidth: .infinity)
-                .padding(.horizontal, 24).padding(.vertical, 16)
+            header
+                .padding(.horizontal, 22).padding(.top, 26).padding(.bottom, 12)
+            Divider().overlay(Brand.line1)
+            if model.chat.isEmpty && model.pending == nil {
+                homeView
+            } else {
+                executionStream
+                inputBar.frame(maxWidth: 720).frame(maxWidth: .infinity)
+                    .padding(.horizontal, 28).padding(.vertical, 16)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var streamHeader: some View {
-        HStack(spacing: 12) {
-            Wordmark(size: 30).layoutPriority(2)   // never yields — the brand holds its line
-            Rectangle().fill(Brand.line2).frame(width: 1, height: 22).padding(.horizontal, 2)
-            Text("Execution Stream").font(Brand.body(14, weight: .medium)).foregroundStyle(Brand.bone300)
-                .lineLimit(1).truncationMode(.tail).layoutPriority(0)   // truncates first on a tight header
+    /// Slim per-screen header row — the GINEXUS console controls live here.
+    private var header: some View {
+        HStack(spacing: 10) {
+            StampText(text: model.activeProject.map { "Project · \($0.name)" } ?? "Execution Stream", size: 11)
+                .lineLimit(1).layoutPriority(0)
             Spacer(minLength: 8)
-            commandPaletteButton.layoutPriority(1)
+            gaugesChip.layoutPriority(1)
             autonomyToggle.layoutPriority(1)
-            modelSelector.layoutPriority(1)
+            commandPaletteButton.layoutPriority(1)
         }
     }
 
     /// ⌘K affordance — opens the command palette. Carries the window-wide ⌘K shortcut.
     private var commandPaletteButton: some View {
         Button { model.paletteOpen = true } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 10, weight: .semibold))
-                Text("⌘K").font(Brand.mono(10.5, weight: .bold)).kerning(0.5)
-            }
-            .foregroundStyle(Brand.bone300)
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Brand.line2, lineWidth: 1))
+            BrandChip(icon: "magnifyingglass", label: "⌘K")
         }
         .buttonStyle(.plain).help("Command palette (⌘K)")
         .keyboardShortcut("k", modifiers: .command)
     }
 
+    /// AUTO / HITL — a segmented capsule (capsule track, raised active segment).
     private var autonomyToggle: some View {
-        Button(action: { model.autonomous.toggle() }) {
-            // Box-less — just the icon + label, no border/plate (cleaner, more modern).
-            HStack(spacing: 6) {
-                Image(systemName: model.autonomous ? "bolt.fill" : "hand.raised.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                Text(model.autonomous ? "AUTO" : "HITL").font(Brand.mono(10.5, weight: .bold)).kerning(1.2)
-            }
-            .foregroundStyle(model.autonomous ? Brand.ember500 : Brand.bone300)
-            .padding(.vertical, 6).padding(.horizontal, 4)
-            .contentShape(Rectangle())
+        HStack(spacing: 2) {
+            segButton("AUTO", active: model.autonomous) { model.autonomous = true }
+            segButton("HITL", active: !model.autonomous) { model.autonomous = false }
         }
-        .buttonStyle(.plain).disabled(!model.connected)
+        .padding(3)
+        .background(Brand.ink700, in: Capsule())
+        .overlay(Capsule().stroke(Brand.line1, lineWidth: 1))
+        .animation(Brand.ease, value: model.autonomous)
+        .disabled(!model.connected)
         .help(model.autonomous
             ? "Autonomous — irreversible actions run unattended EXCEPT the hard gate (money / comms / legal / delete / exec)."
             : "Human-in-the-loop — every irreversible action asks for Touch ID.")
     }
 
-    private var modelSelector: some View {
+    private func segButton(_ label: String, active: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label).font(.system(size: 10, weight: .heavy)).kerning(1.2)
+                .foregroundStyle(active ? Brand.bone50 : Brand.bone400)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(active ? Brand.ink500 : .clear, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Token / context usage — a slim chip that opens the full gauges in a popover.
+    private var gaugesChip: some View {
+        Button { gaugesOpen.toggle() } label: {
+            BrandChip(icon: "gauge.with.needle",
+                      label: model.lastUsage.map { "\($0.total) tok" } ?? "Usage")
+        }
+        .buttonStyle(.plain).help("Token usage & context budget")
+        .popover(isPresented: $gaugesOpen, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 12) {
+                StampText(text: "Token Usage", size: 10)
+                TokenUsageGauge(usage: model.lastUsage)
+                Divider().overlay(Brand.line1)
+                StampText(text: "Context Budget", size: 10)
+                ContextBudgetGauge(usage: model.lastUsage, compaction: model.lastCompaction)
+            }
+            .padding(16).frame(width: 260)
+            .background(Brand.ink700)
+        }
+    }
+
+    /// Model picker — a composer chip (Counterpart BigInput grammar: controls live IN the composer).
+    private var modelChip: some View {
         Menu {
             Section("Local · Apple Silicon") {
                 ForEach(model.models) { m in
@@ -258,18 +320,20 @@ struct ContentView: View {
                 }
             }
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: 5) {
                 Image(systemName: "cpu").font(.system(size: 10, weight: .semibold))
-                Text(model.activeModelLabel).font(Brand.mono(10.5, weight: .bold)).kerning(0.6).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                Text(model.activeModelLabel).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
             }
-            .foregroundStyle(Brand.bone200)
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 5))
-            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Brand.line2, lineWidth: 1))
+            .foregroundStyle(Brand.bone300)
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Brand.ink600, in: Capsule())
+            .overlay(Capsule().stroke(Brand.line1, lineWidth: 1))
+            .contentShape(Capsule())
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .frame(maxWidth: 260).disabled(!model.connected)
+        .frame(maxWidth: 240).disabled(!model.connected)
+        .help("Active model")
     }
 
     /// "Qwen3-30B · smart" — the model name with its routing tier (the roster id) as a suffix.
@@ -281,14 +345,13 @@ struct ContentView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
-                    if model.chat.isEmpty && model.pending == nil { emptyState }
                     ForEach(model.chat) { msg in streamBlock(msg).id(msg.id) }
                     if let p = model.pending { approvalBlock(p).id("approval") }
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .frame(maxWidth: 760, alignment: .leading)   // readable centered column (Gemini-style)
+                .frame(maxWidth: 720, alignment: .leading)   // readable centered column
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 8)
+                .padding(.horizontal, 28).padding(.top, 14).padding(.bottom, 8)
             }
             .onChange(of: model.chat.count) { _, _ in withAnimation(Brand.ease) { proxy.scrollTo("bottom", anchor: .bottom) } }
             .onChange(of: model.chat.last?.text.count) { _, _ in
@@ -299,28 +362,32 @@ struct ContentView: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// The opening canvas — a confident display heading + tappable starter prompts that route
-    /// straight into the stream. Starter prompts are real sends (no canned answers); the research
+    /// Home — the input-first opening canvas (Counterpart pattern): wordmark, one warm line, the
+    /// big composer, then starter prompts. Starters are real sends (no canned answers); the research
     /// one arms Deep Research first.
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 11) {
-                Eyebrow(text: "Ready", color: Brand.ember500, tick: true)
-                Text("What should we work on?")
-                    .font(Brand.display(34, weight: .heavy)).foregroundStyle(Brand.bone50)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("GINEXUS runs entirely on this Mac. Ask anything, or start with one of these — you'll watch each tool work the stream.")
-                    .font(Brand.body(14)).foregroundStyle(Brand.bone300)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            VStack(spacing: 10) {
-                ForEach(Self.starterPrompts) { s in
-                    StarterCard(icon: s.icon, title: s.title, route: s.route,
-                                disabled: !model.connected || model.sending) { startStarter(s) }
+    private var homeView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 12) {
+                    GlyphMark(size: 34, spinning: model.sending)
+                    Wordmark(size: 30)
+                    Text("Runs entirely on this Mac. Ask anything — you'll watch each tool work the stream.")
+                        .font(Brand.body(14)).foregroundStyle(Brand.bone300)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                inputBar
+                VStack(spacing: 8) {
+                    ForEach(Self.starterPrompts) { s in
+                        StarterCard(icon: s.icon, title: s.title, route: s.route,
+                                    disabled: !model.connected || model.sending) { startStarter(s) }
+                    }
                 }
             }
+            .frame(maxWidth: 640, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 28).padding(.top, 64).padding(.bottom, 24)
         }
-        .padding(.top, 40)
+        .frame(maxHeight: .infinity)
     }
 
     struct StarterPrompt: Identifiable {
@@ -410,17 +477,14 @@ struct ContentView: View {
 
     @ViewBuilder private func streamBlock(_ msg: ChatMsg) -> some View {
         if msg.role == "user" {
-            HStack(alignment: .top, spacing: 0) {
-                Spacer(minLength: 64)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(msg.text).font(Brand.body(14)).foregroundStyle(Brand.bone50)
-                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                    if let path = msg.imagePath { StreamImage(path: path) }
-                }
-                .padding(.horizontal, 15).padding(.vertical, 11)
-                .background(Brand.ink600)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+            // Query-as-heading (document style) — your words lead the turn, no bubble.
+            VStack(alignment: .leading, spacing: 8) {
+                Text(msg.text).font(Brand.body(17, weight: .semibold)).foregroundStyle(Brand.bone50)
+                    .lineSpacing(4)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                if let path = msg.imagePath { StreamImage(path: path) }
             }
+            .padding(.top, 10)
         } else {
             VStack(alignment: .leading, spacing: 10) {
                 // ONE timeline of activity cards: each completed step (done) plus the one currently
@@ -498,65 +562,65 @@ struct ContentView: View {
     /// Inline Human Approval block — replaces the modal sheet; Approve drives Touch ID.
     private func approvalBlock(_ p: PendingAction) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Eyebrow(text: "Approval Required", color: Brand.ember500)
+            StampText(text: "Approval Required", size: 11, color: Brand.ember500)
             Text("GINEXUS wants to run an action that changes something. Approve with Touch ID to proceed.")
-                .font(Brand.body(12)).foregroundStyle(Brand.bone300).fixedSize(horizontal: false, vertical: true)
+                .font(Brand.body(12.5)).foregroundStyle(Brand.bone200).fixedSize(horizontal: false, vertical: true)
             Text(p.preview).font(Brand.mono(13)).foregroundStyle(Brand.bone50).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                .background(Brand.ink850).clipShape(RoundedRectangle(cornerRadius: 8))
+                .background(Brand.ink850, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
             HStack(spacing: 10) {
                 Button(action: { model.approve() }) {
-                    HStack(spacing: 6) { Image(systemName: "touchid"); Text("APPROVE") }
-                        .font(Brand.display(12, weight: .bold)).kerning(1.2)
-                        .padding(.horizontal, 16).padding(.vertical, 10)
-                        .foregroundStyle(Brand.ink900).background(Brand.ember500)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    HStack(spacing: 6) {
+                        Image(systemName: "touchid").font(.system(size: 12, weight: .semibold))
+                        Text("Approve").font(.system(size: 12.5, weight: .semibold))
+                    }
+                    .foregroundStyle(Brand.ink900)
+                    .padding(.horizontal, 22).padding(.vertical, 8)
+                    .background(Brand.ember500, in: Capsule())
                 }.buttonStyle(.plain)
                 Button(action: { model.deny() }) {
-                    Text("DENY").font(Brand.display(12, weight: .bold)).kerning(1.2)
-                        .padding(.horizontal, 16).padding(.vertical, 10)
-                        .foregroundStyle(Brand.bone300).background(Brand.ink700)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line2, lineWidth: 1))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    Text("Deny").font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(Brand.bone200)
+                        .padding(.horizontal, 22).padding(.vertical, 8)
+                        .background(Brand.ink600, in: Capsule())
+                        .overlay(Capsule().stroke(Brand.line1, lineWidth: 1))
                 }.buttonStyle(.plain)
                 Spacer()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(Brand.ember500.opacity(0.06))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Brand.ember600.opacity(0.55), lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .padding(16)
+        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.ember700.opacity(0.7), lineWidth: 1))
     }
 
-    // MARK: ── input bar ───────────────────────────────────────────────────────
+    // MARK: ── composer (BigInput) — one surface, controls inside, ember focus ring ──
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let vc = model.voiceController { VoiceStatusBar(controller: vc) }
             if model.deepResearchMode { deepResearchHint }
             attachmentChip
-            HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
+                TextField("Message GINEXUS…", text: $model.chatInput, axis: .vertical)
+                    .textFieldStyle(.plain).font(Brand.body(14.5)).foregroundStyle(Brand.bone50)
+                    .lineLimit(1...6)
+                    .focused($composerFocused)
+                    .onSubmit { if canSend { model.send(model.chatInput) } }
                 HStack(spacing: 8) {
                     plusMenu
-                    TextField("Message GINEXUS…", text: $model.chatInput)
-                        .textFieldStyle(.plain).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
-                        .onSubmit { model.send(model.chatInput) }
+                    modelChip
+                    researchChip
+                    Spacer(minLength: 8)
+                    voiceButton
+                    sendButton
                 }
-                .padding(.horizontal, 12).padding(.vertical, 12)
-                .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 10)) }
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.line1, lineWidth: 1))
-                researchButton
-                voiceButton
-                Button(action: { model.send(model.chatInput) }) {
-                    Text("SEND").font(Brand.mono(12, weight: .bold)).kerning(1.6)
-                        .padding(.horizontal, 24).padding(.vertical, 14)
-                        .foregroundStyle(canSend ? Brand.ink900 : Brand.bone400)
-                        .background(canSend ? Brand.ember500 : Brand.ink600)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(.plain).disabled(!canSend)
             }
+            .padding(14)
+            .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16)
+                .stroke(composerFocused ? Brand.ember700.opacity(0.7) : Brand.line1, lineWidth: 1))
+            .animation(Brand.ease, value: composerFocused)
         }
     }
 
@@ -565,22 +629,30 @@ struct ContentView: View {
         (!model.chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.attachment != nil)
     }
 
-    /// Deep Research toggle — arm it, then send your question and the GINEXUS research team (Nexus
-    /// RND/STR) searches the web, cross-checks, and returns a cited report. Always clickable when
-    /// connected; lights up ember when armed; disarms after one message.
-    private var researchButton: some View {
+    /// The ember send disc — arrow.up, scales in when sendable.
+    private var sendButton: some View {
+        Button(action: { model.send(model.chatInput) }) {
+            Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold))
+                .symbolEffect(.bounce, value: canSend)
+                .foregroundStyle(canSend ? Brand.ink900 : Brand.bone400)
+                .frame(width: 32, height: 32)
+                .background(canSend ? Brand.ember500 : Brand.ink600, in: Circle())
+                .scaleEffect(canSend ? 1 : 0.92)
+                .animation(Brand.ease, value: canSend)
+        }
+        .buttonStyle(.plain).disabled(!canSend).help("Send")
+    }
+
+    /// Deep Research toggle — arm it, then send your question and the GINEXUS research team
+    /// searches the web, cross-checks, and returns a cited report. Lights ember when armed.
+    private var researchChip: some View {
         Button(action: model.toggleDeepResearch) {
-            Image(systemName: "binoculars.fill").font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(model.deepResearchMode ? Brand.ink900 : Brand.bone200)
-                .frame(width: 46, height: 46)
-                .background(model.deepResearchMode ? AnyShapeStyle(Brand.ember500) : AnyShapeStyle(Brand.cardFill))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10)
-                    .stroke(model.deepResearchMode ? Brand.ember500 : Brand.line1, lineWidth: 1))
-                .shadow(color: model.deepResearchMode ? Brand.ember500.opacity(0.45) : .clear, radius: 9)
+            BrandChip(icon: "binoculars.fill", label: "Research",
+                      tint: Brand.bone300, filled: model.deepResearchMode)
         }
         .buttonStyle(.plain)
         .disabled(!model.connected)
+        .animation(Brand.ease, value: model.deepResearchMode)
         .help(model.deepResearchMode
               ? "Deep Research armed — your next message gets researched. Click to cancel."
               : "Deep Research — search the web and return a cited report")
@@ -591,41 +663,38 @@ struct ContentView: View {
         HStack(spacing: 8) {
             Image(systemName: "binoculars.fill").font(.system(size: 11)).foregroundStyle(Brand.ember500)
             Text("Deep Research armed — your next message will be searched, cross-checked, and returned as a cited report.")
-                .font(Brand.mono(10)).foregroundStyle(Brand.bone200).fixedSize(horizontal: false, vertical: true)
+                .font(Brand.body(11.5)).foregroundStyle(Brand.bone200).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             Button { model.deepResearchMode = false } label: {
                 Image(systemName: "xmark").font(.system(size: 9)).foregroundStyle(Brand.bone400)
             }.buttonStyle(.plain).help("Cancel Deep Research")
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Brand.ember500.opacity(0.10)).clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.ember500.opacity(0.4), lineWidth: 1))
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Brand.ember700.opacity(0.7), lineWidth: 1))
     }
 
-    /// Mic toggle — starts/stops the hands-free voice conversation (SP-Voice). Animated waveform
-    /// when live; the ring + glow pulse with the brand ember.
+    /// Mic disc — starts/stops the hands-free voice conversation (SP-Voice). Live waveform when on.
     private var voiceButton: some View {
         Button(action: model.toggleVoice) {
             Group {
                 if let vc = model.voiceController {
                     VoiceWaveformIcon(controller: vc)
                 } else {
-                    Image(systemName: "mic.fill").font(.system(size: 16, weight: .semibold))
+                    Image(systemName: "mic.fill").font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Brand.bone200)
                 }
             }
-            .frame(width: 46, height: 46)
-            .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10)
-                .stroke(model.voiceActive ? Brand.ember500.opacity(0.75) : Brand.line1, lineWidth: 1))
-            .shadow(color: model.voiceActive ? Brand.ember500.opacity(0.45) : .clear, radius: 9)
+            .frame(width: 32, height: 32)
+            .background(Brand.ink600, in: Circle())
+            .overlay(Circle().stroke(model.voiceActive ? Brand.ember700.opacity(0.7) : Brand.line1, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .disabled(!model.connected)
         .help(model.voiceActive ? "Stop voice conversation" : "Talk to GINEXUS (hands-free)")
     }
 
-    /// The "+" menu inside the input row: capabilities that act on your message, plus attachments.
+    /// The "+" menu inside the composer: capabilities that act on your message, plus attachments.
     private var plusMenu: some View {
         Menu {
             Section("Do with your message") {
@@ -655,8 +724,12 @@ struct ContentView: View {
                 Button("Import AI data…", action: model.importExport)
             }
         } label: {
-            Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Brand.bone200).frame(width: 24, height: 24).contentShape(Rectangle())
+            Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Brand.bone200)
+                .frame(width: 26, height: 26)
+                .background(Brand.ink600, in: Circle())
+                .overlay(Circle().stroke(Brand.line1, lineWidth: 1))
+                .contentShape(Circle())
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         .disabled(!model.connected)
@@ -685,155 +758,6 @@ struct ContentView: View {
             .background(Brand.ink700).clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
         }
-    }
-
-    // MARK: ── right: Context & Tools (floating panel) ─────────────────────────
-    @ViewBuilder private var rightColumn: some View {
-        if contextShown {
-            contextPanel
-                .frame(width: 300)
-                .padding(.trailing, 14).padding(.vertical, 16)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-        } else {
-            CollapsedTab(label: "Tools", expandIcon: "chevron.left") { contextShown = true }
-                .frame(maxHeight: .infinity, alignment: .top)   // top of the panel area (already below the header bar)
-                .padding(.trailing, 12).padding(.vertical, 16)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
-        }
-    }
-
-    private var contextPanel: some View {
-        FloatingPanel(title: "Context & Tools", collapseIcon: "chevron.right", onCollapse: { contextShown = false }) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    railSection("Session") {
-                        statRow("Status", model.connected ? "CONNECTED" : "OFFLINE", dot: model.connected ? Brand.success : Brand.bone400)
-                        statRow("Model", model.activeModelLabel, dot: nil)
-                        statRow("Conversations", "\(model.conversations.count)", dot: nil)
-                        statRow("Memory facts", model.memFactsCount > 0 ? "\(model.memFactsCount)" : "—", dot: nil)
-                    }
-                    railDivider
-                    railSection("Token Usage") { TokenUsageGauge(usage: model.lastUsage) }
-                    railDivider
-                    railSection("Context Budget") {
-                        ContextBudgetGauge(usage: model.lastUsage, compaction: model.lastCompaction)
-                    }
-                    railDivider
-                    connectionsSection
-                    railDivider
-                    railSection("Current File Context") { currentContextContent }
-                    railDivider
-                    railSection("Enabled Tools") {
-                        capRow("network", "Web research", on: true)
-                        capRow("terminal.fill", "Terminal", on: true)
-                        capRow("brain.head.profile", "Memory", on: true)
-                        capRow("person.3.fill", "Council", on: true)
-                        capRow("doc.text.magnifyingglass", "Deep research", on: true)
-                        capRow("photo.fill.on.rectangle.fill", "Image generation", on: model.settings.settings.mediaSidecarEnabled) { model.openSettings() }
-                        capRow("eye.fill", "Vision", on: model.visionAvailable, warn: !model.visionAvailable, note: model.visionStatus) { model.openModels() }
-                        capRow("books.vertical.fill", "Obsidian vault", on: model.obsidianAvailable) { model.openSettings() }
-                    }
-                }
-                .padding(.horizontal, 16).padding(.vertical, 15)
-            }
-        }
-    }
-
-    private func railSection<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Eyebrow(text: title, color: Brand.bone300)
-            content()
-        }
-    }
-    private var railDivider: some View { Divider().overlay(Brand.line1).padding(.vertical, 13) }
-
-    /// Connections summary — a single "MCP & tools" row with live counts + a MANAGE shortcut into
-    /// the Connections sheet. Counts come from the real server/tool surface (see connectionServers).
-    private var connectionsSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Eyebrow(text: "Connections", color: Brand.bone300)
-                Spacer()
-                Button { model.connectionsOpen = true } label: {
-                    Text("MANAGE").font(Brand.mono(9, weight: .bold)).kerning(1).foregroundStyle(Brand.ember500)
-                }.buttonStyle(.plain).help("Manage MCP servers & tools").disabled(!model.connected)
-            }
-            Button { model.connectionsOpen = true } label: {
-                HStack(spacing: 11) {
-                    Image(systemName: "point.3.connected.trianglepath.dotted")
-                        .font(.system(size: 15, weight: .semibold)).foregroundStyle(Brand.ember500).frame(width: 20)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("MCP & tools").font(Brand.body(12.5, weight: .medium)).foregroundStyle(Brand.bone100)
-                        Text("\(model.connectedServerCount) connected · \(model.exposedToolCount) tools")
-                            .font(Brand.mono(9.5)).foregroundStyle(Brand.bone400)
-                    }
-                    Spacer(minLength: 6)
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(Brand.bone400)
-                }
-                .padding(.horizontal, 11).padding(.vertical, 10)
-                .frame(maxWidth: .infinity)
-                .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(Brand.line1, lineWidth: 1))
-                .contentShape(Rectangle())
-            }.buttonStyle(.plain).disabled(!model.connected)
-        }
-    }
-
-    private func statRow(_ label: String, _ value: String, dot: Color?) -> some View {
-        HStack(spacing: 8) {
-            Text(label.uppercased()).font(Brand.mono(10)).foregroundStyle(Brand.bone300)
-            Spacer(minLength: 8)
-            if let dot { StatusDot(color: dot, size: 6) }
-            Text(value).font(Brand.mono(11, weight: .medium)).foregroundStyle(Brand.bone100)
-                .lineLimit(1).truncationMode(.middle)
-        }
-    }
-
-    @ViewBuilder private var currentContextContent: some View {
-        if let att = model.attachment {
-            HStack(spacing: 10) {
-                if att.kind == "image", let t = model.attachmentThumb {
-                    Image(nsImage: t).resizable().scaledToFill().frame(width: 32, height: 32)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                } else {
-                    Image(systemName: att.kind == "image" ? "photo" : "doc.text")
-                        .font(.system(size: 14)).foregroundStyle(Brand.ember500)
-                        .frame(width: 32, height: 32).background(Brand.ink600).clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(att.name).font(Brand.mono(11)).foregroundStyle(Brand.bone50).lineLimit(1).truncationMode(.middle)
-                    Text(att.kind.uppercased()).font(Brand.mono(9, weight: .bold)).foregroundStyle(Brand.bone400)
-                }
-                Spacer()
-                Button(action: { model.clearAttachment() }) {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(Brand.bone400)
-                }.buttonStyle(.plain)
-            }
-        } else {
-            Text("No file attached. Use + to add a file, image, or AI-data export.")
-                .font(Brand.body(11)).foregroundStyle(Brand.bone400).fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func capRow(_ icon: String, _ label: String, on: Bool, warn: Bool = false,
-                        note: String = "", config: (() -> Void)? = nil) -> some View {
-        let statusColor = on ? Brand.success : (warn ? Brand.warning : Brand.bone400)
-        return HStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 13, weight: .medium))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(on ? Brand.ember500 : Brand.bone400).frame(width: 18)
-            Text(label).font(Brand.body(12.5)).foregroundStyle(on ? Brand.bone100 : Brand.bone300).lineLimit(1)
-            Spacer(minLength: 6)
-            if let config {
-                Button(action: config) {
-                    Image(systemName: "slider.horizontal.3").font(.system(size: 10)).foregroundStyle(Brand.bone400)
-                }.buttonStyle(.plain).help(note.isEmpty ? "Configure" : note)
-            }
-            Text(on ? "CONNECTED" : (warn ? "UPDATE" : "OFFLINE"))
-                .font(Brand.mono(8.5, weight: .bold)).foregroundStyle(statusColor)
-            StatusDot(color: statusColor, size: 5)
-        }
-        .help(note.isEmpty ? "" : note)
     }
 
     // MARK: ── sheets (memory / models) ────────────────────────────────────────
@@ -924,7 +848,7 @@ struct ContentView: View {
                     Button(action: { model.pullModel(model.pullInput) }) {
                         Text("PULL").font(Brand.display(12, weight: .bold)).kerning(1)
                             .padding(.horizontal, 14).padding(.vertical, 10)
-                            .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                            .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(Capsule())
                     }.buttonStyle(.plain).disabled(model.pulling)
                 }
             }
@@ -993,7 +917,7 @@ struct ContentView: View {
                                         Button("SAVE") { model.saveBlock() }
                                             .buttonStyle(.plain).font(Brand.mono(11, weight: .bold)).foregroundStyle(Brand.ink900)
                                             .padding(.horizontal, 14).padding(.vertical, 7)
-                                            .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 6))
+                                            .background(Brand.ember500).clipShape(Capsule())
                                     }
                                 } else {
                                     highlightedText(b.value, terms: model.memTerms, current: false)
@@ -1043,7 +967,7 @@ struct ContentView: View {
                     Button(action: { model.searchMemory() }) {
                         Text("SEARCH").font(Brand.display(12, weight: .bold)).kerning(1)
                             .padding(.horizontal, 14).padding(.vertical, 10)
-                            .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                            .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(Capsule())
                     }.buttonStyle(.plain)
                 }
             }
@@ -1130,7 +1054,7 @@ private struct ScheduledTasksSheet: View {
             Button(action: model.openNewScheduleSheet) {
                 Text("NEW TASK").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
                     .padding(.horizontal, 18).padding(.vertical, 10)
-                    .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .background(Brand.ember500).clipShape(Capsule())
             }.buttonStyle(.plain).padding(.top, 4)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 40)
@@ -1264,7 +1188,7 @@ private struct ScheduleEditorSheet: View {
                 Button(action: model.saveScheduleSheet) {
                     Text("CREATE").font(Brand.mono(12, weight: .bold)).kerning(1.4).foregroundStyle(Brand.ink900)
                         .padding(.horizontal, 22).padding(.vertical, 12)
-                        .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .background(Brand.ember500).clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .disabled(model.schedDraftPrompt.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -1344,7 +1268,6 @@ private struct ConnectionsSheet: View {
         }
         .padding(16)
         .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 14)) }
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Brand.ember600.opacity(0.35), lineWidth: 1))
     }
 
@@ -1381,7 +1304,7 @@ private struct ConnectionsSheet: View {
                     Button(action: model.addCustomMcp) {
                         Text("ADD SERVER").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
                             .padding(.horizontal, 16).padding(.vertical, 10)
-                            .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                            .background(Brand.ember500).clipShape(Capsule())
                     }.buttonStyle(.plain)
                     .disabled(model.mcpCustomName.trimmingCharacters(in: .whitespaces).isEmpty
                               || model.mcpCustomCommand.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -1406,7 +1329,7 @@ private struct ConnectionsSheet: View {
                 Button(action: connect) {
                     Text("CONNECT").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
                         .padding(.horizontal, 16).padding(.vertical, 11)
-                        .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .background(Brand.ember500).clipShape(Capsule())
                 }
                 .buttonStyle(.plain).disabled(token.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -1480,9 +1403,7 @@ private struct ServerCard: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 12)) }
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(hover ? Brand.line2 : Brand.line1, lineWidth: 1))
-        .shadow(color: .black.opacity(hover ? 0.22 : 0), radius: hover ? 12 : 0, x: 0, y: 5)
         .onHover { h in withAnimation(Brand.ease) { hover = h } }
     }
 
@@ -1597,7 +1518,7 @@ private struct ProjectEditorSheet: View {
                     Text(model.editingProjectID == nil ? "CREATE" : "SAVE")
                         .font(Brand.mono(12, weight: .bold)).kerning(1.4).foregroundStyle(Brand.ink900)
                         .padding(.horizontal, 22).padding(.vertical, 12)
-                        .background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .background(Brand.ember500).clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .disabled(model.projectDraftName.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -1722,7 +1643,7 @@ private struct ProjectDetail: View {
                     Text("OPEN — NEW CHAT IN THIS PROJECT").font(Brand.mono(11, weight: .bold)).kerning(1)
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 11)
-                .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(RoundedRectangle(cornerRadius: 8))
+                .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(Capsule())
             }.buttonStyle(.plain)
 
             // Custom instructions
@@ -1870,7 +1791,7 @@ private struct VoiceStatusBar: View {
     var body: some View {
         HStack(spacing: 10) {
             Circle().fill(dotColor).frame(width: 8, height: 8)
-                .shadow(color: dotColor.opacity(0.7), radius: controller.state == .listening ? 5 : 0)
+                .overlay(Circle().stroke(dotColor.opacity(controller.state == .listening ? 0.35 : 0), lineWidth: 2).padding(-2))
             Text(label).font(Brand.mono(11, weight: .bold)).kerning(1.6).foregroundStyle(Brand.bone200)
             level
             if !controller.lastTranscript.isEmpty {
@@ -2078,12 +1999,13 @@ private struct ConversationRow: View {
         } else {
             Button(action: onSelect) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(c.title).font(Brand.mono(13)).foregroundStyle(selected ? Brand.ember500 : Brand.bone50).lineLimit(1)
-                    Text("\(relativeTime(c.updatedAt)) · \(c.messageCount)").font(Brand.mono(10)).foregroundStyle(Brand.bone400)
+                    Text(c.title).font(.system(size: 13, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Brand.bone50 : Brand.bone200).lineLimit(1)
+                    Text("\(relativeTime(c.updatedAt)) · \(c.messageCount)").font(.system(size: 10)).foregroundStyle(Brand.bone400)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 8)
+                .padding(.horizontal, 9).padding(.vertical, 7)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(selected ? Brand.ink700 : Color.white.opacity(hover ? 0.04 : 0))
+                .background(selected ? Brand.ink600 : (hover ? Brand.ink700 : .clear))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .contentShape(Rectangle())
             }
@@ -2206,9 +2128,7 @@ private struct CommandPalette: View {
             .frame(width: 540)
             .background(Brand.panelFill)
             .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 16)) }
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.14), lineWidth: 1))
-            .shadow(color: .black.opacity(0.5), radius: 30, x: 0, y: 16)
             .padding(.top, 116)
         }
         .onExitCommand { model.paletteOpen = false }
@@ -2266,9 +2186,7 @@ private struct StarterCard: View {
             .padding(.horizontal, 15).padding(.vertical, 13)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 12)) }
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(hover ? Brand.ember500.opacity(0.45) : Brand.line1, lineWidth: 1))
-            .shadow(color: .black.opacity(hover ? 0.28 : 0), radius: hover ? 12 : 0, x: 0, y: 5)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain).disabled(disabled).opacity(disabled ? 0.55 : 1)

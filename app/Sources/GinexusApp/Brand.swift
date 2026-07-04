@@ -1,6 +1,8 @@
-// Brand.swift — MackTrax design tokens (dark-only), brought into SwiftUI from the canonical
-// source of truth (~/.claude/skills/macktrax-design/colors_and_type.css). Tokens only — never
-// hardcode a hex outside this file. One accent at a time = ember. No purple/teal/neon/glassmorphism.
+// Brand.swift — MackTrax design tokens (dark-only), Counterpart-family edition.
+// The look: flat matte ink surfaces (ink900→ink500), warm bone text, ONE ember accent,
+// 7%-white hairlines, a single brand easing curve. NO shadows, NO materials/blur, NO gradients —
+// depth comes from the surface ramp + hairline only. Tokens only — never hardcode a hex outside
+// this file. One accent at a time = ember.
 import SwiftUI
 
 enum Brand {
@@ -13,20 +15,22 @@ enum Brand {
     // MARK: ink / surface ramp
     static let ink1000 = hex(0x050507)   // deepest — vignette extremes
     static let ink900  = hex(0x0A0A0C)   // PRIMARY canvas (never pure black)
-    static let ink850  = hex(0x0F0F13)   // brand ink-800: recessed surfaces / shroud
-    static let ink800  = hex(0x14141A)   // EXISTING alias (== brand ink-700 card base); kept for back-compat
-    static let ink700  = hex(0x14141A)   // card / panel base
-    static let ink600  = hex(0x1A1A22)   // raised card
-    static let ink500  = hex(0x232330)   // hover state
-    static let ink400  = hex(0x2D2D3C)   // strong divider
-    static let line1   = hex(0x1F1F26)   // default 1px hairline
-    static let line2   = hex(0x2A2A33)   // hover/focus hairline
+    static let ink850  = hex(0x0F0F13)   // recessed surfaces (sidebar, headers, footers)
+    static let ink800  = hex(0x14141A)   // EXISTING alias (== panel base); kept for back-compat
+    static let ink700  = hex(0x14141A)   // panel base (cards, fields, chips)
+    static let ink600  = hex(0x1A1A22)   // raised card / selected fill
+    static let ink500  = hex(0x232330)   // hover / active pill
+    static let ink400  = hex(0x2D2D3C)   // strong divider / inactive dot
+    /// Universal hairline — 7% white (the Counterpart `Theme.line`).
+    static let line1   = Color.white.opacity(0.07)
+    /// Hover/focus hairline — one step brighter.
+    static let line2   = Color.white.opacity(0.13)
 
     // MARK: bone / text
     static let bone50  = hex(0xF5EFE4)   // primary text
     static let bone100 = hex(0xE9E1D2)
     static let bone200 = hex(0xC9C0AE)   // secondary text
-    static let bone300 = hex(0x908778)   // tertiary / metadata
+    static let bone300 = hex(0x908778)   // tertiary / metadata / stamp headers
     static let bone400 = hex(0x5E5749)   // disabled / placeholder
     static let muted   = hex(0x8A867C)   // EXISTING alias (≈ bone-300)
 
@@ -35,7 +39,7 @@ enum Brand {
     static let ember400 = hex(0xE8943C)
     static let ember500 = hex(0xE08A2A)  // PRIMARY accent
     static let ember600 = hex(0xBD6F1A)
-    static let ember700 = hex(0x8E5210)
+    static let ember700 = hex(0x8E5210)  // accent border/stroke (dim)
 
     // MARK: cultural / support (sparing — NOT normal UI)
     static let hi500  = hex(0xD8233A)    // Hinomaru red — Japan/Okinawa callouts ONLY
@@ -52,47 +56,30 @@ enum Brand {
     static let error   = hex(0xFF6565)
     static let ok      = hex(0x5AC08A)   // EXISTING alias (connection dot)
 
-    // MARK: gradients
-    /// Brushed-metal plate for large display type (background-clip:text equivalent).
-    static let chromePlate = LinearGradient(
-        colors: [hex(0xFFFFFF), hex(0xD6D6D6), hex(0x8A8A8A), hex(0xC8C8C8), hex(0xF4F4F4)],
-        startPoint: .top, endPoint: .bottom)
-    /// Conic ember nexus glyph fill (the GiNexus mark).
-    static let emberConic = AngularGradient(
-        colors: [ember500, ember600, ember700, ember500],
-        center: .center, angle: .degrees(220))
-    /// Faint top-of-canvas ember atmosphere (tasteful, not neon).
-    static let canvasGlow = RadialGradient(
-        colors: [ember500.opacity(0.06), .clear],
-        center: .init(x: 0.5, y: -0.1), startRadius: 0, endRadius: 520)
-    /// Subtle top→bottom card fill — clean modern depth (a slightly raised ink top settling into the
-    /// card base). Neutral (no blue/teal) so the ember accent stays the only color.
-    static let cardFill = LinearGradient(
-        colors: [hex(0x1C1C25), hex(0x121217)],
-        startPoint: .top, endPoint: .bottom)
-    /// Even subtler, slightly translucent — for the big floating side panels that sit over the canvas.
-    static let panelFill = LinearGradient(
-        colors: [hex(0x16161D).opacity(0.92), hex(0x0E0E12).opacity(0.92)],
-        startPoint: .top, endPoint: .bottom)
-    /// A 1px inset top sheen drawn over a card for the "lit from above" modern look.
-    static let topSheen = LinearGradient(
-        colors: [Color.white.opacity(0.06), .clear],
-        startPoint: .top, endPoint: .bottom)
+    // MARK: flat surface aliases (the gradient era is over — these stay for call-site compat)
+    /// Card fill — flat panel base. (Formerly a gradient; flat by design now.)
+    static let cardFill = ink700
+    /// Floating-panel fill — flat recessed surface.
+    static let panelFill = ink850
+    /// Top sheen — retired. Fully transparent so any straggler usage renders nothing.
+    static let topSheen = Color.clear
+    /// Canvas glow — retired. The canvas is pure matte ink900.
+    static let canvasGlow = Color.clear
 
-    // MARK: motion
-    static let ease = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.2)
+    // MARK: motion — ONE brand curve for everything
+    static let ease = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.45)
     static func ease(_ d: Double) -> Animation { .timingCurve(0.22, 1, 0.36, 1, duration: d) }
 
-    // MARK: type — system approximations of the brand families
-    /// Trade-Gothic-Condensed stand-in: condensed bold (display stamps, eyebrows, wordmark).
+    // MARK: type — system faces, Counterpart grammar
+    /// Display stamps / wordmark: heavy system, wide-kerned all-caps at the call site.
     static func display(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        .system(size: size, weight: weight).width(.condensed)
+        .system(size: size, weight: weight)
     }
-    /// Franklin-Gothic stand-in: the workhorse body face.
+    /// The workhorse body face.
     static func body(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight)
     }
-    /// JetBrains-Mono stand-in: code, paths, metrics.
+    /// Monospaced: code, paths, model tags, metrics — content that IS code-shaped.
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
@@ -100,47 +87,30 @@ enum Brand {
 
 // MARK: - reusable brand UI
 
-/// An all-caps tracked-out section label (the tactical "eyebrow") — monospace, like a HUD readout.
-/// `tick: true` prepends a small ember bar (the OMNISCIENT "┃ DATA LAYERS" treatment).
+/// The section header stamp — heavy, uppercase, wide-kerned, bone300 (Counterpart `StampText`).
+struct StampText: View {
+    let text: String
+    var size: CGFloat = 12
+    var color: Color = Brand.bone300
+    var body: some View {
+        Text(text.uppercased())
+            .font(.system(size: size, weight: .heavy))
+            .kerning(2.2)
+            .foregroundStyle(color)
+    }
+}
+
+/// Back-compat section label — now renders as the brand stamp (the HUD/mono eyebrow is retired).
 struct Eyebrow: View {
     let text: String
     var color: Color = Brand.bone300
-    var tick: Bool = false
+    var tick: Bool = false   // retired — kept for call-site compat, renders nothing extra
     var body: some View {
-        HStack(spacing: 6) {
-            if tick { Rectangle().fill(Brand.ember500).frame(width: 2, height: 11) }
-            Text(text.uppercased())
-                .font(Brand.mono(10.5, weight: .bold)).kerning(1.4)
-                .foregroundStyle(color)
-        }
+        StampText(text: text, size: 11, color: color)
     }
 }
 
-/// HUD corner-accent ticks (L-shaped marks at the four corners) — the tactical panel signature.
-struct CornerAccents: View {
-    var color: Color = Brand.line2
-    var len: CGFloat = 9
-    var inset: CGFloat = 3
-    var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width, h = geo.size.height
-            Path { p in
-                // top-left
-                p.move(to: .init(x: inset, y: inset + len)); p.addLine(to: .init(x: inset, y: inset)); p.addLine(to: .init(x: inset + len, y: inset))
-                // top-right
-                p.move(to: .init(x: w - inset - len, y: inset)); p.addLine(to: .init(x: w - inset, y: inset)); p.addLine(to: .init(x: w - inset, y: inset + len))
-                // bottom-left
-                p.move(to: .init(x: inset, y: h - inset - len)); p.addLine(to: .init(x: inset, y: h - inset)); p.addLine(to: .init(x: inset + len, y: h - inset))
-                // bottom-right
-                p.move(to: .init(x: w - inset - len, y: h - inset)); p.addLine(to: .init(x: w - inset, y: h - inset)); p.addLine(to: .init(x: w - inset, y: h - inset - len))
-            }
-            .stroke(color, lineWidth: 1)
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-/// A tactical button label style — thin outline, monospace caps, small radius. `filled` = ember CTA.
+/// A capsule pill button label — `filled` = solid-ember CTA (ink900 text), else bordered ink chip.
 struct TacticalLabel: View {
     let text: String
     var icon: String? = nil
@@ -149,25 +119,28 @@ struct TacticalLabel: View {
     var body: some View {
         HStack(spacing: 6) {
             if let icon { Image(systemName: icon).font(.system(size: 10, weight: .semibold)) }
-            Text(text.uppercased()).font(Brand.mono(10.5, weight: .bold)).kerning(1.2)
+            Text(text).font(.system(size: 11.5, weight: .semibold))
         }
         .foregroundStyle(filled ? Brand.ink900 : tint)
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(filled ? Brand.ember500 : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(filled ? Color.clear : Brand.line2, lineWidth: 1))
+        .padding(.horizontal, 14).padding(.vertical, 7)
+        .background(filled ? Brand.ember500 : Brand.ink600, in: Capsule())
+        .overlay(Capsule().stroke(filled ? Color.clear : Brand.line1, lineWidth: 1))
     }
 }
 
-/// The GINEXUS wordmark — ONE word, ONE color (the brand ember logotype).
+/// The GINEXUS wordmark — TWO tones, one line: "GI" in bone, "NEXUS" in ember.
 struct Wordmark: View {
     var size: CGFloat = 22
     var color: Color = Brand.ember500
     var body: some View {
-        Text("GINEXUS").foregroundStyle(color)
-            .font(Brand.display(size, weight: .heavy)).kerning(0.5)
-            .lineLimit(1)                                  // the wordmark is ONE line, always
-            .fixedSize(horizontal: true, vertical: false)  // never compress/wrap on a tight header
+        HStack(spacing: 0) {
+            Text("GI").foregroundStyle(Brand.bone50)
+            Text("NEXUS").foregroundStyle(color)
+        }
+        .font(.system(size: size, weight: .heavy))
+        .kerning(max(1.6, size * 0.14))
+        .lineLimit(1)                                  // the wordmark is ONE line, always
+        .fixedSize(horizontal: true, vertical: false)  // never compress/wrap on a tight header
     }
 }
 
@@ -191,7 +164,7 @@ struct GlyphMark: View {
         .frame(width: size, height: size)
         .rotationEffect(.degrees(angle))
         .scaleEffect(pulse ? 1.07 : 1.0)
-        .shadow(color: Brand.ember500.opacity(pulse ? 0.5 : 0), radius: pulse ? size * 0.16 : 0)
+        .opacity(pulse ? 1.0 : (spinning ? 0.85 : 1.0))   // breathe by opacity — no glow shadows
         .onAppear { if spinning { start() } }
         .onChange(of: spinning) { _, on in if on { start() } else { stop() } }
     }
@@ -211,7 +184,7 @@ struct GlyphMark: View {
     }
 }
 
-/// The canonical brand panel — a recessed card with a hairline border + inset top highlight.
+/// The canonical brand panel — a flat matte card with a hairline border. No sheen, no shadow.
 struct Panel<Content: View>: View {
     var title: String? = nil
     var accessory: AnyView? = nil
@@ -221,7 +194,7 @@ struct Panel<Content: View>: View {
         VStack(alignment: .leading, spacing: 10) {
             if title != nil || accessory != nil {
                 HStack(alignment: .firstTextBaseline) {
-                    if let title { Eyebrow(text: title) }
+                    if let title { StampText(text: title, size: 11) }
                     Spacer(minLength: 0)
                     if let accessory { accessory }
                 }
@@ -230,16 +203,13 @@ struct Panel<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(padding)
-        .background(Brand.cardFill)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 12)) }
+        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line1, lineWidth: 1))
-        .shadow(color: .black.opacity(0.22), radius: 14, x: 0, y: 6)   // soft luxe depth, not gimmicky
     }
 }
 
-/// A clean, luxurious execution-stream card — a labeled block (User Input / Agent Thought / Action /
-/// Final Output). Soft fill, hairline border, gentle depth; an ember left-tab marks the active block.
+/// An execution-stream activity card — a labeled block (Action / Final Output). Flat ink surface,
+/// hairline border; the border warms to ember while the step is live. No gradients, no shadows.
 struct BlockCard<Content: View>: View {
     let label: String
     var icon: String? = nil
@@ -250,7 +220,7 @@ struct BlockCard<Content: View>: View {
     @State private var pulse = false
     @ViewBuilder var content: () -> Content
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
                 if let icon {
                     Image(systemName: icon).font(.system(size: 11, weight: .semibold)).foregroundStyle(accent)
@@ -269,90 +239,66 @@ struct BlockCard<Content: View>: View {
                             }
                         }
                 }
-                Text(label.uppercased()).font(Brand.mono(10, weight: .semibold)).kerning(1.4).foregroundStyle(accent)
+                Text(label.uppercased()).font(.system(size: 10, weight: .heavy)).kerning(2.2).foregroundStyle(accent)
                 Spacer(minLength: 0)
             }
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 18).padding(.vertical, 15)
-        .background(Brand.cardFill)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 14)) }
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(active ? Brand.ember500.opacity(0.45) : Brand.line1, lineWidth: 1))
-        .shadow(color: .black.opacity(0.28), radius: 16, x: 0, y: 7)
+        .padding(.horizontal, 16).padding(.vertical, 13)
+        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .stroke(active ? Brand.ember700.opacity(0.7) : Brand.line1, lineWidth: 1))
     }
 }
 
-/// A modern FLOATING side panel — a rounded, slightly translucent dark card with a header
-/// (title + collapse chevron), hairline border, top highlight, and a soft drop shadow so it floats
-/// over the canvas. Matches the OMNISCIENT side-panel design.
-struct FloatingPanel<Content: View>: View {
-    let title: String
-    var collapseIcon: String = "chevron.left"
-    var onCollapse: (() -> Void)? = nil
-    var headerAccessory: AnyView? = nil
-    @ViewBuilder var content: () -> Content
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Text(title.uppercased()).font(Brand.mono(11, weight: .bold)).kerning(1.5).foregroundStyle(Brand.bone200)
-                Spacer(minLength: 8)
-                if let headerAccessory { headerAccessory }
-                if let onCollapse {
-                    Button(action: onCollapse) {
-                        Image(systemName: collapseIcon).font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone400)
-                    }.buttonStyle(.plain).help("Collapse")
-                }
-            }
-            .padding(.horizontal, 16).padding(.vertical, 13)
-            Divider().overlay(Brand.line1)
-            content()
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-        // Subtle top→bottom gradient fill (clean, modern depth) over the canvas.
-        .background(Brand.panelFill)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 16)) }
-        // Thin, bright hairline border.
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.14), lineWidth: 1))
-        .shadow(color: .black.opacity(0.45), radius: 22, x: 0, y: 10)
-    }
-}
-
-/// A small floating tab shown when a panel is collapsed — a rotated label + expand chevron. Compact
-/// (intrinsic height, vertically centered by its column), so a hidden panel reads as a short pill,
-/// not a full-height bar. Same subtle-fill / bright-hairline language as the expanded panel.
-struct CollapsedTab: View {
-    let label: String
-    var expandIcon: String = "chevron.right"
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 10) {
-                Image(systemName: expandIcon).font(.system(size: 10, weight: .semibold))
-                Text(label.uppercased()).font(Brand.mono(9.5, weight: .bold)).kerning(2)
-                    .fixedSize().rotationEffect(.degrees(-90)).frame(width: 14, height: 64)
-            }
-            .foregroundStyle(Brand.bone300)
-            .padding(.vertical, 16)
-            .frame(width: 34)
-            .background(Brand.ink850.opacity(0.42))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.14), lineWidth: 1))
-            .shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
-            .contentShape(Rectangle())   // whole pill is the click target
-        }.buttonStyle(.plain).help("Expand")
-    }
-}
-
-/// A small status dot (connection / capability state).
+/// A small status dot (connection / capability state). Glow = a soft ring, never a shadow.
 struct StatusDot: View {
     var color: Color
     var glow: Bool = false
     var size: CGFloat = 7
     var body: some View {
         Circle().fill(color).frame(width: size, height: size)
-            .shadow(color: glow ? color.opacity(0.7) : .clear, radius: glow ? 5 : 0)
+            .overlay(Circle().stroke(color.opacity(glow ? 0.35 : 0), lineWidth: 2).padding(-2))
+    }
+}
+
+/// A sidebar navigation row (Counterpart rail item): icon + label, radius-8. Selected = raised ink
+/// fill + ember icon; hover = one ink step up.
+struct RailItem: View {
+    let icon: String
+    let label: String
+    var selected: Bool = false
+    var hovered: Bool = false
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon).font(.system(size: 12))
+                .foregroundStyle(selected ? Brand.ember500 : Brand.bone300).frame(width: 16)
+            Text(label).font(.system(size: 13, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Brand.bone50 : Brand.bone200)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 9).padding(.vertical, 7)
+        .background(selected ? Brand.ink600 : (hovered ? Brand.ink700 : .clear),
+                    in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+    }
+}
+
+/// A small inline capsule chip (composer controls, meta badges): icon + label on raised ink.
+struct BrandChip: View {
+    var icon: String? = nil
+    let label: String
+    var tint: Color = Brand.bone300
+    var filled: Bool = false
+    var body: some View {
+        HStack(spacing: 5) {
+            if let icon { Image(systemName: icon).font(.system(size: 10, weight: .semibold)) }
+            Text(label).font(.system(size: 11, weight: .medium)).lineLimit(1)
+        }
+        .foregroundStyle(filled ? Brand.ink900 : tint)
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(filled ? Brand.ember500 : Brand.ink600, in: Capsule())
+        .overlay(Capsule().stroke(filled ? Color.clear : Brand.line1, lineWidth: 1))
     }
 }

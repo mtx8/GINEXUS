@@ -69,13 +69,13 @@ struct SettingsView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: "gearshape.fill").font(.system(size: 13)).foregroundStyle(Brand.ember500)
-            Text("SETTINGS").font(Brand.mono(14, weight: .bold)).kerning(2).foregroundStyle(Brand.bone50)
+            StampText(text: "Settings", size: 13, color: Brand.bone50)
             Spacer()
             Button { model.settingsOpen = false } label: {
-                Text("DONE").font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.bone100)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
+                Text("Done").font(.system(size: 12, weight: .semibold)).foregroundStyle(Brand.bone100)
+                    .padding(.horizontal, 16).padding(.vertical, 7)
+                    .background(Brand.ink600, in: Capsule())
+                    .overlay(Capsule().stroke(Brand.line1, lineWidth: 1))
             }.buttonStyle(.plain)
         }
     }
@@ -201,7 +201,7 @@ struct SettingsView: View {
                            token: Binding<String>, connected: Bool, connect: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(name).font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone50)
+                Text(name).font(Brand.body(13, weight: .semibold)).foregroundStyle(Brand.bone50)
                 Spacer()
                 if connected { connectedBadge }
             }
@@ -212,7 +212,7 @@ struct SettingsView: View {
                         .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
                         .padding(9).background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 7))
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
-                    emberButton("CONNECT", enabled: !token.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty, action: connect)
+                    emberButton("Connect", enabled: !token.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty, action: connect)
                 }
             }
         }
@@ -222,9 +222,9 @@ struct SettingsView: View {
     private func tokenlessConnector(_ name: String, hint: String, connected: Bool, connect: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(name).font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone50)
+                Text(name).font(Brand.body(13, weight: .semibold)).foregroundStyle(Brand.bone50)
                 Spacer()
-                if connected { connectedBadge } else { emberButton("CONNECT", enabled: true, action: connect) }
+                if connected { connectedBadge } else { emberButton("Connect", enabled: true, action: connect) }
             }
             caption(hint)
         }
@@ -233,7 +233,7 @@ struct SettingsView: View {
     private var braveRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Brave Search key").font(Brand.mono(13, weight: .bold)).foregroundStyle(Brand.bone50)
+                Text("Brave Search key").font(Brand.body(13, weight: .semibold)).foregroundStyle(Brand.bone50)
                 Spacer()
                 if model.braveSearchConfigured {
                     connectedBadge
@@ -248,7 +248,7 @@ struct SettingsView: View {
                         .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
                         .padding(9).background(Brand.ink900).clipShape(RoundedRectangle(cornerRadius: 7))
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(Brand.line1, lineWidth: 1))
-                    emberButton("SAVE", enabled: !model.braveKeyDraft.trimmingCharacters(in: .whitespaces).isEmpty,
+                    emberButton("Save", enabled: !model.braveKeyDraft.trimmingCharacters(in: .whitespaces).isEmpty,
                                 action: { model.saveBraveKey(); braveDirty = true })
                 }
             }
@@ -257,7 +257,7 @@ struct SettingsView: View {
 
     private var customServerRow: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Add any MCP server").font(Brand.mono(11, weight: .bold)).kerning(1).foregroundStyle(Brand.bone200)
+            StampText(text: "Add any MCP server", size: 10)
             caption("Any stdio MCP server — e.g. a command like npx -y <package>.")
             smallField("Name (e.g. linear)", $model.mcpCustomName)
             smallField("Command (e.g. npx -y @some/mcp-server)", $model.mcpCustomCommand)
@@ -267,7 +267,7 @@ struct SettingsView: View {
             }
             HStack {
                 Spacer()
-                emberButton("ADD SERVER",
+                emberButton("Add Server",
                             enabled: !model.mcpCustomName.trimmingCharacters(in: .whitespaces).isEmpty
                                   && !model.mcpCustomCommand.trimmingCharacters(in: .whitespaces).isEmpty,
                             action: model.addCustomMcp)
@@ -277,7 +277,7 @@ struct SettingsView: View {
 
     private var configuredList: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Configured").font(Brand.mono(11, weight: .bold)).kerning(1).foregroundStyle(Brand.bone200)
+            StampText(text: "Configured", size: 10)
             ForEach(model.mcpServers) { s in
                 HStack(spacing: 10) {
                     Circle().fill(s.enabled ? Brand.ember500 : Brand.muted).frame(width: 7, height: 7)
@@ -306,9 +306,9 @@ struct SettingsView: View {
 
     private func emberButton(_ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(Brand.mono(11, weight: .bold)).kerning(1.2).foregroundStyle(Brand.ink900)
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(enabled ? Brand.ember500 : Brand.muted).clipShape(RoundedRectangle(cornerRadius: 7))
+            Text(title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .background(enabled ? Brand.ember500 : Brand.ink500, in: Capsule())
         }.buttonStyle(.plain).disabled(!enabled)
     }
 
@@ -328,14 +328,14 @@ struct SettingsView: View {
     private var applyBar: some View {
         HStack {
             Text("Restart the core to apply connection, endpoint, vault, or image-generation changes.")
-                .font(.system(size: 10, design: .monospaced)).foregroundStyle(Brand.muted)
+                .font(Brand.body(11)).foregroundStyle(Brand.bone300)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
             Button(action: { model.restartCore(); baseline = store.settings; braveDirty = false }) {
-                Text("APPLY & RESTART CORE").font(.system(size: 11, weight: .bold, design: .monospaced)).kerning(1)
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-                    .foregroundStyle(Brand.ink900).background(canApply ? Brand.ember500 : Brand.muted)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                Text("Apply & Restart Core").font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 20).padding(.vertical, 9)
+                    .foregroundStyle(Brand.ink900).background(canApply ? Brand.ember500 : Brand.ink500)
+                    .clipShape(Capsule())
             }.buttonStyle(.plain).disabled(!canApply)
         }
         .transition(.opacity)
@@ -345,30 +345,25 @@ struct SettingsView: View {
 
     private func card<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 7) {
-                Rectangle().fill(Brand.ember500).frame(width: 3, height: 11).clipShape(Capsule())
-                Text(title).font(Brand.mono(10, weight: .bold)).kerning(1.6).foregroundStyle(Brand.bone200)
-            }
+            StampText(text: title, size: 10.5)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(16)
         .background(Brand.cardFill)
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(alignment: .top) { Brand.topSheen.frame(height: 1).clipShape(RoundedRectangle(cornerRadius: 12)) }
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line1, lineWidth: 1))
-        .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 4)
     }
 
     private func row<Control: View>(_ label: String, @ViewBuilder _ control: () -> Control) -> some View {
         HStack {
-            Text(label).font(Brand.mono(13)).foregroundStyle(Brand.bone50)
+            Text(label).font(Brand.body(13)).foregroundStyle(Brand.bone50)
             Spacer()
             control()
         }
     }
 
     private func caption(_ text: String) -> some View {
-        Text(text).font(Brand.mono(10)).foregroundStyle(Brand.muted)
+        Text(text).font(Brand.body(11)).foregroundStyle(Brand.bone300)
             .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
     }
 
