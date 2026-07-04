@@ -19,6 +19,10 @@ final class SpineController {
     private let appHostSocketPath: String
     private var appHost: AppToolHost?
 
+    /// W1 session_search: set by AppModel BEFORE boot() so the app host can exclude the currently
+    /// active conversation from discovery (it is already in the model's context).
+    var activeConversationProvider: (@MainActor () -> UUID?)?
+
     /// SP6: the local image-generation sidecar (mflux/Z-Image-Turbo). Launched as a sibling of the
     /// core; the core gets its base URL via env and exposes the image_generate tool.
     private let mediaPort = 8765
@@ -78,6 +82,7 @@ final class SpineController {
         // core spawns, and hand the core its socket + a per-launch token so OS tools are registered.
         let appHostToken = randomHex(32)
         let host = AppToolHost(socketPath: appHostSocketPath, token: appHostToken)
+        host.activeConversationProvider = activeConversationProvider   // set before start(): no race
         host.start()
         appHost = host
 

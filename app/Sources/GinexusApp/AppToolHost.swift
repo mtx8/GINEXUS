@@ -19,6 +19,13 @@ final class AppToolHost {
     private var running = false
     private let store = EKEventStore()
 
+    /// W1 session_search: read-only view of the app's persisted transcripts (same on-disk store the
+    /// sidebar uses; a second instance is safe — reads see atomically-written files).
+    private let convStore: ConversationStoring = DiskConversationStore()
+    /// W1: how the host learns which conversation is ACTIVE (excluded from discovery — it is already
+    /// in context). Set on the main actor BEFORE start(); the handler reads it via a main-queue hop.
+    var activeConversationProvider: (@MainActor () -> UUID?)?
+
     init(socketPath: String, token: String) {
         self.socketPath = socketPath
         self.token = token
@@ -110,6 +117,7 @@ final class AppToolHost {
         case "fill_docx":       return fillDocx(args)
         case "mcp_list":        return mcpList()
         case "connect_mcp":     return connectMcp(args)
+        case "session_search":  return sessionSearch(args)
         default:                return fail("unknown tool '\(tool)'")
         }
     }
@@ -646,6 +654,24 @@ final class AppToolHost {
         p.waitUntilExit()
         let d = pipe.fileHandleForReading.readDataToEndOfFile()
         return (p.terminationStatus, String(data: d, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+    }
+
+    // MARK: session search (W1) — read-only recall over the app's persisted transcripts.
+    // The logic is pure and lives in GinexusCore (SessionSearch); this is only the wire adapter.
+    // Never fails: notices (unknown id, empty store) come back as ok() plain text by design.
+
+    private func sessionSearch(_ a: [String: Any]) -> Data {
+        // The active conversation is main-actor state (AppModel); hop like mcpList does.
+        var activeID: UUID?
+        if let provider = activeConversationProvider {
+            activeID = DispatchQueue.main.sync { MainActor.assumeIsolated { provider() } }
+        }
+        let args = SessionSearch.Args(
+            query: a["query"] as? String,
+            conversationID: a["conversation_id"] as? String,
+            aroundIndex: (a["around_index"] as? NSNumber)?.intValue
+        )
+        return ok(SessionSearch.run(args, store: convStore, activeConversationID: activeID))
     }
 
     // MARK: MCP integrations — connect external servers from within a chat (SP-Connect-in-chat).

@@ -59,11 +59,12 @@ struct AppState {
     /// Single-flight for the background memory curator (learning loop B1): 1 permit, so at most one
     /// curation pass runs at a time — a fast cadence can't pile up overlapping local-model calls.
     curation_gate: Arc<tokio::sync::Semaphore>,
-    /// Loaded prose procedural playbooks (learning loop B2a). Only user-origin ones enter the prompt.
-    playbooks: Arc<ginexus_skills::playbooks::PlaybookLibrary>,
-    /// Root dir for playbooks — the background playbook curator (B2b) writes agent playbooks under its
-    /// `auto/` subdir. (The loaded `playbooks` library above is immutable until the next boot.)
-    playbooks_dir: PathBuf,
+    /// LIVE prose procedural playbook library (learning loop B2a + Hermes-gap W4): a successful
+    /// `playbook_write` re-scans and swaps it, so `playbook_view` sees new playbooks without a reboot.
+    playbooks: ginexus_skills::playbooks::SharedPlaybooks,
+    /// System-prompt playbook index, FROZEN at boot (cache discipline — the standing prompt is never
+    /// rebuilt mid-session; only user-origin playbooks enter it, and those are hand-authored offline).
+    playbook_index: String,
     /// Learning loop B3: last agent-activity and last idle-consolidation timestamps (ms), driving the
     /// inactivity-triggered profile refresh in the heartbeat.
     last_activity: AtomicI64,
@@ -108,7 +109,8 @@ read_pdf_text for PDFs). To FILL a form: for a PDF call read_pdf_fields then fil
 (e.g. a monthly report), pass out_name so the original template is preserved. \
 WEB: you CAN search the web — call web_search to find current sources, then web_fetch to read them. \
 Never claim you lack web access. When you actually use a tool, do it rather than describing how the user \
-could do it themselves.";
+could do it themselves. \
+PAST SESSIONS: Before claiming you don't remember earlier work, search past sessions with session_search.";
 
 /// The Nexus Enterprise Conductor brief — bundled into the binary (no runtime ~/Desktop dependency)
 /// so GINEXUS *is* the Conductor by default and routes tasks to the right department/team via OSRO.
@@ -190,8 +192,9 @@ fn maybe_curate(state: &Arc<AppState>, transcript_raw: Vec<Value>, answer: Strin
         let facts = ginexus_agent::curator::curate_memory(&bound, &mem_reg, &transcript).await;
 
         // B2b: procedural-playbook curation (playbook_write-only allowlist, confined to auto/).
+        // The tool reloads the shared live library after each successful write (W4).
         let mut pb_reg = ToolRegistry::new();
-        for t in ginexus_skills::playbooks::playbook_curation_tools(st.playbooks_dir.clone()) {
+        for t in ginexus_skills::playbooks::playbook_curation_tools(st.playbooks.clone()) {
             pb_reg.register(t);
         }
         let plays = ginexus_agent::curator::curate_playbooks(&bound, &pb_reg, &transcript).await;
@@ -709,8 +712,10 @@ async fn run_server() {
     // never in the standing prompt — pull-only via `playbook_view`, tagged data-not-instruction.
     let playbooks_dir = sd.join("playbooks");
     let _ = std::fs::create_dir_all(playbooks_dir.join("user"));
-    let playbooks_root = playbooks_dir.clone();
-    let playbooks = Arc::new(ginexus_skills::playbooks::load_playbooks(&playbooks_dir));
+    // Live handle (W4): playbook_write re-scans + swaps it, so view/list reflect post-boot authoring.
+    let playbooks = ginexus_skills::playbooks::SharedPlaybooks::load(&playbooks_dir);
+    // The standing-prompt index is snapshotted ONCE here and stays frozen for the whole session.
+    let playbook_index = playbooks.system_index();
     registry.register(ginexus_skills::playbooks::playbook_view_tool(playbooks.clone()));
     if !playbooks.is_empty() {
         eprintln!("loaded {} playbook(s) [{}]", playbooks.len(), playbooks_dir.display());
@@ -776,7 +781,7 @@ async fn run_server() {
         schedules: scheduler::ScheduleStore::open(sd.join("run/schedules.json")),
         curation_gate: Arc::new(tokio::sync::Semaphore::new(1)),
         playbooks,
-        playbooks_dir: playbooks_root,
+        playbook_index,
         last_activity: AtomicI64::new(0),
         last_consolidated: AtomicI64::new(0),
     });
@@ -1168,7 +1173,7 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             // conversation (no system/memory preamble) to hand the curator as DATA after the run.
             let curate = body.get("curate").and_then(|v| v.as_bool()).unwrap_or(false);
             let curation_raw = if curate { raw.clone() } else { Vec::new() };
-            let messages = agent_messages(&state.memory, state.playbooks.system_index(), raw);
+            let messages = agent_messages(&state.memory, &state.playbook_index, raw);
             let grants = parse_grants(&body);
             // Autonomy mode: "autonomous" runs irreversible tools unattended EXCEPT hard-gated ones
             // (money/comms/legal/delete/arbitrary-exec); default is human-in-the-loop.
@@ -1229,7 +1234,7 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             // Learning loop B1 (opt-in): keep the raw conversation to curate as DATA after the run.
             let curate = body.get("curate").and_then(|v| v.as_bool()).unwrap_or(false);
             let curation_raw = if curate { raw.clone() } else { Vec::new() };
-            let messages = agent_messages(&state.memory, state.playbooks.system_index(), raw);
+            let messages = agent_messages(&state.memory, &state.playbook_index, raw);
             let grants = parse_grants(&body);
             let mode = match body.get("mode").and_then(|m| m.as_str()) {
                 Some("autonomous") => ginexus_agent::Mode::Autonomous,
@@ -1646,7 +1651,7 @@ mod curation_registry_tests {
 
         // GATE #1: exactly `remember`; the full/Trusted toolset must be unreachable.
         assert!(reg.get("remember").is_some(), "curator must have remember");
-        for forbidden in ["web_fetch", "web_search", "recall", "set_memory", "get_memory", "run_command", "read_document", "terminal"] {
+        for forbidden in ["web_fetch", "web_search", "recall", "set_memory", "get_memory", "run_command", "read_document", "terminal", "session_search"] {
             assert!(reg.get(forbidden).is_none(), "curator must NOT expose {forbidden}");
         }
 

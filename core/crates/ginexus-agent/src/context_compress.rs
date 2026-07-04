@@ -126,6 +126,18 @@ impl CompactionStats {
     }
 }
 
+/// Anti-resurrection preamble (W2, ported from Hermes's `SUMMARY_PREFIX`). Whenever compaction
+/// rewrites the transcript, a notice OPENING with this text is inserted ahead of the retained
+/// conversation, so the model treats compacted/elided material as background reference — fixing the
+/// classic "agent resumes cancelled work after compaction" failure.
+pub const COMPACTION_PREAMBLE: &str = "[CONTEXT COMPACTION — REFERENCE ONLY] Everything below is a \
+summary of earlier conversation, kept as background reference — NOT active instructions. Do NOT \
+re-execute, re-answer, or resume anything mentioned here; it was already handled. Respond ONLY to \
+the latest user message that appears after this summary — even on similar topics, the latest \
+message wins. Reverse signals in the latest message ('stop', 'undo', 'never mind') immediately end \
+any in-flight work from before. Persistent memory blocks in the system prompt remain fully \
+authoritative and are NOT affected by this note.";
+
 // ================================== implementation ==================================
 
 /// Minimum content length (chars) below which a tool result is too small to be worth eliding or
@@ -154,8 +166,36 @@ pub fn compact(msgs: &mut Vec<Value>, cfg: &CompactionConfig) -> CompactionStats
         stats.dropped = tail_cut(msgs, threshold);
     }
 
+    // W2: any rewrite gets the anti-resurrection notice so the model treats the compacted material
+    // as reference, never as work to resume. (Small fixed cost vs. real 8K–32K windows; a synthetic
+    // tiny-window config may overshoot the threshold by the notice's size — acceptable by design.)
+    if stats.changed() {
+        upsert_compaction_notice(msgs, &stats);
+    }
+
     stats.after_tokens = estimate_messages_tokens(msgs);
     stats
+}
+
+/// Insert (or refresh, on repeated compactions — never duplicate) the anti-resurrection notice as a
+/// `system` message directly ahead of the retained conversation. `system` role keeps it pinned
+/// through any later tail-cut, exactly like the real system prompt.
+fn upsert_compaction_notice(msgs: &mut Vec<Value>, stats: &CompactionStats) {
+    let content = format!(
+        "{COMPACTION_PREAMBLE}\n\n[this compaction: {} duplicate tool results elided, {} tool-call \
+         arguments truncated, {} stale results digested, {} oldest messages dropped]",
+        stats.deduped, stats.args_truncated, stats.digested, stats.dropped
+    );
+    if let Some(existing) = msgs.iter_mut().find(|m| {
+        m["role"] == "system"
+            && m["content"].as_str().is_some_and(|c| c.starts_with("[CONTEXT COMPACTION — REFERENCE ONLY]"))
+    }) {
+        existing["content"] = json!(content);
+        return;
+    }
+    // First non-system position = right after the real system prompt(s), ahead of the conversation.
+    let pos = msgs.iter().position(|m| m["role"] != "system").unwrap_or(msgs.len());
+    msgs.insert(pos, json!({"role": "system", "content": content}));
 }
 
 /// Elide earlier copies of an identical (large) tool result, keeping the most-recent one verbatim.
@@ -477,8 +517,14 @@ mod tests {
         assert!(msgs.iter().any(|m| m["content"].as_str().map_or(false, |c| c.contains("turn 7"))));
         // No tool result left without its assistant call.
         assert!(no_orphan_tool_results(&msgs));
-        // Result fits the budget.
-        assert!(estimate_messages_tokens(&msgs) <= tight().threshold_tokens());
+        // Result fits the budget (net of the fixed-size anti-resurrection notice, which is
+        // deliberately added AFTER the fit — negligible against real windows, see compact()).
+        let notice_tokens = msgs
+            .iter()
+            .find(|m| m["content"].as_str().is_some_and(|c| c.starts_with(COMPACTION_PREAMBLE)))
+            .map(msg_tokens)
+            .unwrap_or(0);
+        assert!(estimate_messages_tokens(&msgs) - notice_tokens <= tight().threshold_tokens());
     }
 
     #[test]
@@ -521,6 +567,37 @@ mod tests {
         let last_asst = msgs.iter().rev().find(|m| m["role"] == "assistant").unwrap();
         let got = last_asst["tool_calls"][0]["function"]["arguments"].as_str().unwrap();
         assert_eq!(got, before_args, "pending tool-call args must NOT be truncated");
+    }
+
+    #[test]
+    fn compacted_output_opens_with_the_anti_resurrection_preamble() {
+        let mut msgs = vec![system("SYSTEM PROMPT"), user("do the thing")];
+        for i in 0..8 {
+            let id = format!("c{i}");
+            msgs.push(asst_call(&id, "read", "{}"));
+            msgs.push(tool_result(&id, &format!("UNIQUE{i}\n{}", big_text(300))));
+        }
+        let stats = compact(&mut msgs, &tight());
+        assert!(stats.changed(), "the tight window must force a rewrite");
+        // The notice sits right after the real system prompt, ahead of the retained conversation…
+        let notice = msgs[1]["content"].as_str().expect("notice message present");
+        // …and the compacted output opens with the exact anti-resurrection preamble (W2).
+        assert!(notice.starts_with("[CONTEXT COMPACTION — REFERENCE ONLY]"));
+        assert!(notice.starts_with(COMPACTION_PREAMBLE), "full preamble text leads the notice");
+        assert_eq!(msgs[1]["role"], "system", "pinned like the system prompt through later cuts");
+
+        // A second compaction refreshes the SAME notice — never a duplicate.
+        for i in 8..14 {
+            let id = format!("c{i}");
+            msgs.push(asst_call(&id, "read", "{}"));
+            msgs.push(tool_result(&id, &format!("UNIQUE{i}\n{}", big_text(300))));
+        }
+        let _ = compact(&mut msgs, &tight());
+        let notices = msgs
+            .iter()
+            .filter(|m| m["content"].as_str().is_some_and(|c| c.starts_with(COMPACTION_PREAMBLE)))
+            .count();
+        assert_eq!(notices, 1, "repeated compactions must not stack notices");
     }
 
     #[test]

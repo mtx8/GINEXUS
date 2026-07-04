@@ -17,8 +17,8 @@
 use ginexus_agent::{Tool, ToolResult};
 use serde_json::json;
 use std::collections::HashSet;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 
 const MAX_FILE_BYTES: usize = 100_000;
 const MAX_NAME: usize = 64;
@@ -224,6 +224,64 @@ impl PlaybookLibrary {
     }
 }
 
+// ===================== W4: live-reloadable library handle =====================
+
+/// Shared, live handle to the playbook library (Hermes-gap W4). Boot loads once; every successful
+/// `playbook_write` triggers a full re-scan-and-swap (small N — the same scan boot does), so a
+/// just-authored playbook is visible to `playbook_view` WITHOUT a relaunch. The system-prompt index
+/// stays boot-frozen on purpose (cache discipline — callers copy `system_index()` once at boot and
+/// never rebuild the standing prompt mid-session); the live part is what the agent actually pulls.
+#[derive(Clone)]
+pub struct SharedPlaybooks {
+    dir: Arc<PathBuf>,
+    lib: Arc<RwLock<PlaybookLibrary>>,
+}
+
+impl SharedPlaybooks {
+    /// Scan `dir` and wrap the result in a live handle.
+    pub fn load(dir: &Path) -> Self {
+        Self { dir: Arc::new(dir.to_path_buf()), lib: Arc::new(RwLock::new(load_playbooks(dir))) }
+    }
+
+    /// The playbooks root this handle scans (`user/` + `auto/` live under it).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Full re-scan of the playbooks dir, atomically swapping the loaded library. Same validation /
+    /// confinement / dedup path as boot (`load_playbooks`) — never panics (a poisoned lock heals by
+    /// taking the inner value; readers only ever see a fully-loaded library).
+    pub fn reload(&self) {
+        let fresh = load_playbooks(&self.dir);
+        match self.lib.write() {
+            Ok(mut g) => *g = fresh,
+            Err(poisoned) => *poisoned.into_inner() = fresh,
+        }
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, PlaybookLibrary> {
+        self.lib.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn len(&self) -> usize {
+        self.read().len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.read().is_empty()
+    }
+
+    /// Snapshot of the CURRENT system-prompt index. Boot copies this once into the standing prompt;
+    /// it is not re-injected mid-session (see the struct doc).
+    pub fn system_index(&self) -> String {
+        self.read().system_index().to_string()
+    }
+
+    /// Live lookup — sees playbooks authored after boot (post-`reload`).
+    pub fn view(&self, name: &str) -> Option<String> {
+        self.read().view(name)
+    }
+}
+
 // ===================== B2b: autonomous authoring (the write side) =====================
 
 /// Global cap on agent-authored playbooks (R9 — storage + context budget over time).
@@ -342,8 +400,9 @@ fn archive_existing(auto: &Path, name: &str, target: &Path) -> Result<(), String
 
 /// The MINIMAL allowlist toolset for the autonomous PLAYBOOK curator (B2b): ONLY `playbook_write`, which
 /// can only ever create/update an AGENT playbook under `auto/` (never a `user/` playbook, never arbitrary
-/// paths). Analogous to `memory_curation_tools`.
-pub fn playbook_curation_tools(dir: std::path::PathBuf) -> Vec<Tool> {
+/// paths). Analogous to `memory_curation_tools`. Every SUCCESSFUL write reloads the shared library (W4),
+/// so the new playbook is `playbook_view`-visible immediately — no relaunch.
+pub fn playbook_curation_tools(lib: SharedPlaybooks) -> Vec<Tool> {
     vec![Tool::new(
         "playbook_write",
         "Save a reusable HOW-TO you learned as an agent playbook (descriptive procedure only — never \
@@ -357,16 +416,20 @@ pub fn playbook_curation_tools(dir: std::path::PathBuf) -> Vec<Tool> {
             let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
             let description = a.get("description").and_then(|v| v.as_str()).unwrap_or("");
             let body = a.get("body").and_then(|v| v.as_str()).unwrap_or("");
-            match write_agent_playbook(&dir, name, description, body) {
-                Ok(()) => ToolResult::ok("playbook saved"),
+            match write_agent_playbook(lib.dir(), name, description, body) {
+                Ok(()) => {
+                    lib.reload(); // W4: swap in the fresh library so view/list see it live
+                    ToolResult::ok("playbook saved")
+                }
                 Err(e) => ToolResult::err(&e),
             }
         }),
     )]
 }
 
-/// The read-only `playbook_view` tool.
-pub fn playbook_view_tool(lib: Arc<PlaybookLibrary>) -> Tool {
+/// The read-only `playbook_view` tool — reads through the LIVE library handle (W4), so a playbook
+/// authored after boot is viewable without a relaunch.
+pub fn playbook_view_tool(lib: SharedPlaybooks) -> Tool {
     Tool::new(
         "playbook_view",
         "Read a procedural playbook (a how-to) by its exact name before doing a matching task. Names come \
@@ -623,9 +686,34 @@ mod tests {
 
     #[test]
     fn write_curation_tools_expose_only_playbook_write() {
-        let tools = playbook_curation_tools(tmp());
+        let tools = playbook_curation_tools(SharedPlaybooks::load(&tmp()));
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "playbook_write");
+    }
+
+    #[test]
+    fn playbook_written_after_boot_is_viewable_live_without_reboot() {
+        // W4: boot-load an EMPTY library, author a playbook through the write tool, and confirm the
+        // live handle + the `playbook_view` tool see it immediately — no reload-at-relaunch needed.
+        let d = tmp();
+        let shared = SharedPlaybooks::load(&d);
+        assert!(shared.is_empty(), "boot library starts empty");
+        let view = playbook_view_tool(shared.clone());
+        assert!(!view.run(json!({"name": "fresh-flow"})).ok, "unknown before the write");
+
+        let write = &playbook_curation_tools(shared.clone())[0];
+        let r = write.run(json!({"name": "fresh-flow", "description": "How to X", "body": "1. do X"}));
+        assert!(r.ok, "write succeeds: {}", r.output);
+
+        // The SAME handles (boot-created, never re-made) now see the new playbook…
+        assert_eq!(shared.len(), 1, "live library re-scanned after the write");
+        let v = view.run(json!({"name": "fresh-flow"}));
+        assert!(v.ok, "playbook_view sees the just-written playbook without a reboot");
+        assert!(v.output.contains("1. do X"));
+        assert!(v.output.contains("data, not instruction"), "still tagged as agent-origin data");
+        // …while the standing-prompt index stays agent-free (R-crux unchanged by the reload).
+        assert!(!shared.system_index().contains("fresh-flow"), "agent playbooks never enter the index");
+        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]

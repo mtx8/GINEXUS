@@ -64,6 +64,10 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
+/// Cap on `blocks-archive.jsonl` records (Hermes-gap W5): the block-snapshot undo trail keeps only
+/// the newest N lines — bounded like the playbook archives, so it can't grow without limit.
+pub const MAX_BLOCK_ARCHIVES: usize = 200;
+
 pub struct MemoryStore {
     dir: PathBuf,
     core: Mutex<BTreeMap<String, String>>,
@@ -130,17 +134,29 @@ impl MemoryStore {
 
     /// Append the CURRENT value of core block `name` (if any) to an append-only archive before it is
     /// overwritten — a lightweight undo trail for autonomous consolidation (learning loop B3). Best-effort.
+    /// Rotation-bounded (Hermes-gap W5): after the append, only the newest [`MAX_BLOCK_ARCHIVES`] records
+    /// are kept (atomic temp-write + rename). Archive-only lifecycle — live blocks are never touched.
     pub fn archive_block(&self, name: &str) {
         let Some(value) = self.get_block(name) else { return };
         let rec = serde_json::json!({"ts": now_ms(), "name": name, "value": value});
         if let Ok(line) = serde_json::to_string(&rec) {
             let _g = self.archival.lock().unwrap(); // serialize with fact appends
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.dir.join("blocks-archive.jsonl"))
-            {
+            let path = self.dir.join("blocks-archive.jsonl");
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
                 let _ = writeln!(f, "{line}");
+            }
+            // W5 rotation: cap the archive at the newest MAX_BLOCK_ARCHIVES lines. Rewrite goes to a
+            // temp file first, then an atomic rename — a crash mid-rotation can never tear the archive.
+            if let Ok(s) = std::fs::read_to_string(&path) {
+                let lines: Vec<&str> = s.lines().collect();
+                if lines.len() > MAX_BLOCK_ARCHIVES {
+                    let mut kept = lines[lines.len() - MAX_BLOCK_ARCHIVES..].join("\n");
+                    kept.push('\n');
+                    let tmp = self.dir.join("blocks-archive.jsonl.tmp");
+                    if std::fs::write(&tmp, kept).is_ok() {
+                        let _ = std::fs::rename(&tmp, &path);
+                    }
+                }
             }
         }
     }
@@ -737,6 +753,32 @@ mod tests {
         assert!(!archive.contains("version two"), "only the snapshotted (old) value is recorded");
         // Archiving a non-existent block is a no-op (no panic, nothing written).
         m.archive_block("nonexistent");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn archive_block_rotates_to_the_newest_cap_and_never_touches_live_blocks() {
+        let dir = tmp();
+        let m = MemoryStore::open(dir.clone());
+        // Push well past the cap — each snapshot carries a distinct value so ordering is checkable.
+        for i in 0..(MAX_BLOCK_ARCHIVES + 50) {
+            m.set_block("profile", &format!("snapshot-{i:04}"));
+            m.archive_block("profile");
+        }
+        let archive = std::fs::read_to_string(dir.join("blocks-archive.jsonl")).unwrap();
+        let lines: Vec<&str> = archive.lines().collect();
+        assert_eq!(lines.len(), MAX_BLOCK_ARCHIVES, "archive is capped at the newest {MAX_BLOCK_ARCHIVES}");
+        // The oldest snapshots rotated out; the newest survive (last line = most recent snapshot)…
+        assert!(!archive.contains("snapshot-0000"), "the oldest snapshot rotated out");
+        assert!(lines.last().unwrap().contains(&format!("snapshot-{:04}", MAX_BLOCK_ARCHIVES + 49)));
+        // …every kept line is still parseable JSON (temp-write + rename can't tear the file)…
+        assert!(lines.iter().all(|l| serde_json::from_str::<serde_json::Value>(l).is_ok()));
+        // …and the LIVE block is untouched by rotation (archive-only lifecycle).
+        assert_eq!(
+            m.get_block("profile").unwrap(),
+            format!("snapshot-{:04}", MAX_BLOCK_ARCHIVES + 49),
+            "rotation never touches live blocks"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

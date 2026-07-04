@@ -626,6 +626,8 @@ final class AppModel: ObservableObject {
     // MARK: lifecycle
     func start() {
         projects = projectStore.load()   // SP-Projects: restore workspaces
+        // W1 session_search: let the app host exclude the ACTIVE conversation from discovery.
+        spine.activeConversationProvider = { [weak self] in self?.activeConversationID }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { await self?.pollHealth() }
         }
