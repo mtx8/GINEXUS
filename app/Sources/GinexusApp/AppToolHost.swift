@@ -91,6 +91,12 @@ final class AppToolHost {
     private func ok(_ s: String) -> Data {
         (try? JSONSerialization.data(withJSONObject: ["ok": true, "output": s])) ?? Data("{\"ok\":true}".utf8)
     }
+    /// Success reply that also carries the ABSOLUTE path of the file this tool produced/saved, so the
+    /// core can thread it into the app's artifact viewer (real path, not the ~-abbreviated `output`).
+    private func ok(_ s: String, path: String) -> Data {
+        (try? JSONSerialization.data(withJSONObject: ["ok": true, "output": s, "path": path]))
+            ?? Data("{\"ok\":true}".utf8)
+    }
     private func fail(_ s: String) -> Data {
         (try? JSONSerialization.data(withJSONObject: ["ok": false, "output": s])) ?? Data("{\"ok\":false}".utf8)
     }
@@ -254,7 +260,7 @@ final class AppToolHost {
         } catch {
             return fail("copy failed (grant GINEXUS access to the \(((a["location"] as? String) ?? "Downloads")) folder if macOS asks): \(error.localizedDescription)")
         }
-        return ok("Saved to \(tildeShown(dest.path))")
+        return ok("Saved to \(tildeShown(dest.path))", path: dest.path)
     }
 
     private func stripMarkdown(_ s: String) -> String {
@@ -307,7 +313,7 @@ final class AppToolHost {
         if r.code != 0 {
             return fail("Pages export failed — make sure Pages is installed and allow GINEXUS to control it if macOS asks. \(r.out)")
         }
-        return ok("Created in Apple Pages and saved to \(tildeShown(dest.path))")
+        return ok("Created in Apple Pages and saved to \(tildeShown(dest.path))", path: dest.path)
     }
 
     // MARK: - PDF forms (SP-Docs Flow B — native PDFKit, TCC-correct, never iCloud)
@@ -548,9 +554,9 @@ final class AppToolHost {
         do { try fm.moveItem(atPath: tmpZip, toPath: dest) } catch { return fail("could not save: \(error.localizedDescription)") }
 
         if applied == 0 {
-            return ok("Saved \(tildeShown(dest)), but none of the find-text values were present in the document. Call read_docx_text first to see the exact placeholder text, then retry.")
+            return ok("Saved \(tildeShown(dest)), but none of the find-text values were present in the document. Call read_docx_text first to see the exact placeholder text, then retry.", path: dest)
         }
-        return ok("Filled \(applied) field(s) and saved \(tildeShown(dest)).")
+        return ok("Filled \(applied) field(s) and saved \(tildeShown(dest)).", path: dest)
     }
 
     /// Run a process with a working directory (for repacking the docx zip from inside the scratch dir).
@@ -634,7 +640,7 @@ final class AppToolHost {
         var msg = "Filled \(filled.count) field(s) → \(tildeShown(destPath))."
         if madeCopy { msg += " The template was left unchanged." } else { msg += " Original backed up." }
         if !missing.isEmpty { msg += " Not found in the form: \(missing.sorted().joined(separator: ", "))." }
-        return ok(msg)
+        return ok(msg, path: destPath)
     }
 
     /// Timestamped backup path under App Support so an in-place fill is always reversible.

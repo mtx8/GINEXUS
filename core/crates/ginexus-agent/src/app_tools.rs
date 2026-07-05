@@ -17,7 +17,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// One blocking request to the app host (runs inside the agent loop's spawn_blocking).
-pub fn call_app_host(sock: &str, token: &str, tool: &str, args: &Value) -> Result<String, String> {
+///
+/// Returns the human-readable `output` string plus the optional ABSOLUTE `path` of any file the
+/// app tool produced/saved (e.g. `save_to_folder`, `pages_write`, `fill_docx`). The path — when the
+/// app supplies it — is threaded into `ToolResult.artifacts` so the in-app artifact viewer can open
+/// the real file. Callers that only need the message use `call_app_host` (drops the path).
+pub fn call_app_host_ex(
+    sock: &str, token: &str, tool: &str, args: &Value,
+) -> Result<(String, Option<String>), String> {
     let mut stream =
         UnixStream::connect(sock).map_err(|e| format!("app host unreachable ({tool}): {e}"))?;
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
@@ -44,11 +51,23 @@ pub fn call_app_host(sock: &str, token: &str, tool: &str, args: &Value) -> Resul
     let v: Value =
         serde_json::from_str(line.trim()).map_err(|e| format!("bad app host reply: {e}"))?;
     let output = v.get("output").and_then(|o| o.as_str()).unwrap_or("").to_string();
+    // Optional absolute path of the file the app produced (only file-writing app tools set it).
+    let path = v
+        .get("path")
+        .and_then(|p| p.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
     if v.get("ok").and_then(|o| o.as_bool()).unwrap_or(false) {
-        Ok(output)
+        Ok((output, path))
     } else {
         Err(if output.is_empty() { "app tool failed".into() } else { output })
     }
+}
+
+/// Convenience wrapper: the `output` string only (drops any artifact path). Used by callers that
+/// don't surface files (e.g. text-extraction tools).
+pub fn call_app_host(sock: &str, token: &str, tool: &str, args: &Value) -> Result<String, String> {
+    call_app_host_ex(sock, token, tool, args).map(|(out, _)| out)
 }
 
 fn bridge_tool(
@@ -60,8 +79,11 @@ fn bridge_tool(
         desc,
         schema,
         irreversible,
-        Arc::new(move |a| match call_app_host(&sock, &token, name, &a) {
-            Ok(out) => ToolResult::ok(out),
+        Arc::new(move |a| match call_app_host_ex(&sock, &token, name, &a) {
+            Ok((out, path)) => match path {
+                Some(p) => ToolResult::ok(out).with_artifact(p),
+                None => ToolResult::ok(out),
+            },
             Err(e) => ToolResult::err(e),
         }),
     )

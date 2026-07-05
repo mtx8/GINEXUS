@@ -678,12 +678,15 @@ pub fn write_document_tool(docs_dir: PathBuf, app_host: Option<(String, String)>
                 if matches!(loc, "downloads" | "desktop" | "documents") {
                     let fname = path.file_name().and_then(|f| f.to_str()).unwrap_or("document");
                     let req = json!({"src": path.display().to_string(), "location": loc, "filename": fname});
-                    return match crate::app_tools::call_app_host(sock, tok, "save_to_folder", &req) {
-                        Ok(out) => ToolResult::ok(format!("Created {} ({} bytes). {}", ext.to_uppercase(), bytes.len(), out)),
+                    return match crate::app_tools::call_app_host_ex(sock, tok, "save_to_folder", &req) {
+                        // Prefer the saved copy in the user's folder; fall back to the App-Support
+                        // original so the artifact card still resolves a real file.
+                        Ok((out, saved)) => ToolResult::ok(format!("Created {} ({} bytes). {}", ext.to_uppercase(), bytes.len(), out))
+                            .with_artifact(saved.unwrap_or_else(|| path.display().to_string())),
                         Err(e) => ToolResult::ok(format!(
                             "Created {} ({} bytes) at {} (couldn't place it in {}: {})",
                             ext.to_uppercase(), bytes.len(), crate::abbreviate_home(&path.display().to_string()), loc, e
-                        )),
+                        )).with_artifact(path.display().to_string()),
                     };
                 }
             }
@@ -692,6 +695,7 @@ pub fn write_document_tool(docs_dir: PathBuf, app_host: Option<(String, String)>
                 "Created {} ({} bytes) at {}",
                 ext.to_uppercase(), bytes.len(), crate::abbreviate_home(&path.display().to_string())
             ))
+            .with_artifact(path.display().to_string())
         }),
     )
 }

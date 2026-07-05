@@ -83,15 +83,19 @@ pub fn image_generate_tool(base: String, app_host: Option<(String, String)>) -> 
                                     let fname = std::path::Path::new(path)
                                         .file_name().and_then(|f| f.to_str()).unwrap_or("image.png");
                                     let req = json!({"src": path, "location": loc, "filename": fname});
-                                    return match ginexus_agent::app_tools::call_app_host(sock, tok, "save_to_folder", &req) {
-                                        Ok(out) => ToolResult::ok(format!("Image generated ({ms} ms). {out}")),
+                                    return match ginexus_agent::app_tools::call_app_host_ex(sock, tok, "save_to_folder", &req) {
+                                        // Prefer the saved copy's path (the user's chosen folder); fall
+                                        // back to the canonical media file so a card always appears.
+                                        Ok((out, saved)) => ToolResult::ok(format!("Image generated ({ms} ms). {out}"))
+                                            .with_artifact(saved.unwrap_or_else(|| path.to_string())),
                                         Err(e) => ToolResult::ok(format!(
                                             "Image generated ({ms} ms) but couldn't place it in {loc}: {e}"
-                                        )),
+                                        )).with_artifact(path),
                                     };
                                 }
                             }
                             ToolResult::ok(format!("Image saved to {} ({ms} ms).", ginexus_agent::abbreviate_home(path)))
+                                .with_artifact(path)
                         }
                     }
                     Err(e) => ToolResult::err(format!("bad sidecar reply: {e}")),

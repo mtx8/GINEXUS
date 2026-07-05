@@ -14,23 +14,30 @@ public struct ChatMsg: Identifiable, Sendable, Codable, Equatable {
     public var text: String            // mutable: assistant text grows as tokens stream in
     public var imagePath: String?      // an image rendered inline (generated, or a user attachment)
     public var docPath: String?        // a document produced this turn (PDF/Word) → Final Output card
+    /// Absolute paths of EVERY file this turn produced (generated images, written/saved documents),
+    /// in creation order — sourced from the core's `artifacts` field. Drives the in-app artifact
+    /// viewer (one card per path). Persists so reopening a conversation still shows the cards.
+    /// Empty for older transcripts, which fall back to `imagePath`/`docPath` at render time.
+    public var artifactPaths: [String]
     public var steps: [String]         // agent-flow actions taken this turn (tool names, in order)
     public var streaming: Bool         // true while tokens are still arriving (transient, not persisted)
     public var status: String?         // transient activity line, e.g. "deep_research · running…"
 
     public init(id: UUID = UUID(), role: String, text: String, imagePath: String? = nil,
-                docPath: String? = nil, steps: [String] = [], streaming: Bool = false, status: String? = nil) {
+                docPath: String? = nil, artifactPaths: [String] = [], steps: [String] = [],
+                streaming: Bool = false, status: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
         self.imagePath = imagePath
         self.docPath = docPath
+        self.artifactPaths = artifactPaths
         self.steps = steps
         self.streaming = streaming
         self.status = status
     }
 
-    private enum CodingKeys: String, CodingKey { case id, role, text, imagePath, docPath, steps }
+    private enum CodingKeys: String, CodingKey { case id, role, text, imagePath, docPath, artifactPaths, steps }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -39,6 +46,7 @@ public struct ChatMsg: Identifiable, Sendable, Codable, Equatable {
         text = try c.decode(String.self, forKey: .text)
         imagePath = try c.decodeIfPresent(String.self, forKey: .imagePath)
         docPath = try c.decodeIfPresent(String.self, forKey: .docPath)
+        artifactPaths = try c.decodeIfPresent([String].self, forKey: .artifactPaths) ?? []
         steps = try c.decodeIfPresent([String].self, forKey: .steps) ?? []
         streaming = false   // never persist mid-stream state
         status = nil         // transient
@@ -51,6 +59,7 @@ public struct ChatMsg: Identifiable, Sendable, Codable, Equatable {
         try c.encode(text, forKey: .text)
         try c.encodeIfPresent(imagePath, forKey: .imagePath)
         try c.encodeIfPresent(docPath, forKey: .docPath)
+        if !artifactPaths.isEmpty { try c.encode(artifactPaths, forKey: .artifactPaths) }
         if !steps.isEmpty { try c.encode(steps, forKey: .steps) }
     }
 }

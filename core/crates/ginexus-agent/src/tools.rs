@@ -10,14 +10,28 @@ use std::sync::Arc;
 pub struct ToolResult {
     pub ok: bool,
     pub output: String,
+    /// Absolute filesystem paths of any files this tool produced this call (generated images,
+    /// written documents, saved copies). Surfaced to the app so it can render an in-app artifact
+    /// viewer for "anything I asked GINEXUS to generate." Empty for tools that create no files.
+    /// NEVER `~`-abbreviated — the app needs a real path to preview, copy, and reveal the file.
+    pub artifacts: Vec<String>,
 }
 
 impl ToolResult {
     pub fn ok(output: impl Into<String>) -> Self {
-        Self { ok: true, output: output.into() }
+        Self { ok: true, output: output.into(), artifacts: Vec::new() }
     }
     pub fn err(output: impl Into<String>) -> Self {
-        Self { ok: false, output: output.into() }
+        Self { ok: false, output: output.into(), artifacts: Vec::new() }
+    }
+    /// Attach the absolute path of a file this tool just produced (chainable). Empty paths are
+    /// ignored so producers can pass a best-effort value without guarding at the call site.
+    pub fn with_artifact(mut self, path: impl Into<String>) -> Self {
+        let p = path.into();
+        if !p.is_empty() {
+            self.artifacts.push(p);
+        }
+        self
     }
 }
 

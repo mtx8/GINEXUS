@@ -92,6 +92,10 @@ pub struct AgentResult {
     pub answer: String,
     pub pending: Option<Value>,
     pub trace: Vec<(String, bool)>,
+    /// Absolute paths of every file produced by tools this run (images, documents, saved copies),
+    /// in the order they were created. The app renders an artifact card per path. Empty when the
+    /// turn made no files.
+    pub artifacts: Vec<String>,
     /// Aggregated token usage across EVERY model call in this run — main-loop iterations plus the
     /// synthetic delegate / council / deep_research fan-outs and all of their workers.
     pub total_usage: Usage,
@@ -284,6 +288,8 @@ impl<'a> AgentLoop<'a> {
     ) -> AgentResult {
         let mut msgs = messages;
         let mut trace: Vec<(String, bool)> = Vec::new();
+        // Absolute paths of files produced by tools this run — surfaced to the app's artifact viewer.
+        let mut artifacts: Vec<String> = Vec::new();
         // Per-run budget consumed by delegate / council / deep_research (the multiplicative tools).
         let mut synthetic_used: usize = 0;
         // Real token usage accumulated across every model call this run makes.
@@ -323,6 +329,7 @@ impl<'a> AgentLoop<'a> {
                     answer: turn.content.unwrap_or_default(),
                     pending: None,
                     trace,
+                    artifacts,
                     total_usage,
                     compaction,
                 };
@@ -362,7 +369,7 @@ impl<'a> AgentLoop<'a> {
                     }
                     synthetic_used += 1;
                     on_event(tc.name.clone(), "start".into());
-                    let (out, syn_usage) = match tc.name.as_str() {
+                    let (out, syn_usage, syn_artifacts) = match tc.name.as_str() {
                         "delegate" => {
                             self.run_delegate(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms).await
                         }
@@ -370,9 +377,13 @@ impl<'a> AgentLoop<'a> {
                             self.run_deep_research(&tc.arguments, sub_registry.as_ref().unwrap(), now_ms)
                                 .await
                         }
-                        _ => self.run_council(&tc.arguments).await, // "council"
+                        _ => {
+                            let (out, usage) = self.run_council(&tc.arguments).await; // "council"
+                            (out, usage, Vec::new())
+                        }
                     };
                     total_usage.add(syn_usage);
+                    artifacts.extend(syn_artifacts);
                     on_event(tc.name.clone(), "done".into());
                     trace.push((tc.name.clone(), true));
                     msgs.push(tool_msg(&tc.id, &out));
@@ -414,6 +425,7 @@ impl<'a> AgentLoop<'a> {
                                 "preview": format!("{}({})", tc.name, tc.arguments),
                             })),
                             trace,
+                            artifacts,
                             total_usage,
                             compaction,
                         };
@@ -428,6 +440,7 @@ impl<'a> AgentLoop<'a> {
                     .unwrap_or_else(|_| crate::tools::ToolResult::err("tool execution failed"));
                 on_event(tc.name.clone(), "done".into());
                 trace.push((tc.name.clone(), res.ok));
+                artifacts.extend(res.artifacts.iter().cloned());
                 msgs.push(tool_msg(&tc.id, &res.output));
             }
         }
@@ -437,6 +450,7 @@ impl<'a> AgentLoop<'a> {
             answer: "(stopped: reached max iterations)".to_string(),
             pending: None,
             trace,
+            artifacts,
             total_usage,
             compaction,
         }
@@ -455,7 +469,7 @@ impl<'a> AgentLoop<'a> {
     /// approvals (nothing to gate); safe to run unattended.
     async fn run_workers(
         &self, tasks: &[String], sub_registry: &ToolRegistry, now_ms: i64,
-    ) -> (Vec<String>, Usage) {
+    ) -> (Vec<String>, Usage, Vec<String>) {
         // System brief for every fan-out worker — the dedicated GINEXUS research agents (Nexus RND/STR).
         // Drives safe, source-grounded investigation: discover with web_search, read with web_fetch,
         // prefer primary/official sources, cite URLs, never fabricate. (PSS: factual, no invented cites.)
@@ -487,7 +501,7 @@ impl<'a> AgentLoop<'a> {
                 ];
                 Box::pin(async move {
                     let res = sub.run(msgs, &[], None, now_ms).await;
-                    (res.answer.trim().to_string(), res.total_usage)
+                    (res.answer.trim().to_string(), res.total_usage, res.artifacts)
                 })
             })
             .collect();
@@ -495,21 +509,23 @@ impl<'a> AgentLoop<'a> {
         // Roll each worker's full run usage up into the fan-out total (workers go through `run`,
         // which itself accumulates their internal calls).
         let mut usage = Usage::default();
+        let mut artifacts: Vec<String> = Vec::new();
         let answers = results
             .into_iter()
-            .map(|(ans, u)| {
+            .map(|(ans, u, art)| {
                 usage.add(u);
+                artifacts.extend(art);
                 ans
             })
             .collect();
-        (answers, usage)
+        (answers, usage, artifacts)
     }
 
     /// `delegate`: split a job into sub-tasks and run fresh workers on them concurrently. Output
     /// preserves task order. Fan-out is capped (MAX_SUBTASKS).
     async fn run_delegate(
         &self, args: &Value, sub_registry: &ToolRegistry, now_ms: i64,
-    ) -> (String, Usage) {
+    ) -> (String, Usage, Vec<String>) {
         let tasks: Vec<String> = match args.get("tasks").and_then(|t| t.as_array()) {
             Some(arr) => arr.iter().filter_map(|t| t.as_str().map(str::to_string)).collect(),
             None => args
@@ -522,10 +538,11 @@ impl<'a> AgentLoop<'a> {
             return (
                 "error: delegate requires 'task' (string) or 'tasks' (array of strings)".into(),
                 Usage::default(),
+                Vec::new(),
             );
         }
         let tasks: Vec<String> = tasks.into_iter().take(MAX_SUBTASKS).collect();
-        let (answers, usage) = self.run_workers(&tasks, sub_registry, now_ms).await;
+        let (answers, usage, artifacts) = self.run_workers(&tasks, sub_registry, now_ms).await;
         let out = tasks
             .iter()
             .zip(answers.iter())
@@ -534,7 +551,7 @@ impl<'a> AgentLoop<'a> {
             .collect::<String>()
             .trim_end()
             .to_string();
-        (out, usage)
+        (out, usage, artifacts)
     }
 
     /// `deep_research`: decompose a question into focused sub-questions, investigate each in parallel
@@ -542,10 +559,14 @@ impl<'a> AgentLoop<'a> {
     /// decompose (1 call) → concurrent worker research → synthesize (1 call).
     async fn run_deep_research(
         &self, args: &Value, sub_registry: &ToolRegistry, now_ms: i64,
-    ) -> (String, Usage) {
+    ) -> (String, Usage, Vec<String>) {
         let question = args.get("question").and_then(|q| q.as_str()).unwrap_or("").trim();
         if question.is_empty() {
-            return ("error: deep_research requires 'question' (string)".into(), Usage::default());
+            return (
+                "error: deep_research requires 'question' (string)".into(),
+                Usage::default(),
+                Vec::new(),
+            );
         }
         let mut usage = Usage::default();
         // 1 — decompose into independent sub-questions (fall back to the question itself).
@@ -563,7 +584,7 @@ impl<'a> AgentLoop<'a> {
         let subqs: Vec<String> = subqs.into_iter().take(MAX_SUBTASKS).collect();
 
         // 2 — research each sub-question concurrently (workers have read-only web/recall tools).
-        let (findings, worker_usage) = self.run_workers(&subqs, sub_registry, now_ms).await;
+        let (findings, worker_usage, worker_artifacts) = self.run_workers(&subqs, sub_registry, now_ms).await;
         usage.add(worker_usage);
 
         // 3 — synthesize a cited report from the findings.
@@ -580,7 +601,7 @@ impl<'a> AgentLoop<'a> {
         );
         let report = self.model.call(&[json!({"role": "user", "content": prompt})], &[]).await;
         usage.add(report.usage);
-        (report.content.unwrap_or_default(), usage)
+        (report.content.unwrap_or_default(), usage, worker_artifacts)
     }
 
     /// Convene a council: gather N persona-diverse opinions CONCURRENTLY on the bound model, then

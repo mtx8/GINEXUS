@@ -1247,7 +1247,7 @@ final class AppModel: ObservableObject {
     /// A vision-bound thumbnail capped to an exact PIXEL size (deterministic regardless of source DPI
     /// or display backing scale), EXIF-stripped and orientation-corrected. Used for both the vision
     /// payload and the attachment chip so a large image is decoded/downsampled ONCE.
-    static func thumbnailImage(_ path: String, maxPixel: Int) -> NSImage? {
+    nonisolated static func thumbnailImage(_ path: String, maxPixel: Int) -> NSImage? {
         guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
         let opts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -1725,6 +1725,13 @@ final class AppModel: ObservableObject {
                 if !answer.isEmpty { chat[i].text = answer }      // authoritative (think-stripped/trimmed)
                 chat[i].imagePath = img
                 if didDoc { chat[i].docPath = Self.newestDocument() }   // Final Output card
+                // SP-Artifacts: the core now reports absolute paths of every file this turn produced
+                // (images, documents, saved copies) in `artifacts`. One artifact card renders per path.
+                // Older cores omit the field → artifactPaths stays empty and the view falls back to
+                // imagePath/docPath (legacy heuristics) so nothing regresses.
+                if let arts = o["artifacts"] as? [String] {
+                    chat[i].artifactPaths = Artifact.normalize(arts)
+                }
                 // Steps are accumulated live (running → completed in place); fall back to the trace
                 // only if no per-tool events arrived, so the order/identity stays stable.
                 if chat[i].steps.isEmpty { chat[i].steps = trace.compactMap { $0.first as? String } }

@@ -1197,7 +1197,8 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             if let Some(u) = &usage_v { audit_data["usage"] = u.clone(); }
             let _ = state.audit.record("agent", audit_data);
             let mut agent_resp = json!({"status": status, "answer": res.answer, "pending": res.pending,
-                                        "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()});
+                                        "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>(),
+                                        "artifacts": res.artifacts});
             if let Some(u) = usage_v {
                 agent_resp["usage"] = u;
             }
@@ -1275,7 +1276,8 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 let curation_answer = (curate && matches!(res.status, AgentStatus::Final))
                     .then(|| res.answer.clone());
                 let mut done = json!({"status": status, "answer": res.answer, "pending": res.pending,
-                                  "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>()});
+                                  "trace": res.trace.iter().map(|(n, ok)| json!([n, ok])).collect::<Vec<_>>(),
+                                  "artifacts": res.artifacts.clone()});
                 if let Some(u) = usage_v {
                     done["usage"] = u;
                 }
