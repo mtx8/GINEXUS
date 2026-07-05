@@ -395,7 +395,8 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 12) {
                     GlyphMark(size: 34, spinning: model.sending)
-                    Wordmark(size: 30)
+                    Text("What should we get done?")
+                        .font(Brand.body(26, weight: .semibold)).foregroundStyle(Brand.bone50)
                     Text("Runs entirely on this Mac. Ask anything — you'll watch each tool work the stream.")
                         .font(Brand.body(14)).foregroundStyle(Brand.bone300)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2195,8 +2196,7 @@ private struct StarterCard: View {
         Button(action: action) {
             HStack(spacing: 14) {
                 Image(systemName: icon).font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Brand.ember500).frame(width: 32, height: 32)
-                    .background(Brand.ember500.opacity(0.10)).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .foregroundStyle(Brand.ember500).frame(width: 22, alignment: .center)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(Brand.body(14, weight: .medium)).foregroundStyle(Brand.bone50)
                         .lineLimit(1).truncationMode(.tail)
@@ -2204,12 +2204,11 @@ private struct StarterCard: View {
                 }
                 Spacer(minLength: 8)
                 Image(systemName: "arrow.up.forward").font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(hover ? Brand.ember500 : Brand.bone400)
+                    .foregroundStyle(Brand.ember500).opacity(hover ? 1 : 0)
             }
-            .padding(.horizontal, 15).padding(.vertical, 13)
+            .padding(.horizontal, 10).padding(.vertical, 9)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(hover ? Brand.ember500.opacity(0.45) : Brand.line1, lineWidth: 1))
+            .background(hover ? Brand.ink600 : .clear, in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain).disabled(disabled).opacity(disabled ? 0.55 : 1)
