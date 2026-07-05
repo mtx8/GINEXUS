@@ -1,8 +1,9 @@
-// Brand.swift — MackTrax design tokens (dark-only), Counterpart-family edition.
-// The look: flat matte ink surfaces (ink900→ink500), warm bone text, ONE ember accent,
-// 7%-white hairlines, a single brand easing curve. NO shadows, NO materials/blur, NO gradients —
-// depth comes from the surface ramp + hairline only. Tokens only — never hardcode a hex outside
-// this file. One accent at a time = ember.
+// Brand.swift — MackTrax design tokens (dark-only), Silo Unison edition.
+// The look: flat matte ink surfaces (ink900 canvas → ink700 panels), warm bone text, ONE ember
+// accent used sparingly, solid #26262E hairlines (1px), a single brand easing curve. NO shadows,
+// NO materials/blur, NO gradients — depth comes from the surface ramp + hairline only. Tokens only
+// — never hardcode a hex outside this file. One accent at a time = ember; Hinomaru red is hover-
+// only on destructive affordances.
 import SwiftUI
 
 enum Brand {
@@ -12,34 +13,36 @@ enum Brand {
               blue: Double(v & 0xFF) / 255)
     }
 
-    // MARK: ink / surface ramp
-    static let ink1000 = hex(0x050507)   // deepest — vignette extremes
+    // MARK: ink / surface ramp (Silo Unison values)
+    static let ink1000 = hex(0x050507)   // deepest — vignette extremes / scrims
     static let ink900  = hex(0x0A0A0C)   // PRIMARY canvas (never pure black)
     static let ink850  = hex(0x0F0F13)   // recessed surfaces (sidebar, headers, footers)
-    static let ink800  = hex(0x14141A)   // EXISTING alias (== panel base); kept for back-compat
-    static let ink700  = hex(0x14141A)   // panel base (cards, fields, chips)
+    static let ink800  = hex(0x131318)   // EXISTING alias (== panel base); kept for back-compat
+    static let ink700  = hex(0x131318)   // panel base (cards, fields, chips)
     static let ink600  = hex(0x1A1A22)   // raised card / selected fill
     static let ink500  = hex(0x232330)   // hover / active pill
     static let ink400  = hex(0x2D2D3C)   // strong divider / inactive dot
-    /// Universal hairline — 7% white (the Counterpart `Theme.line`).
-    static let line1   = Color.white.opacity(0.07)
+    /// Universal hairline — solid #26262E, 1px.
+    static let line1   = hex(0x26262E)
     /// Hover/focus hairline — one step brighter.
-    static let line2   = Color.white.opacity(0.13)
+    static let line2   = hex(0x34343E)
 
     // MARK: bone / text
-    static let bone50  = hex(0xF5EFE4)   // primary text
+    static let bone50  = hex(0xF5EFE4)   // primary body text (never pure white)
     static let bone100 = hex(0xE9E1D2)
-    static let bone200 = hex(0xC9C0AE)   // secondary text
-    static let bone300 = hex(0x908778)   // tertiary / metadata / stamp headers
-    static let bone400 = hex(0x5E5749)   // disabled / placeholder
-    static let muted   = hex(0x8A867C)   // EXISTING alias (≈ bone-300)
+    static let bone200 = hex(0xB4B4BE)   // secondary text (cool step above dim)
+    static let bone300 = hex(0x8B8B96)   // dim / metadata / stamp headers (Silo dim gray)
+    static let bone400 = hex(0x5C5C66)   // disabled / placeholder
+    static let muted   = hex(0x8B8B96)   // EXISTING alias (== bone-300)
 
     // MARK: ember (the single locking accent)
     static let ember300 = hex(0xEFA862)
-    static let ember400 = hex(0xE8943C)
+    static let ember400 = hex(0xEDA23F)  // hover/bright variant
     static let ember500 = hex(0xE08A2A)  // PRIMARY accent
     static let ember600 = hex(0xBD6F1A)
     static let ember700 = hex(0x8E5210)  // accent border/stroke (dim)
+    /// Dark text sat ON a solid-ember button — near-black warm ink.
+    static let emberText = hex(0x141005)
 
     // MARK: cultural / support (sparing — NOT normal UI)
     static let hi500  = hex(0xD8233A)    // Hinomaru red — Japan/Okinawa callouts ONLY
@@ -83,16 +86,35 @@ enum Brand {
 
 // MARK: - reusable brand UI
 
-/// The section header stamp — heavy, uppercase, wide-kerned, bone300 (Counterpart `StampText`).
+/// The section header stamp — small, semibold, UPPERCASE, wide-kerned, dim gray — with an optional
+/// ONE word rendered in ember (`ember:`), per the Silo Unison header grammar.
 struct StampText: View {
     let text: String
     var size: CGFloat = 12
     var color: Color = Brand.bone300
+    /// One word of `text` (case-insensitive) to render in ember. One accent word, never more.
+    var ember: String? = nil
     var body: some View {
-        Text(text.uppercased())
-            .font(.system(size: size, weight: .heavy))
-            .kerning(2.2)
-            .foregroundStyle(color)
+        Text(composed)
+            .font(.system(size: size, weight: .semibold))
+            .kerning(max(2.4, size * 0.28))
+    }
+    /// Built as one `AttributedString` (per-run colors) — no deprecated `Text + Text` concatenation.
+    private var composed: AttributedString {
+        let caps = text.uppercased()
+        guard let ember, !ember.isEmpty else {
+            var s = AttributedString(caps); s.foregroundColor = color; return s
+        }
+        let target = ember.uppercased()
+        var out = AttributedString()
+        let words = caps.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+        for (i, w) in words.enumerated() {
+            if i > 0 { var sep = AttributedString(" "); sep.foregroundColor = color; out += sep }
+            var piece = AttributedString(w)
+            piece.foregroundColor = (w == target ? Brand.ember500 : color)
+            out += piece
+        }
+        return out
     }
 }
 
@@ -106,21 +128,84 @@ struct Eyebrow: View {
     }
 }
 
-/// A capsule pill button label — `filled` = solid-ember CTA (ink900 text), else bordered ink chip.
+/// A capsule pill button label — `filled` = solid-ember CTA (dark emberText, uppercase, hover
+/// brightens to ember400), else a bordered ink chip with bone text.
 struct TacticalLabel: View {
     let text: String
     var icon: String? = nil
     var filled: Bool = false
     var tint: Color = Brand.bone200
+    @State private var hover = false
     var body: some View {
         HStack(spacing: 6) {
             if let icon { Image(systemName: icon).font(.system(size: 10, weight: .semibold)) }
-            Text(text).font(.system(size: 11.5, weight: .semibold))
+            Text(text.uppercased()).font(.system(size: 11.5, weight: .semibold)).kerning(0.8)
         }
-        .foregroundStyle(filled ? Brand.ink900 : tint)
+        .foregroundStyle(filled ? Brand.emberText : tint)
         .padding(.horizontal, 14).padding(.vertical, 7)
-        .background(filled ? Brand.ember500 : Brand.ink600, in: Capsule())
-        .overlay(Capsule().stroke(filled ? Color.clear : Brand.line1, lineWidth: 1))
+        .background(filled ? (hover ? Brand.ember400 : Brand.ember500)
+                           : (hover ? Brand.ink500 : Brand.ink600), in: Capsule())
+        .overlay(Capsule().stroke(filled ? Color.clear : (hover ? Brand.line2 : Brand.line1), lineWidth: 1))
+        .onHover { h in withAnimation(Brand.ease(0.15)) { hover = h } }
+    }
+}
+
+/// The canonical PRIMARY button — solid ember capsule, dark emberText, UPPERCASE 12pt semibold with
+/// slight letterspacing; hover brightens the fill to ember400. Disabled = flat ink pill.
+struct EmberButton: View {
+    let title: String
+    var icon: String? = nil
+    var enabled: Bool = true
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let icon { Image(systemName: icon).font(.system(size: 11, weight: .semibold)) }
+                Text(title.uppercased()).font(.system(size: 12, weight: .semibold)).kerning(0.8)
+            }
+            .foregroundStyle(enabled ? Brand.emberText : Brand.bone400)
+            .padding(.horizontal, 18).padding(.vertical, 8)
+            .background(enabled ? (hover ? Brand.ember400 : Brand.ember500) : Brand.ink500, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain).disabled(!enabled)
+        .onHover { h in withAnimation(Brand.ease(0.15)) { hover = h && enabled } }
+    }
+}
+
+/// Destructive icon affordance — quiet gray that turns Hinomaru red ONLY on hover (the single
+/// permitted use of hi500 in normal UI).
+struct DestructiveIconButton: View {
+    var icon: String = "trash"
+    var size: CGFloat = 12
+    var help: String = "Delete"
+    let action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: size))
+                .foregroundStyle(hover ? Brand.hi500 : Brand.bone400)
+        }
+        .buttonStyle(.plain).help(help)
+        .onHover { h in withAnimation(Brand.ease(0.15)) { hover = h } }
+    }
+}
+
+/// Thin linear progress — 4pt ember bar on the hairline-color track. The ONLY determinate bar.
+struct ThinProgressBar: View {
+    var value: Double          // 0…1
+    var height: CGFloat = 4
+    var tint: Color = Brand.ember500
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Brand.line1)
+                Capsule().fill(tint).frame(width: max(0, min(1, value)) * geo.size.width)
+            }
+        }
+        .frame(height: height)
+        .animation(Brand.ease(0.3), value: value)
     }
 }
 
@@ -292,7 +377,7 @@ struct BrandChip: View {
             if let icon { Image(systemName: icon).font(.system(size: 10, weight: .semibold)) }
             Text(label).font(.system(size: 11, weight: .medium)).lineLimit(1)
         }
-        .foregroundStyle(filled ? Brand.ink900 : tint)
+        .foregroundStyle(filled ? Brand.emberText : tint)
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(filled ? Brand.ember500 : Brand.ink600, in: Capsule())
         .overlay(Capsule().stroke(filled ? Color.clear : Brand.line1, lineWidth: 1))

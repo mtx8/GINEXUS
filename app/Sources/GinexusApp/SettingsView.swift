@@ -306,7 +306,7 @@ struct SettingsView: View {
 
     private func emberButton(_ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+            Text(title).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(enabled ? Brand.emberText : Brand.bone400)
                 .padding(.horizontal, 16).padding(.vertical, 8)
                 .background(enabled ? Brand.ember500 : Brand.ink500, in: Capsule())
         }.buttonStyle(.plain).disabled(!enabled)
@@ -334,7 +334,7 @@ struct SettingsView: View {
             Button(action: { model.restartCore(); baseline = store.settings; braveDirty = false }) {
                 Text("Apply & Restart Core").font(.system(size: 12, weight: .semibold))
                     .padding(.horizontal, 20).padding(.vertical, 9)
-                    .foregroundStyle(Brand.ink900).background(canApply ? Brand.ember500 : Brand.ink500)
+                    .foregroundStyle(canApply ? Brand.emberText : Brand.bone400).background(canApply ? Brand.ember500 : Brand.ink500)
                     .clipShape(Capsule())
             }.buttonStyle(.plain).disabled(!canApply)
         }

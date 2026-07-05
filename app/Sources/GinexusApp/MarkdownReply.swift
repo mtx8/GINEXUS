@@ -78,7 +78,7 @@ struct MarkdownReply: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
-                .background(Color.white.opacity(0.03))
+                .background(Brand.ink800)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
         case .rule:
@@ -272,7 +272,7 @@ private struct CodePanel: View {
                 .buttonStyle(.plain)
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
-            Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
+            Rectangle().fill(Brand.line1).frame(height: 1)
             Text(code)
                 .font(.system(size: 12.5, design: .monospaced))
                 .foregroundStyle(Brand.bone50)
@@ -281,9 +281,9 @@ private struct CodePanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12)
         }
-        .background(Color(red: 0x0F / 255, green: 0x0F / 255, blue: 0x13 / 255)) // recessed ink
+        .background(Brand.ink850) // recessed ink
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.06), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
     }
 
     private func copy() {

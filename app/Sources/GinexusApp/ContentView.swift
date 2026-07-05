@@ -600,7 +600,7 @@ struct ContentView: View {
                         Image(systemName: "touchid").font(.system(size: 12, weight: .semibold))
                         Text("Approve").font(.system(size: 12.5, weight: .semibold))
                     }
-                    .foregroundStyle(Brand.ink900)
+                    .foregroundStyle(Brand.emberText)
                     .padding(.horizontal, 22).padding(.vertical, 8)
                     .background(Brand.ember500, in: Capsule())
                 }.buttonStyle(.plain)
@@ -659,7 +659,7 @@ struct ContentView: View {
         Button(action: { model.send(model.chatInput) }) {
             Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold))
                 .symbolEffect(.bounce, value: canSend)
-                .foregroundStyle(canSend ? Brand.ink900 : Brand.bone400)
+                .foregroundStyle(canSend ? Brand.emberText : Brand.bone400)
                 .frame(width: 32, height: 32)
                 .background(canSend ? Brand.ember500 : Brand.ink600, in: Circle())
                 .scaleEffect(canSend ? 1 : 0.92)
@@ -875,7 +875,7 @@ struct ContentView: View {
                     Button(action: { model.pullModel(model.pullInput) }) {
                         Text("Pull").font(.system(size: 12, weight: .semibold))
                             .padding(.horizontal, 18).padding(.vertical, 9)
-                            .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(Capsule())
+                            .foregroundStyle(Brand.emberText).background(Brand.ember500).clipShape(Capsule())
                     }.buttonStyle(.plain).disabled(model.pulling)
                 }
             }
@@ -942,7 +942,7 @@ struct ContentView: View {
                                         Button("Cancel") { model.cancelEditBlock() }
                                             .buttonStyle(.plain).font(Brand.body(11.5)).foregroundStyle(Brand.bone300)
                                         Button("Save") { model.saveBlock() }
-                                            .buttonStyle(.plain).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                                            .buttonStyle(.plain).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.emberText)
                                             .padding(.horizontal, 16).padding(.vertical, 7)
                                             .background(Brand.ember500).clipShape(Capsule())
                                     }
@@ -995,7 +995,7 @@ struct ContentView: View {
                     Button(action: { model.searchMemory() }) {
                         Text("Search").font(.system(size: 12, weight: .semibold))
                             .padding(.horizontal, 18).padding(.vertical, 9)
-                            .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(Capsule())
+                            .foregroundStyle(Brand.emberText).background(Brand.ember500).clipShape(Capsule())
                     }.buttonStyle(.plain)
                 }
             }
@@ -1078,7 +1078,7 @@ private struct ScheduledTasksSheet: View {
                 .font(Brand.body(11.5)).foregroundStyle(Brand.bone300).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Button(action: model.openNewScheduleSheet) {
-                Text("New Task").font(.system(size: 12, weight: .semibold)).foregroundStyle(Brand.ink900)
+                Text("New Task").font(.system(size: 12, weight: .semibold)).foregroundStyle(Brand.emberText)
                     .padding(.horizontal, 20).padding(.vertical, 9)
                     .background(Brand.ember500).clipShape(Capsule())
             }.buttonStyle(.plain).padding(.top, 4)
@@ -1212,7 +1212,7 @@ private struct ScheduleEditorSheet: View {
                     .buttonStyle(.plain).font(Brand.body(12.5)).foregroundStyle(Brand.bone200)
                     .padding(.horizontal, 18).padding(.vertical, 10)
                 Button(action: model.saveScheduleSheet) {
-                    Text("Create").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                    Text("Create").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.emberText)
                         .padding(.horizontal, 24).padding(.vertical, 10)
                         .background(Brand.ember500).clipShape(Capsule())
                 }
@@ -1329,7 +1329,7 @@ private struct ConnectionsSheet: View {
                 HStack {
                     Spacer()
                     Button(action: model.addCustomMcp) {
-                        Text("Add Server").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                        Text("Add Server").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.emberText)
                             .padding(.horizontal, 18).padding(.vertical, 9)
                             .background(Brand.ember500).clipShape(Capsule())
                     }.buttonStyle(.plain)
@@ -1354,7 +1354,7 @@ private struct ConnectionsSheet: View {
                     .padding(10).background(Brand.cardFill).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
                 Button(action: connect) {
-                    Text("Connect").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                    Text("Connect").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Brand.emberText)
                         .padding(.horizontal, 18).padding(.vertical, 10)
                         .background(Brand.ember500).clipShape(Capsule())
                 }
@@ -1543,7 +1543,7 @@ private struct ProjectEditorSheet: View {
                     .padding(.horizontal, 18).padding(.vertical, 10)
                 Button(action: model.saveProjectSheet) {
                     Text(model.editingProjectID == nil ? "Create" : "Save")
-                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.ink900)
+                        .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Brand.emberText)
                         .padding(.horizontal, 24).padding(.vertical, 10)
                         .background(Brand.ember500).clipShape(Capsule())
                 }
@@ -1620,7 +1620,7 @@ private struct ProjectsSheet: View {
                             Text("Select a project, or create one").font(Brand.body(13)).foregroundStyle(Brand.bone300)
                             Button { model.openNewProjectSheet() } label: {
                                 HStack(spacing: 6) { Image(systemName: "plus"); Text("New Project") }
-                                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Brand.ink900)
+                                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Brand.emberText)
                                     .padding(.horizontal, 20).padding(.vertical, 9).background(Brand.ember500)
                                     .clipShape(RoundedRectangle(cornerRadius: 8))
                             }.buttonStyle(.plain)
@@ -1667,7 +1667,7 @@ private struct ProjectDetail: View {
                     Text("Open — new chat in this project").font(.system(size: 12.5, weight: .semibold))
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 10)
-                .foregroundStyle(Brand.ink900).background(Brand.ember500).clipShape(Capsule())
+                .foregroundStyle(Brand.emberText).background(Brand.ember500).clipShape(Capsule())
             }.buttonStyle(.plain)
 
             // Custom instructions
@@ -2067,9 +2067,9 @@ private struct ModelRow: View {
             }.buttonStyle(.plain).help("Uninstall and free disk")
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(Color.white.opacity(hover ? 0.07 : 0.035))
+        .background(hover ? Brand.ink600 : Brand.ink700)
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(hover ? 0.13 : 0.06), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(hover ? Brand.line2 : Brand.line1, lineWidth: 1))
         .onHover { h in withAnimation(Brand.ease) { hover = h } }
     }
 }
@@ -2123,7 +2123,7 @@ private struct CommandPalette: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.black.opacity(0.45).ignoresSafeArea().onTapGesture { model.paletteOpen = false }
+            Brand.ink1000.opacity(0.6).ignoresSafeArea().onTapGesture { model.paletteOpen = false }
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass").font(.system(size: 13, weight: .semibold)).foregroundStyle(Brand.bone400)
@@ -2291,7 +2291,7 @@ struct SnapshotView: View {
                         Text(msg.text).font(Brand.mono(14)).foregroundStyle(Brand.bone50)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                            .background(isUser ? Brand.ink700 : Color.white.opacity(0.03))
+                            .background(isUser ? Brand.ink700 : Brand.ink800)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
