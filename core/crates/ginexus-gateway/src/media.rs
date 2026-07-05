@@ -17,6 +17,21 @@ fn dims(size: &str) -> (u32, u32) {
     }
 }
 
+/// Aspect-ratio presets — all dimensions divisible by 16 (MLX-friendly), ~1MP or less.
+fn ratio_dims(ratio: &str) -> Option<(u32, u32)> {
+    match ratio {
+        "1:1" => Some((1024, 1024)),
+        "16:9" => Some((1280, 720)),
+        "9:16" => Some((720, 1280)),
+        "4:3" => Some((1152, 864)),
+        "3:4" => Some((864, 1152)),
+        "3:2" => Some((1248, 832)),
+        "2:3" => Some((832, 1248)),
+        "21:9" => Some((1344, 576)),
+        _ => None,
+    }
+}
+
 pub fn image_generate_tool(base: String, app_host: Option<(String, String)>) -> Tool {
     let base = Arc::new(base.trim_end_matches('/').to_string());
     let host = Arc::new(app_host);
@@ -41,7 +56,10 @@ pub fn image_generate_tool(base: String, app_host: Option<(String, String)>) -> 
         json!({"type": "object",
                "properties": {
                    "prompt": {"type": "string"},
-                   "size": {"type": "string", "enum": ["1024x1024", "1280x720", "768x1344"]},
+                   "aspect_ratio": {"type": "string",
+                       "enum": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"],
+                       "description": "picture shape — map the user's words to a ratio: square 1:1 (default), widescreen/landscape/banner 16:9, phone-vertical/story/portrait 9:16, classic photo 3:2 or 4:3 (portrait 2:3 / 3:4), ultrawide/cinematic 21:9"},
+                   "size": {"type": "string", "enum": ["1024x1024", "1280x720", "768x1344"], "description": "legacy — prefer aspect_ratio"},
                    "seed": {"type": "integer"},
                    "location": {"type": "string", "enum": ["downloads", "desktop", "documents"], "description": "also save the PNG into this user folder"}},
                "required": ["prompt"]}),
@@ -52,7 +70,11 @@ pub fn image_generate_tool(base: String, app_host: Option<(String, String)>) -> 
                 return ToolResult::err("missing 'prompt'");
             }
             let location = args.get("location").and_then(|v| v.as_str()).map(|s| s.trim().to_lowercase());
-            let (w, h) = dims(args.get("size").and_then(|v| v.as_str()).unwrap_or("1024x1024"));
+            let (w, h) = args
+                .get("aspect_ratio")
+                .and_then(|v| v.as_str())
+                .and_then(ratio_dims)
+                .unwrap_or_else(|| dims(args.get("size").and_then(|v| v.as_str()).unwrap_or("1024x1024")));
             let mut body = json!({"prompt": prompt, "width": w, "height": h, "model": "z-image-turbo"});
             if let Some(seed) = args.get("seed").and_then(|v| v.as_i64()) {
                 body["seed"] = json!(seed);
@@ -116,6 +138,21 @@ mod tests {
         assert_eq!(dims("1280x720"), (1280, 720));
         assert_eq!(dims("768x1344"), (768, 1344));
         assert_eq!(dims("weird"), (1024, 1024)); // default
+    }
+
+    #[test]
+    fn ratio_dims_map() {
+        assert_eq!(ratio_dims("1:1"), Some((1024, 1024)));
+        assert_eq!(ratio_dims("16:9"), Some((1280, 720)));
+        assert_eq!(ratio_dims("9:16"), Some((720, 1280)));
+        assert_eq!(ratio_dims("21:9"), Some((1344, 576)));
+        assert_eq!(ratio_dims("weird"), None); // falls back to size/default
+        // every preset is 16-divisible (MLX-friendly)
+        for r in ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"] {
+            let (w, h) = ratio_dims(r).unwrap();
+            assert_eq!(w % 16, 0, "{r} width");
+            assert_eq!(h % 16, 0, "{r} height");
+        }
     }
 
     #[test]
