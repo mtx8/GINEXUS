@@ -16,7 +16,7 @@ enum Brand {
     // MARK: ink / surface ramp (Silo Unison values)
     static let ink1000 = hex(0x050507)   // deepest — vignette extremes / scrims
     static let ink900  = hex(0x0A0A0C)   // PRIMARY canvas (never pure black)
-    static let ink850  = hex(0x0F0F13)   // recessed surfaces (sidebar, headers, footers)
+    static let ink850  = hex(0x0A0A0C)   // side panels sit on clean canvas (Silo Unison: two surface tones only)
     static let ink800  = hex(0x131318)   // EXISTING alias (== panel base); kept for back-compat
     static let ink700  = hex(0x131318)   // panel base (cards, fields, chips)
     static let ink600  = hex(0x1A1A22)   // raised card / selected fill
@@ -40,7 +40,7 @@ enum Brand {
     static let ember400 = hex(0xEDA23F)  // hover/bright variant
     static let ember500 = hex(0xE08A2A)  // PRIMARY accent
     static let ember600 = hex(0xBD6F1A)
-    static let ember700 = hex(0x8E5210)  // accent border/stroke (dim)
+    static let ember700 = hex(0xB56F1E)  // accent border/stroke (Silo Unison focus-ring ember)
     /// Dark text sat ON a solid-ember button — near-black warm ink.
     static let emberText = hex(0x141005)
 
@@ -284,8 +284,8 @@ struct Panel<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(padding)
-        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.line1, lineWidth: 1))
+        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
     }
 }
 
@@ -327,9 +327,9 @@ struct BlockCard<Content: View>: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16).padding(.vertical, 13)
-        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10)
-            .stroke(active ? Brand.ember700.opacity(0.7) : Brand.line1, lineWidth: 1))
+        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .stroke(active ? Brand.ember700 : Brand.line1, lineWidth: 1))
     }
 }
 

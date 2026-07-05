@@ -642,9 +642,9 @@ struct ContentView: View {
                 }
             }
             .padding(14)
-            .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16)
-                .stroke(composerFocused ? Brand.ember700.opacity(0.7) : Brand.line1, lineWidth: 1))
+            .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(composerFocused ? Brand.ember700 : Brand.line1, lineWidth: 1))
             .animation(Brand.ease, value: composerFocused)
         }
     }
