@@ -69,6 +69,9 @@ struct AppState {
     /// inactivity-triggered profile refresh in the heartbeat.
     last_activity: AtomicI64,
     last_consolidated: AtomicI64,
+    /// SP-FAB: shared fabrication state (printer fleet, jobs) — the same instance behind the
+    /// fab_* agent tools and the /v1/fab/* routes the app UI polls.
+    fab: Arc<ginexus_print::FabState>,
 }
 
 /// Prepend the core-memory system preamble (if any) so the model always has persistent context.
@@ -110,7 +113,18 @@ read_pdf_text for PDFs). To FILL a form: for a PDF call read_pdf_fields then fil
 WEB: you CAN search the web — call web_search to find current sources, then web_fetch to read them. \
 Never claim you lack web access. When you actually use a tool, do it rather than describing how the user \
 could do it themselves. \
-PAST SESSIONS: Before claiming you don't remember earlier work, search past sessions with session_search.";
+PAST SESSIONS: Before claiming you don't remember earlier work, search past sessions with session_search. \
+FABRICATION (3D printing): you operate the user's printer fleet through the fab_* tools as three roles — \
+FAB-CAD understands the part (read the user's documents/drawings for requirements, author geometry with \
+cad_generate, ALWAYS gate any model through fab_analyze_model and repair before slicing); FAB-OPS runs the \
+machines (fab_discover_printers/fab_add_printer once, then fab_slice_model → fab_upload → fab_start_print; \
+starting, resuming, and clearing a plate ALWAYS require the user's approval because printers cannot sense \
+resin, plate, or lid); FAB-QA watches prints (fab_printer_status, fab_list_jobs) and on ANY anomaly calls \
+fab_pause_print immediately — pausing is always safe and never needs approval — then reports to the user. \
+NEVER invent resin exposure or lift settings: slicing uses curated profile .ini files only. One job per \
+printer; a finished plate must be cleared by the user before the next job starts. PSS: never download, \
+install, or update slicers/tools/firmware yourself — if PrusaSlicer or UVtools is missing, tell the user \
+to install the OFFICIAL build manually (prusa3d.com; github.com/sn4k3/UVtools) and stop there.";
 
 /// The Nexus Enterprise Conductor brief — bundled into the binary (no runtime ~/Desktop dependency)
 /// so GINEXUS *is* the Conductor by default and routes tasks to the right department/team via OSRO.
@@ -493,6 +507,23 @@ fn main() {
         ginexus_gateway::printful::run_stdio();
         return;
     }
+    // Subcommand: run as the GINEXUS Fab MCP server (SP-FAB) — the fabrication tool set over
+    // stdio for external MCP hosts (Claude Code, Hermes). Reuses the signed core binary like
+    // --printful-mcp. SAFETY: hard-gated physical actions (start/resume/clear) are EXCLUDED by
+    // default because this path has no GINEXUS approval loop; the operator can opt in by setting
+    // GINEXUS_FAB_MCP_UNLOCK=1 and relying on the host's own confirmation UX.
+    if std::env::args().skip(1).any(|a| a == "--fab-mcp") {
+        let fab = ginexus_print::FabState::open(&state_dir());
+        let unlock = std::env::var("GINEXUS_FAB_MCP_UNLOCK").map(|v| v == "1").unwrap_or(false);
+        let mut reg = ginexus_agent::ToolRegistry::new();
+        for t in ginexus_print::fab_tools(fab) {
+            if !t.hard_gate || unlock {
+                reg.register(t);
+            }
+        }
+        ginexus_mcp::server::serve("ginexus-fab", reg);
+        return;
+    }
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -564,6 +595,14 @@ async fn run_server() {
         let robo = sd.join("robotics");
         registry.register(ginexus_agent::robotics::cad_generate_tool(robo.clone()));
         registry.register(ginexus_agent::robotics::cad_slice_tool(robo));
+    }
+    // SP-FAB (SP-Robotics Phase 3): the fabrication engine — printer fleet (SDCP/OctoPrint/
+    // Moonraker/mock), mesh gate, resin+FDM slice pipeline, job queue. Safety doctrine lives in
+    // the tools themselves: start/resume/clear-job are hard-gated (approval even in autonomous
+    // mode), pause stays autonomous. The app UI reads the same state via /v1/fab/*.
+    let fab = ginexus_print::FabState::open(&sd);
+    for t in ginexus_print::fab_tools(fab.clone()) {
+        registry.register(t);
     }
     // SP6: local image generation — registered only when the app launched the media sidecar and
     // injected its base URL. Generation is autonomous (writes only into the media dir).
@@ -784,6 +823,7 @@ async fn run_server() {
         playbook_index,
         last_activity: AtomicI64::new(0),
         last_consolidated: AtomicI64::new(0),
+        fab,
     });
 
     // Heartbeat: run due scheduled tasks unattended (read-only tools, kill-switch-respecting).
@@ -970,6 +1010,119 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
             if removed {
                 let _ = std::fs::remove_dir_all(state.schedules.files_dir(id)); // drop the task's files
                 let _ = state.audit.record("schedule_remove", json!({"id": id}));
+            }
+            json_ok(&mut stream, json!({"removed": removed})).await;
+        }
+        // ── SP-FAB: fabrication fleet + jobs for the app's Fabrication section ──
+        ("GET", "/v1/fab/printers") => {
+            // Configs + live status per printer. Drivers do blocking network IO with bounded
+            // timeouts — run the sweep on the blocking pool, one printer at a time (SDCP
+            // connection-cap discipline is per-printer, so serial is the safe default).
+            let fab = state.fab.clone();
+            let rows = tokio::task::spawn_blocking(move || {
+                let configs: Vec<_> = fab.printers.lock().unwrap().list().to_vec();
+                configs
+                    .into_iter()
+                    .map(|cfg| {
+                        let status = fab
+                            .driver_for(&cfg)
+                            .and_then(|d| d.status())
+                            .unwrap_or_else(|_| ginexus_print::driver::PrinterStatus::offline());
+                        json!({
+                            "printer_id": cfg.id, "name": cfg.name, "kind": cfg.kind,
+                            "host": cfg.host, "model": cfg.model,
+                            "state": status.state.label(), "progress": status.progress,
+                            "current_layer": status.current_layer,
+                            "total_layers": status.total_layers,
+                            "time_left_secs": status.time_left_secs,
+                            "job_name": status.job_name, "detail": status.detail,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            json_ok(&mut stream, json!({"printers": rows})).await;
+        }
+        ("POST", "/v1/fab/printers") => {
+            let cfg = ginexus_print::registry::PrinterConfig {
+                id: String::new(),
+                name: body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                kind: body.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                host: body.get("host").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                mainboard_id: body.get("mainboard_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                model: body.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                api_key_env: body.get("api_key_env").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            };
+            let added = { state.fab.printers.lock().unwrap().add(cfg) };
+            match added {
+                Ok(id) => {
+                    let _ = state.audit.record("fab_printer_add", json!({"id": id}));
+                    json_ok(&mut stream, json!({"id": id})).await;
+                }
+                Err(e) => err(&mut stream, 400, "Bad Request", &e).await,
+            }
+        }
+        ("POST", "/v1/fab/printers/remove") => {
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let removed = state.fab.printers.lock().unwrap().remove(&id);
+            if removed {
+                let _ = state.audit.record("fab_printer_remove", json!({"id": id}));
+            }
+            json_ok(&mut stream, json!({"removed": removed})).await;
+        }
+        ("POST", "/v1/fab/discover") => {
+            let host = body.get("host").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let timeout = std::time::Duration::from_secs(
+                body.get("timeout_secs").and_then(|v| v.as_u64()).unwrap_or(3).clamp(1, 15),
+            );
+            let found = tokio::task::spawn_blocking(move || {
+                if host.is_empty() {
+                    ginexus_print::sdcp::client::discover(timeout)
+                } else {
+                    ginexus_print::sdcp::client::probe(&host, timeout)
+                }
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("discovery task failed: {e}")));
+            match found {
+                Ok(list) => {
+                    let rows: Vec<Value> = list
+                        .iter()
+                        .map(|r| json!({
+                            "name": r.data.name, "model": r.data.machine_name,
+                            "brand": r.data.brand_name, "ip": r.data.mainboard_ip,
+                            "mainboard_id": r.data.mainboard_id,
+                            "protocol": r.data.protocol_version,
+                            "firmware": r.data.firmware_version,
+                        }))
+                        .collect();
+                    json_ok(&mut stream, json!({"printers": rows})).await;
+                }
+                Err(e) => err(&mut stream, 502, "Bad Gateway", &e).await,
+            }
+        }
+        ("GET", "/v1/fab/jobs") => {
+            let rows: Vec<Value> = {
+                let jobs = state.fab.jobs.lock().unwrap();
+                jobs.list()
+                    .iter()
+                    .map(|j| json!({
+                        "job_id": j.id, "name": j.name, "printer_id": j.printer_id,
+                        "state": j.state, "sliced_path": j.sliced_path,
+                        "validation": j.validation, "created_ms": j.created_ms,
+                        "updated_ms": j.updated_ms,
+                    }))
+                    .collect()
+            };
+            json_ok(&mut stream, json!({"jobs": rows})).await;
+        }
+        ("POST", "/v1/fab/jobs/remove") => {
+            // The UI's "clear job" — a human clicking IS the physical plate-clear confirmation.
+            let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let removed = state.fab.jobs.lock().unwrap().remove(&id);
+            if removed {
+                let _ = state.audit.record("fab_job_clear", json!({"id": id}));
             }
             json_ok(&mut stream, json!({"removed": removed})).await;
         }

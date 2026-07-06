@@ -37,6 +37,17 @@ Chat/agent: **Qwen3-30B-A3B-Instruct-2507** · escalate **gpt-oss-120b** · code
 API for interactive · STT **Parakeet-TDT-0.6b-v3** · TTS **Kokoro-82M**. Router = LiteLLM-style
 OpenAI-compatible, Tier 0 Apple FM / Tier 1 MLX / Tier 2 API. **Avoid FP8 (Metal crash class).**
 
+## SP-FAB — Fabrication (3D printing)
+- Crate `core/crates/ginexus-print` + app `FabricationView.swift` (sidebar → Fabrication section).
+  Design: `docs/superpowers/specs/2026-07-06-sp-fab-fabrication-design.md`.
+- **Safety doctrine (load-bearing, pinned by tests):** `fab_start_print`/`fab_resume_print`/
+  `fab_clear_job` are HARD-GATED (approval even in autonomous mode); `fab_pause_print` is always
+  autonomous. Never weaken. Resin exposure/lift settings are never synthesized — curated .ini only.
+- **PSS:** the fab module never downloads/installs tools; external CLIs = official PrusaSlicer +
+  UVtools at fixed `/Applications` paths, `codesign -v` preflight; AGPL tools external-process only.
+- `--fab-mcp` subcommand = fab tools as a stdio MCP server (hard-gated tools excluded unless
+  `GINEXUS_FAB_MCP_UNLOCK=1`). UI colors: cyan (`Brand.cyan500`) = live-data values ONLY.
+
 ## Hard rules
 - **NEVER access `~/Library/Mobile Documents/` (iCloud)** — global HARD RULE #1.
 - All OS calls (Calendar/Contacts/Mail/Accessibility) originate in the **signed Swift app**, never

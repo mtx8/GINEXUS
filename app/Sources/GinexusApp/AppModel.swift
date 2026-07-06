@@ -167,6 +167,12 @@ struct PendingAction: Identifiable {
     let messages: [[String: Any]]   // the conversation to re-run once approved (content may be multimodal)
 }
 
+/// Which pane the detail area shows. Chat is the Execution Stream; Fabrication is the SP-FAB
+/// printer console. Sheets (Projects/Memory/…) stay sheets — sections replace the detail pane.
+enum AppSection {
+    case chat, fabrication
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published var bundleId = Bundle.main.bundleIdentifier ?? "(unbundled)"
@@ -697,6 +703,7 @@ final class AppModel: ObservableObject {
     /// tracked as unsaved so it isn't written to disk until it has content.
     func newChat() {
         guard !sending else { return }
+        section = .chat   // leaving Fabrication (its poll timer self-heals off-section)
         // Already on a fresh, empty, unsaved chat → stay put (don't spawn duplicate empty tiles).
         if let id = activeConversationID, chat.isEmpty, unsavedIDs.contains(id) { return }
         let id = UUID()
@@ -727,6 +734,7 @@ final class AppModel: ObservableObject {
     /// Switch to a saved conversation. Blocked mid-stream (postAgent finds its bubble by id in `chat`;
     /// swapping `chat` underneath it would drop the streamed reply into the wrong conversation).
     func selectConversation(_ id: UUID) {
+        section = .chat   // clicking any conversation always returns to the Execution Stream
         guard !sending, id != activeConversationID else { return }
         dropActiveIfEmpty()   // clean up the empty "New chat" tile we're leaving
         let store = convStore
@@ -1452,6 +1460,133 @@ final class AppModel: ObservableObject {
     /// (web search → cross-check → cited report). One-shot — it disarms after firing.
     @Published var deepResearchMode = false
     func toggleDeepResearch() { deepResearchMode.toggle() }
+
+    // MARK: SP-FAB — the Fabrication section (printer fleet console)
+    @Published var section: AppSection = .chat
+    @Published var fabPrinters: [FabPrinter] = []
+    @Published var fabJobs: [FabJobItem] = []
+    @Published var fabLoading = false
+    @Published var fabSelectedID: String?          // printer tab; nil = ALL
+    @Published var fabAddSheetOpen = false
+    @Published var fabDiscovered: [[String: String]] = []
+    @Published var fabDiscovering = false
+    @Published var fabError: String?
+    private var fabTimer: Timer?
+
+    /// Open the Fabrication section and start the live poll (4 s while the section is visible).
+    func openFabrication() {
+        section = .fabrication
+        refreshFab()
+        fabTimer?.invalidate()
+        fabTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // Self-healing: stop polling the moment the user leaves the section.
+                guard self.section == .fabrication else {
+                    self.fabTimer?.invalidate()
+                    self.fabTimer = nil
+                    return
+                }
+                self.refreshFab()
+            }
+        }
+    }
+
+    /// Reload printers (with live status) + jobs from the core.
+    func refreshFab() {
+        guard connected, !fabLoading else { return }
+        fabLoading = true
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let printers = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/fab/printers", token: tok, jsonBody: nil)
+            }.value
+            let jobs = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/fab/jobs", token: tok, jsonBody: nil)
+            }.value
+            fabLoading = false
+            if case .success(let r) = printers, let d = r.body.data(using: .utf8),
+               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+               let arr = o["printers"] as? [[String: Any]] {
+                fabPrinters = arr.compactMap { FabPrinter.parse($0) }
+            }
+            if case .success(let r) = jobs, let d = r.body.data(using: .utf8),
+               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+               let arr = o["jobs"] as? [[String: Any]] {
+                fabJobs = arr.compactMap { FabJobItem.parse($0) }
+                    .sorted { $0.updatedMs > $1.updatedMs }
+            }
+        }
+    }
+
+    /// SDCP discovery sweep (or a single-IP probe when broadcast can't reach the printer).
+    func fabDiscover(host: String = "") {
+        guard connected, !fabDiscovering else { return }
+        fabDiscovering = true
+        fabDiscovered = []
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: host.isEmpty ? [:] : ["host": host])
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/discover", token: tok, jsonBody: body)
+            }.value
+            fabDiscovering = false
+            guard case .success(let r) = res, let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let arr = o["printers"] as? [[String: Any]] else {
+                fabError = "discovery failed — check the core connection"
+                return
+            }
+            fabDiscovered = arr.map { row in
+                var out: [String: String] = [:]
+                for (k, v) in row { out[k] = v as? String ?? "" }
+                return out
+            }
+        }
+    }
+
+    func fabAddPrinter(name: String, kind: String, host: String, model: String,
+                       mainboardID: String = "", apiKeyEnv: String = "") {
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: [
+            "name": name, "kind": kind, "host": host, "model": model,
+            "mainboard_id": mainboardID, "api_key_env": apiKeyEnv,
+        ])
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/printers", token: tok, jsonBody: body)
+            }.value
+            if case .success(let r) = res, r.status >= 400 {
+                fabError = "could not add printer (\(r.body))"
+            }
+            refreshFab()
+        }
+    }
+
+    func fabRemovePrinter(_ id: String) {
+        fabPrinters.removeAll { $0.id == id }
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["id": id])
+        Task {
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/printers/remove", token: tok, jsonBody: body)
+            }.value
+            refreshFab()
+        }
+    }
+
+    /// The human clicking "clear" IS the physical confirmation that the plate is empty.
+    func fabClearJob(_ id: String) {
+        fabJobs.removeAll { $0.id == id }
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["id": id])
+        Task {
+            _ = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/jobs/remove", token: tok, jsonBody: body)
+            }.value
+            refreshFab()
+        }
+    }
 
     // MARK: scheduled tasks (cron jobs) — routine automation that runs unattended on a cadence
     @Published var schedulesOpen = false

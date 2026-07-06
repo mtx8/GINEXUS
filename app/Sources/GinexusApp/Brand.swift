@@ -49,6 +49,14 @@ enum Brand {
     static let sea500 = hex(0x2E6F84)    // Ryukyu sea — subtle support
     static let sea300 = hex(0x6FA8B8)
 
+    // MARK: cyan — the OMNISCIENT live-data accent, scoped to the FABRICATION console.
+    // Law (OMNISCIENT native grammar): cyan marks LIVE DATA VALUES only — telemetry numbers,
+    // progress, rising counts. Never on buttons, nav, or chrome (that stays ember). One accent
+    // per element; ember and cyan never color the same glyph.
+    static let cyan500 = hex(0x00E5FF)   // live-data value / active telemetry
+    static let cyan300 = hex(0x7FF2FF)   // bright variant (emphasized value)
+    static let cyan700 = hex(0x00A8BC)   // dimmed track/edge for cyan elements
+
     // MARK: chrome (headline metal)
     static let chrome100 = hex(0xF2F2F2)
     static let chrome300 = hex(0xB8B8B8)

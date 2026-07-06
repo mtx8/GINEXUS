@@ -67,6 +67,9 @@ targets:
         NSCalendarsFullAccessUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
         NSCalendarsUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
         NSMicrophoneUsageDescription: "GINEXUS uses the microphone for hands-free voice conversation — your speech is transcribed locally on this Mac and never leaves the device."
+        # SP-FAB: UDP broadcast discovery + printer control on the LAN triggers macOS 15+ Local
+        # Network privacy; without this string (and a granted prompt) discovery silently finds nothing.
+        NSLocalNetworkUsageDescription: "GINEXUS finds and monitors your 3D printers on your local network."
     settings:
       base:
         PRODUCT_NAME: GINEXUS

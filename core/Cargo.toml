@@ -12,6 +12,7 @@ members = [
     "crates/ginexus-memory",
     "crates/ginexus-skills",
     "crates/ginexus-sanitize",
+    "crates/ginexus-print",
     "crates/ginexus-server",
 ]
 
@@ -30,7 +31,7 @@ hex = "0.4"
 async-trait = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "sync", "time"] }
-reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "stream", "multipart"] }
 ginexus-security = { path = "crates/ginexus-security" }
 ginexus-agent = { path = "crates/ginexus-agent" }
 ginexus-gateway = { path = "crates/ginexus-gateway" }
@@ -38,6 +39,7 @@ ginexus-mcp = { path = "crates/ginexus-mcp" }
 ginexus-memory = { path = "crates/ginexus-memory" }
 ginexus-skills = { path = "crates/ginexus-skills" }
 ginexus-sanitize = { path = "crates/ginexus-sanitize" }
+ginexus-print = { path = "crates/ginexus-print" }
 
 [profile.release]
 lto = true

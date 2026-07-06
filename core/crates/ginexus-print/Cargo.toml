@@ -1,0 +1,19 @@
+[package]
+name = "ginexus-print"
+description = "GINEXUS fabrication engine — printer drivers (SDCP/OctoPrint/Moonraker), mesh gate, slice pipeline, job queue, fab agent tools (SP-FAB)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+ginexus-agent.workspace = true
+# Blocking IO by design: fab tools run on the agent loop's spawn_blocking pool, and the
+# `--fab-mcp` stdio server has no async runtime (same pattern as ginexus-gateway::printful).
+tungstenite = "0.24"          # SDCP WebSocket (ws:// plain — no TLS features needed)
+md-5 = "0.10"                 # SDCP upload S-File-MD5 header
+stl_io = "0.11"               # STL read/write for the mesh gate

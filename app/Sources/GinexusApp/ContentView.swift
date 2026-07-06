@@ -91,6 +91,8 @@ struct ContentView: View {
                     model.connectionsOpen = true
                 }
                 navItem("clock.arrow.circlepath", "Schedules", id: "schedules", enabled: model.connected) { model.openSchedules() }
+                navItem("printer", "Fabrication", id: "fab", enabled: model.connected,
+                        selected: model.section == .fabrication) { model.openFabrication() }
             }
             .padding(.horizontal, 12)
 
@@ -149,9 +151,10 @@ struct ContentView: View {
     }
 
     private func navItem(_ icon: String, _ label: String, id: String, enabled: Bool,
-                         animating: Bool = false, _ action: @escaping () -> Void) -> some View {
+                         animating: Bool = false, selected: Bool = false,
+                         _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            RailItem(icon: icon, label: label, selected: false, hovered: hoveredNav == id)
+            RailItem(icon: icon, label: label, selected: selected, hovered: hoveredNav == id)
         }
         .buttonStyle(.plain).disabled(!enabled)
         .opacity(enabled ? 1 : 0.5)
@@ -234,6 +237,16 @@ struct ContentView: View {
 
     // MARK: ── detail: header + stream (or Home) + composer ────────────────────
     private var detail: some View {
+        Group {
+            if model.section == .fabrication {
+                FabricationView(model: model)
+            } else {
+                chatDetail
+            }
+        }
+    }
+
+    private var chatDetail: some View {
         VStack(spacing: 0) {
             header
                 .padding(.horizontal, 22).padding(.top, 26).padding(.bottom, 12)

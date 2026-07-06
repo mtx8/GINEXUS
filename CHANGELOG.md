@@ -23,6 +23,27 @@ running history.
 
 ---
 
+## 2026-07-06 — SP-FAB: the Fabrication module — AI-run 3D printing (branch `feat/sp-fab`)
+
+SP-Robotics Phase 3 ships: GINEXUS now operates real 3D printers. New **`ginexus-print`** crate
+(9th): a unified `PrinterDriver` layer with the **first Rust implementation of Elegoo/Chitu SDCP
+V3** (UDP discovery, WebSocket control, chunked-MD5 upload — protocol-tested against an
+in-process mock printer), OctoPrint + Moonraker REST drivers, a deterministic mock, a pure-Rust
+**mesh gate** (watertight/manifold, volume, bbox, overhangs → ModelReport), the open-source
+**resin pipeline** (PrusaSlicer SLA → SL1 → UVtools → .goo/.ctb/.pm7/.pwsz + island/resin-trap
+validation) and FDM pipeline, and a persisted **job queue** with a manual-unload gate. 14 `fab_*`
+agent tools under the SP-FAB safety doctrine: **start/resume/plate-clear are hard-gated**
+(approval even in autonomous mode — printers can't sense resin/plate/lid), pause is always free.
+**PSS enforced**: no downloads ever, fixed `/Applications` tool paths, `codesign -v` preflight,
+copyleft tools stay external processes, keys stay in env/Keychain. New generic **MCP stdio
+server** (`ginexus_mcp::server`) + `--fab-mcp` subcommand exports the fab tools to external MCP
+hosts (hard-gated tools excluded by default). App: new **Fabrication section** (sidebar → detail
+pane): printer rack with live telemetry (OMNISCIENT **cyan = live data** law joins the Silo
+Unison recipe), per-printer tabs, job queue with "Plate Cleared" human confirmation, SDCP
+discover + manual-IP add-printer flow, 4-s live polling; `NSLocalNetworkUsageDescription` added.
+Research basis: 33-agent verified workflow (SDCP spec, Anycubic M7 cloud-lock → R2, MCP
+landscape, headless slicing, CAD-AI). Design: `docs/superpowers/specs/2026-07-06-sp-fab-fabrication-design.md`.
+
 ## 2026-07-01 — Hermes incorporation #8: learning loop B3 — inactivity curator (Phase B COMPLETE) (branch `feat/hermes-incorporation`)
 
 Phase B Increment B3 — the self-improvement loop now maintains itself when idle: after ~5 min of no

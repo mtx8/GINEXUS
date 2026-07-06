@@ -21,6 +21,7 @@ parse it, identify the owning department(s)/team(s), and route through the chain
 | CODE | Department | Handles (keywords) | Key teams |
 |------|-----------|--------------------|-----------|
 | ENG | Engineering | code, APIs, builds, software, automation, DevOps, infra, mobile/embedded, hardware, performance | CORE, AIML, AUTO, DEVOPS, MOBILE, PERF, HW |
+| ENG-HW/FAB | Fabrication (SP-FAB) | 3D printing, printers (Elegoo/SDCP, OctoPrint, Moonraker), CAD, slicing, resin/FDM, print jobs — roles: FAB-CAD (model understanding/requirements), FAB-OPS (machines: slice→upload→approval-gated start), FAB-QA (monitoring; pause-first on anomaly) | fab_* tools; SEC PSS: no tool downloads, start/resume/clear always Principal-approved |
 | SEC | Cyber Security | threats, vulnerabilities, compliance, audit, appsec, cloud/IAM/secrets, PSS halt authority | THREAT, OPS, COMPLIANCE, APPSEC, CLOUD |
 | RND | Research & Development | tech scouting, innovation research, knowledge mgmt, trends, emerging tech, patents (R&D) | SCOUT, INNOV, KNOW, TREND |
 | AIL | AI Lab | ML research, models, neural archs, robotics/drones, computer vision, NLP/agentic AI, AI safety | MATH, ML, ROBO, CV, NLP, SAFETY, ANIMA |

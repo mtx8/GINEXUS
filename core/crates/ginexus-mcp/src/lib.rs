@@ -4,6 +4,8 @@
 //! tool is HITL-gated (we don't know an external tool's side effects), per the OpenClaw lesson.
 //! Calls are blocking (run on the agent loop's spawn_blocking pool).
 
+pub mod server;
+
 use ginexus_agent::{Tool, ToolRegistry, ToolResult};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, BufReader, Write};
