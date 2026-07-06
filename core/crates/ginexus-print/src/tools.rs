@@ -768,4 +768,28 @@ mod tests {
         let out = t.run(json!({"path": "/tmp/definitely-not-here-gx.stl"}));
         assert!(!out.ok);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_rejects_symlink_into_icloud() {
+        // A symlink whose NAME has no iCloud markers but which points into a
+        // "Mobile Documents" tree must still be refused (canonicalize catches it).
+        let base = std::env::temp_dir().join(format!("gx-fab-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let icloud = base.join("Library/Mobile Documents/com~apple~CloudDocs");
+        std::fs::create_dir_all(&icloud).unwrap();
+        let real = icloud.join("secret.stl");
+        std::fs::write(&real, b"x").unwrap();
+        let link = base.join("innocent.stl");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(resolve_model_path(&link.to_string_lossy()).is_err(),
+                "symlink into an iCloud tree must be refused");
+        // A symlink to a benign local file resolves fine.
+        let benign = base.join("ok.stl");
+        std::fs::write(&benign, b"y").unwrap();
+        let benign_link = base.join("alias.stl");
+        std::os::unix::fs::symlink(&benign, &benign_link).unwrap();
+        assert!(resolve_model_path(&benign_link.to_string_lossy()).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

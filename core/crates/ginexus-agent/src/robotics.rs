@@ -88,13 +88,23 @@ fn resolve_in(dir: &Path, raw: &str) -> Option<PathBuf> {
         return None;
     }
     let p = PathBuf::from(&expanded);
-    if p.is_absolute() {
-        Some(p)
+    let resolved = if p.is_absolute() {
+        p
     } else {
         // bare/relative → single filename inside the workspace (no traversal)
         let name = Path::new(&expanded).file_name()?.to_string_lossy().to_string();
-        Some(dir.join(name))
+        dir.join(name)
+    };
+    // Canonicalize (when the file exists) and re-check: a symlink whose NAME doesn't contain the
+    // iCloud markers but which points into iCloud is still refused. Non-existent paths pass through
+    // (the caller's own exists() check handles them) — canonicalize would just fail there.
+    if let Ok(canon) = std::fs::canonicalize(&resolved) {
+        if is_icloud(&canon.to_string_lossy()) {
+            return None;
+        }
+        return Some(canon);
     }
+    Some(resolved)
 }
 
 pub fn cad_generate_tool(robotics_dir: PathBuf) -> Tool {

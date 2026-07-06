@@ -46,11 +46,18 @@ pub fn load<T: DeserializeOwned>(path: &Path) -> Load<T> {
     }
 }
 
-/// Atomically write a value as pretty JSON: temp file in the same dir, then rename over the target.
+/// Atomically write a value as pretty JSON: temp file in the same dir, fsync, then rename over
+/// the target. The fsync guarantees the bytes hit disk before the rename publishes them, so a
+/// power loss can't leave a renamed-but-empty file.
 pub fn save<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    use std::io::Write;
     let json = serde_json::to_string_pretty(value).map_err(|e| format!("serialize: {e}"))?;
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, json.as_bytes()).map_err(|e| format!("write temp: {e}"))?;
+    {
+        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("create temp: {e}"))?;
+        f.write_all(json.as_bytes()).map_err(|e| format!("write temp: {e}"))?;
+        f.sync_all().map_err(|e| format!("fsync temp: {e}"))?;
+    }
     std::fs::rename(&tmp, path).map_err(|e| format!("rename: {e}"))?;
     Ok(())
 }
