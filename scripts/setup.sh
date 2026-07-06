@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # GINEXUS Setup — the terminal onboarding path (for users who cloned from GitHub).
-# Detects your Mac's capabilities, installs the Ollama runtime if missing, and pulls a
-# right-sized local model. Mirrors the in-app Setup Assistant's recommendation ladder so the
-# result is identical whichever path you take.
+# Detects your Mac's capabilities, installs the Ollama runtime if missing, pulls a right-sized
+# local model, and writes it into the app's settings so launching GINEXUS.app "just works".
+# Mirrors the in-app Setup Assistant's recommendation ladder — same result whichever path you take.
 #
 # Usage:  bash scripts/setup.sh            (auto-recommend a model for this machine)
 #         bash scripts/setup.sh <ollama-tag>   (pull a specific model instead)
 #
-# PSS: installs ONLY the official Ollama (Homebrew formula or ollama.com installer) — nothing else,
-# no piped-shell from unknown hosts beyond Ollama's own signed installer, and it asks before installing.
+# PSS: installs ONLY the official Ollama — the Homebrew formula, or the code-signed app from
+# ollama.com which is verified with `codesign` before install. It asks before installing anything,
+# and never pipes a shell from an unknown host.
 set -euo pipefail
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -71,19 +72,46 @@ for c in /opt/homebrew/bin/ollama /usr/local/bin/ollama; do [ -x "$c" ] && OLLAM
 
 if [ -z "$OLLAMA" ]; then
   warn "Ollama isn't installed."
+  # Non-interactive stdin (piped/CI): don't silently abort on read EOF — bail with guidance.
+  if [ ! -t 0 ]; then
+    echo "Non-interactive shell. Install Ollama from https://ollama.com/download, then re-run this script."
+    exit 1
+  fi
   if command -v brew >/dev/null 2>&1; then
-    read -r -p "Install it now with Homebrew? [Y/n] " ans
+    ans=""
+    read -r -p "Install it now with Homebrew? [Y/n] " ans || ans="n"
     if [[ ! "$ans" =~ ^[Nn]$ ]]; then
       brew install ollama
       brew services start ollama || true
-      OLLAMA="$(command -v ollama)"
-    else
-      echo "Install it from https://ollama.com/download then re-run this script."; exit 1
+      OLLAMA="$(command -v ollama || true)"
     fi
-  else
-    echo "Homebrew not found. Install Ollama from https://ollama.com/download, then re-run this script."
-    exit 1
   fi
+  # Fallback (no brew, or the user declined brew): download the OFFICIAL, code-signed macOS app,
+  # verify its signature (PSS), and install it. Only the official ollama.com host is used.
+  if [ -z "$OLLAMA" ]; then
+    ans=""
+    read -r -p "Download the official Ollama app from ollama.com and install it? [Y/n] " ans || ans="n"
+    if [[ ! "$ans" =~ ^[Nn]$ ]]; then
+      TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+      dim "Downloading Ollama-darwin.zip…"
+      curl -fsSL "https://ollama.com/download/Ollama-darwin.zip" -o "$TMP/Ollama.zip"
+      ditto -x -k "$TMP/Ollama.zip" "$TMP" 2>/dev/null || unzip -q "$TMP/Ollama.zip" -d "$TMP"
+      APP="$(/usr/bin/find "$TMP" -maxdepth 2 -name 'Ollama.app' -print -quit)"
+      [ -n "$APP" ] || { warn "Download did not contain Ollama.app."; exit 1; }
+      # PSS: refuse an app that fails Apple code-signature verification.
+      if ! /usr/bin/codesign -v --deep --strict "$APP" 2>/dev/null; then
+        warn "Downloaded Ollama failed code-signature verification — refusing to install it."; exit 1
+      fi
+      rm -rf /Applications/Ollama.app
+      cp -R "$APP" /Applications/Ollama.app
+      open -a /Applications/Ollama.app || true
+      # The app bundles the CLI; also symlink is created by the app on first launch, but resolve now.
+      for c in /Applications/Ollama.app/Contents/Resources/ollama /opt/homebrew/bin/ollama /usr/local/bin/ollama; do
+        [ -x "$c" ] && OLLAMA="$c" && break
+      done
+    fi
+  fi
+  [ -n "$OLLAMA" ] || { echo "Ollama not installed. Get it from https://ollama.com/download, then re-run."; exit 1; }
 else
   ok "Ollama found: $OLLAMA"
 fi
@@ -107,16 +135,31 @@ dim  "This can take a few minutes on first run."
 "$OLLAMA" pull "$MODEL"
 echo
 
-# ── 5. record the choice for the app ─────────────────────────────────────────
+# ── 5. configure the app (write the SAME settings the app reads) ─────────────
 CFG_DIR="$HOME/Library/Application Support/GINEXUS"
 mkdir -p "$CFG_DIR"
-# A hint file the app / launcher can read to preseed the daily driver.
-printf '%s\n' "$MODEL" > "$CFG_DIR/smart_model.txt"
+SETTINGS="$CFG_DIR/settings.json"
+# Merge smartModel + setupComplete into settings.json (preserving any existing keys), so the app
+# picks up the chosen daily driver and skips the first-run wizard. Atomic temp+rename.
+python3 - "$SETTINGS" "$MODEL" <<'PY' || warn "Could not write settings.json — set the model in the app's Setup Assistant instead."
+import json, os, sys
+path, model = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f: cfg = json.load(f)
+    if not isinstance(cfg, dict): cfg = {}
+except Exception:
+    cfg = {}
+cfg["smartModel"] = model
+cfg["setupComplete"] = True
+tmp = path + ".tmp"
+with open(tmp, "w") as f: json.dump(cfg, f, indent=2)
+os.replace(tmp, path)
+print("wrote", path)
+PY
 
-ok "Done."
+ok "Done — GINEXUS is configured to use $MODEL."
 echo
 bold "Next steps"
-echo "  • Launch GINEXUS.app — it will use $MODEL as your daily driver."
-echo "  • Or run the core directly with:  GINEXUS_SMART_MODEL='$MODEL' <core> --uds <sock>"
+echo "  • Launch GINEXUS.app — it will use $MODEL as your daily driver (no further setup needed)."
 echo "  • Manage or swap models any time from the Models panel in the app."
 echo

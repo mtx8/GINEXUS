@@ -785,7 +785,7 @@ async fn run_server() {
 
     // Model roster: data-driven from GINEXUS_MODELS_CONFIG (JSON), else the built-in local stack
     // (fast=Qwen3-1.7B, smart=Qwen3-30B-A3B). Selection (auto/manual) happens per request.
-    let gateway = match std::env::var("GINEXUS_MODELS_CONFIG") {
+    let mut gateway = match std::env::var("GINEXUS_MODELS_CONFIG") {
         Ok(p) if !p.is_empty() => match Gateway::from_config_file(std::path::Path::new(&p)) {
             Ok(g) => {
                 eprintln!("models: loaded roster from {p}");
@@ -798,6 +798,9 @@ async fn run_server() {
         },
         _ => Gateway::default_local(),
     };
+    // The Setup Assistant's chosen daily driver (GINEXUS_SMART_MODEL) is a post-load override so it
+    // applies to WHICHEVER roster was built — a config file no longer silently ignores it.
+    gateway.apply_smart_model_override();
 
     // Semantic memory: install an embedder backed by the gateway's "embed" tier so recall matches
     // by MEANING (cosine over vectors), falling back to keyword if the embed model is unavailable.

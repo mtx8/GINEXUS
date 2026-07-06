@@ -245,16 +245,18 @@ fn tag_matches(installed: &str, catalog_id: &str) -> bool {
             && catalog_id.split(':').nth(1).is_none()
 }
 
-/// A one-line human verdict for the System-Check screen.
+/// A one-line human verdict for the System-Check screen. Derived from the recommended model's
+/// ACTUAL fit so the headline never contradicts the model screen's fit badge (e.g. a 32 GB machine
+/// where the 30B is "Tight", not "Comfortable").
 fn verdict(usable_ram_gb: f64, recommended: &str) -> String {
     let cap = catalog();
-    let label = cap.iter().find(|c| c.id == recommended).map(|c| c.label.as_str()).unwrap_or(recommended);
-    if usable_ram_gb >= 24.0 {
-        format!("Comfortable — runs the full daily driver ({label}) locally.")
-    } else if usable_ram_gb >= 10.0 {
-        format!("Good — best local fit is {label}; use a cloud API for the heaviest tier.")
-    } else {
-        format!("Limited local memory — {label} runs locally; lean on a cloud API for capable chat.")
+    let rec = cap.iter().find(|c| c.id == recommended);
+    let label = rec.map(|c| c.label.as_str()).unwrap_or(recommended);
+    let f = rec.map(|c| fit(c.size_gb, c.min_ram_gb, usable_ram_gb)).unwrap_or(Fit::Tight);
+    match f {
+        Fit::Comfortable => format!("Comfortable — runs the recommended model ({label}) locally with headroom."),
+        Fit::Tight => format!("Good — {label} runs locally, though memory is a little tight; a cloud API can cover the heaviest tier."),
+        Fit::WontFit => format!("Limited local memory — {label} is the best local fit; lean on a cloud API for capable chat."),
     }
 }
 

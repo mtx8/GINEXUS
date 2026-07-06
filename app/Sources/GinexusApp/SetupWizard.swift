@@ -91,10 +91,27 @@ struct SetupWizard: View {
                     .padding(12).background(Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
                 }
+            } else if model.setupProbeError != nil {
+                probeErrorView
             } else {
                 probingPlaceholder
             }
         }
+    }
+
+    private var probeErrorView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Brand.error)
+                Text(model.setupProbeError ?? "Detection failed.").font(Brand.body(12)).foregroundStyle(Brand.bone100)
+                Spacer(minLength: 0)
+            }
+            FabButton(title: model.setupProbing ? "Retrying…" : "Retry", icon: "arrow.clockwise",
+                      style: .primary, enabled: !model.setupProbing) { model.runSetupProbe() }
+        }
+        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.error.opacity(0.4), lineWidth: 1))
     }
 
     // ── 2. RUNTIME (Ollama) ──
@@ -242,9 +259,11 @@ struct SetupWizard: View {
     // ── 4. DOWNLOAD ──
     private var downloadStep: some View {
         let chosen = effectiveChoice
-        let alreadyInstalled = probe?.models.first { $0.id == chosen }?.installed ?? false
+        let chosenModel = probe?.models.first { $0.id == chosen }
+        let alreadyInstalled = chosenModel?.installed ?? false
         return VStack(alignment: .leading, spacing: 14) {
             stepTitle("Download the model", alreadyInstalled ? "This model is already installed — you're good to go." : "Pulling \(chosen) from the Ollama library. This can take a few minutes.")
+            if chosenModel?.fit == "wont_fit" { wontFitBanner(chosenModel) }
             FabPanel(title: "Download") {
                 VStack(alignment: .leading, spacing: 12) {
                     FabDataRow(key: "Model", value: chosen, valueColor: Brand.cyan500)
@@ -256,7 +275,7 @@ struct SetupWizard: View {
                     } else if model.pulling {
                         ThinProgressBar(value: model.pullProgress, tint: Brand.cyan500).frame(height: 5)
                         Text(model.pullStatus).font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.bone300)
-                    } else if model.pullStatus.hasPrefix("installed") {
+                    } else if model.pullStatus == "installed \(chosen.trimmingCharacters(in: .whitespacesAndNewlines))" {
                         HStack(spacing: 8) {
                             Image(systemName: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(Brand.success)
                             Text("Download complete").font(Brand.body(12)).foregroundStyle(Brand.success)
@@ -272,6 +291,22 @@ struct SetupWizard: View {
             Text("You can also add or swap models any time from the Models panel in the sidebar.")
                 .font(Brand.body(10)).foregroundStyle(Brand.bone400)
         }
+    }
+
+    /// Loud warning when the user picked a model that won't fit their memory (e.g. the 30B on a
+    /// 16 GB Mac mini) — it would swap heavily or fail to load.
+    private func wontFitBanner(_ m: SetupModelInfo?) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Brand.error)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("This model is larger than your memory can run").font(Brand.body(12, weight: .semibold)).foregroundStyle(Brand.error)
+                Text("\(m?.label ?? "It") needs ~\(Int(m?.minRamGB ?? 0)) GB usable RAM; your Mac has ~\(Int(probe?.hardware.usableRamGB ?? 0)) GB. It will be extremely slow or fail to load. Go back and pick a smaller model.")
+                    .font(Brand.body(11)).foregroundStyle(Brand.bone200)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12).background(Brand.error.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.error.opacity(0.5), lineWidth: 1))
     }
 
     // ── 5. READY ──
@@ -318,7 +353,10 @@ struct SetupWizard: View {
         case .model:    return !effectiveChoice.isEmpty
         case .download:
             let installed = probe?.models.first { $0.id == effectiveChoice }?.installed ?? false
-            return installed || model.pullStatus.hasPrefix("installed")
+            // Scope the completion signal to THIS model — pullStatus is a shared string, so a stale
+            // "installed <other>" from a previous pull must not unlock a different, un-pulled model.
+            let pulledThis = model.pullStatus == "installed \(effectiveChoice.trimmingCharacters(in: .whitespacesAndNewlines))"
+            return installed || pulledThis
         case .ready:    return true
         }
     }

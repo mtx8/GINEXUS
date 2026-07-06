@@ -844,7 +844,10 @@ final class AppModel: ObservableObject {
             // transcript was restored (chat non-empty) so a saved conversation isn't polluted.
             let tok = currentToken()
             dbg("connected; keychainToken len=\(tok?.count ?? -1)")
-            if !autoDemoSent, tok != nil, chat.isEmpty {
+            // Suppress the auto-demo while first-run setup is pending — otherwise it fires a chat
+            // turn against the default 30B smart tier before the user has picked/pulled a model
+            // that fits their machine. Runs once after setup completes (autoDemoSent stays false on skip).
+            if !autoDemoSent, tok != nil, chat.isEmpty, !needsSetup {
                 autoDemoSent = true
                 dbg("auto-demo: sending")
                 send("Use the system_status tool to report this Mac's macOS version and uptime in one short line.")
@@ -1162,6 +1165,7 @@ final class AppModel: ObservableObject {
     @Published var setupOpen = false
     @Published var setupProbe: SetupProbe?
     @Published var setupProbing = false
+    @Published var setupProbeError: String?
     @Published var setupStep: SetupStep = .system
     @Published var setupChosenModel = ""       // the daily-driver tag the user picked
     @Published var setupCustomModel = ""       // free-text Ollama tag
@@ -1179,8 +1183,9 @@ final class AppModel: ObservableObject {
 
     /// Detect hardware + dependencies + model fit from the core.
     func runSetupProbe() {
-        guard connected, !setupProbing else { return }
-        setupProbing = true
+        guard connected else { setupProbeError = "GINEXUS core isn't connected yet — try again in a moment."; return }
+        guard !setupProbing else { return }
+        setupProbing = true; setupProbeError = nil
         let sock = spine.socketPath, tok = currentToken()
         Task {
             let res = await Task.detached {
@@ -1189,7 +1194,11 @@ final class AppModel: ObservableObject {
             setupProbing = false
             guard case .success(let r) = res, let d = r.body.data(using: .utf8),
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                  let probe = SetupProbe.parse(o) else { return }
+                  let probe = SetupProbe.parse(o) else {
+                setupProbeError = "Couldn't detect your system. Check that the core is running, then retry."
+                return
+            }
+            setupProbeError = nil
             setupProbe = probe
             if setupChosenModel.isEmpty { setupChosenModel = probe.recommendedDailyDriver }
         }
@@ -1254,7 +1263,14 @@ final class AppModel: ObservableObject {
                         }
                     }
                 case "done":
-                    pullStatus = "installed \(m)"; pullProgress = 1
+                    // The server emits done{ok:false} when Ollama streamed HTTP 200 but never
+                    // reached "status":"success" — don't report a failed pull as installed.
+                    let ok = (try? JSONSerialization.jsonObject(with: Data(data.utf8)) as? [String: Any])?["ok"] as? Bool
+                    if ok == false {
+                        pullStatus = "failed: \(m) was not installed"; pullProgress = 0
+                    } else {
+                        pullStatus = "installed \(m)"; pullProgress = 1
+                    }
                 case "error":
                     pullStatus = "failed: \(data)"
                 default: break

@@ -92,20 +92,13 @@ impl Gateway {
                 label: "Fast · Qwen3 1.7B".into(),
             },
         );
-        // The Setup Assistant right-sizes the daily driver to the machine (a 16 GB Mac mini can't
-        // run the 30B). It records the choice as GINEXUS_SMART_MODEL, honored here so the chosen
-        // model becomes the "smart"/daily-driver tier without hand-editing a roster file.
-        let smart_model = std::env::var("GINEXUS_SMART_MODEL")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "qwen3:30b-a3b-instruct-2507-q4_K_M".into());
         m.insert(
             "smart".to_string(),
             Endpoint {
-                label: format!("Smart · {smart_model}"),
-                model: smart_model,
+                model: "qwen3:30b-a3b-instruct-2507-q4_K_M".into(),
                 api_base: base.clone(),
                 api_key: "ollama".into(),
+                label: "Smart · Qwen3 30B-A3B".into(),
             },
         );
         m.insert(
@@ -173,6 +166,28 @@ impl Gateway {
             self.models.iter().map(|(k, e)| (k.clone(), e.clone())).collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
+    }
+
+    /// Apply the Setup Assistant's chosen daily driver (GINEXUS_SMART_MODEL) as a POST-load
+    /// override on the "smart" tier — so it composes with whichever roster was built (built-in
+    /// default OR a GINEXUS_MODELS_CONFIG file), rather than only affecting default_local(). No-op
+    /// when the env var is unset/empty. Keeps the tier's api_base/api_key; swaps model + label.
+    pub fn apply_smart_model_override(&mut self) {
+        let Ok(model) = std::env::var("GINEXUS_SMART_MODEL") else { return };
+        let model = model.trim();
+        if model.is_empty() {
+            return;
+        }
+        let base = self.models.get("smart").map(|e| e.api_base.clone()).unwrap_or_else(ollama_base);
+        self.models.insert(
+            "smart".to_string(),
+            Endpoint {
+                model: model.to_string(),
+                api_base: base,
+                api_key: "ollama".into(),
+                label: format!("Smart · {model}"),
+            },
+        );
     }
 
     /// Resolve the concrete tier to use for a request.
@@ -700,6 +715,24 @@ mod tests {
         assert_eq!(gw.select(None, "chat", "normal", true), "fast");
         // passthrough literal
         assert_eq!(gw.select(Some("llama3.2:1b"), "chat", "normal", false), "llama3.2:1b");
+    }
+
+    #[test]
+    fn smart_model_override_applies_post_load() {
+        // Even a config-file roster (not default_local) must honor GINEXUS_SMART_MODEL.
+        let mut m = HashMap::new();
+        m.insert(
+            "smart".to_string(),
+            Endpoint { model: "qwen3:30b-a3b-instruct-2507-q4_K_M".into(), api_base: "http://127.0.0.1:11434/v1".into(),
+                       api_key: "ollama".into(), label: "Smart".into() },
+        );
+        let mut gw = Gateway::new(m);
+        std::env::set_var("GINEXUS_SMART_MODEL", "qwen3:8b");
+        gw.apply_smart_model_override();
+        std::env::remove_var("GINEXUS_SMART_MODEL");
+        // The smart tier now points at the chosen model (api_base preserved).
+        assert_eq!(gw.resolve("smart").model, "qwen3:8b");
+        assert_eq!(gw.resolve("smart").api_base, "http://127.0.0.1:11434/v1");
     }
 
     #[test]
