@@ -1586,6 +1586,133 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: SP-FAB cockpit — model prep + physical controls (per-printer)
+    @Published var fabModelPath: String = ""          // absolute path of the picked STL
+    @Published var fabProfilePath: String = ""        // absolute path of the slicer profile .ini
+    @Published var fabReport: FabModelReport?         // last analyze result
+    @Published var fabAnalyzing = false
+    @Published var fabSlicing = false
+    @Published var fabBusy = false                    // any physical control in flight
+    @Published var fabCamera: FabCamera?
+    @Published var fabNotice: String?                 // transient success/info line
+
+    /// Pick a model file (STL). iCloud paths are refused up front (HARD RULE #1).
+    func fabPickModel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false; panel.canChooseFiles = true; panel.canChooseDirectories = false
+        panel.allowedContentTypes = []
+        panel.title = "Choose a 3D model (STL)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if SpineController.isICloudPath(url.path) { fabError = "iCloud files aren't allowed — keep models local"; return }
+        fabModelPath = url.path
+        fabReport = nil
+    }
+
+    /// Pick a slicer profile .ini (resin: required; FDM: optional).
+    func fabPickProfile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false; panel.canChooseFiles = true; panel.canChooseDirectories = false
+        panel.title = "Choose a slicer profile (.ini)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if SpineController.isICloudPath(url.path) { fabError = "iCloud files aren't allowed — keep profiles local"; return }
+        fabProfilePath = url.path
+    }
+
+    /// Run the mesh gate on the picked model.
+    func fabAnalyze() {
+        guard !fabModelPath.isEmpty, !fabAnalyzing else { return }
+        fabAnalyzing = true; fabError = nil
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["path": fabModelPath])
+        Task {
+            defer { fabAnalyzing = false }
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/analyze", token: tok, jsonBody: body, timeoutSecs: 60)
+            }.value
+            guard case .success(let r) = res, let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
+                fabError = "analysis failed"; return
+            }
+            if let rep = FabModelReport.parse(o) { fabReport = rep }
+            else { fabError = (o["detail"] as? String) ?? "analysis failed" }
+        }
+    }
+
+    /// Slice the picked model for a printer → creates a job. Long-running.
+    func fabSlice(printerID: String) {
+        guard !fabModelPath.isEmpty, !fabSlicing else { return }
+        fabSlicing = true; fabError = nil; fabNotice = nil
+        fabGeneration += 1
+        let sock = spine.socketPath, tok = currentToken()
+        let name = (fabModelPath as NSString).lastPathComponent
+        let body = try? JSONSerialization.data(withJSONObject: [
+            "path": fabModelPath, "printer_id": printerID,
+            "profile_ini": fabProfilePath, "name": name,
+        ])
+        Task {
+            defer { fabSlicing = false }
+            let res = await Task.detached {
+                // Slicing can take minutes (resin) — generous timeout.
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/slice", token: tok, jsonBody: body, timeoutSecs: 900)
+            }.value
+            if case .success(let r) = res, r.status < 400 {
+                fabNotice = "Sliced — job queued. Upload, then Start when the printer is ready."
+            } else if case .success(let r) = res, let d = r.body.data(using: .utf8),
+                      let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                fabError = (o["detail"] as? String) ?? "slicing failed"
+            } else {
+                fabError = "slicing failed"
+            }
+            refreshFab()
+        }
+    }
+
+    private func fabControl(_ path: String, body: [String: Any], success: String) {
+        guard !fabBusy else { return }
+        fabBusy = true; fabError = nil; fabNotice = nil
+        fabGeneration += 1
+        let sock = spine.socketPath, tok = currentToken()
+        let data = try? JSONSerialization.data(withJSONObject: body)
+        Task {
+            defer { fabBusy = false }
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: path, token: tok, jsonBody: data, timeoutSecs: 60)
+            }.value
+            if case .success(let r) = res, r.status < 400 {
+                fabNotice = success
+            } else if case .success(let r) = res, let d = r.body.data(using: .utf8),
+                      let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                fabError = (o["detail"] as? String) ?? "action failed"
+            } else {
+                fabError = "action failed"
+            }
+            refreshFab()
+        }
+    }
+
+    func fabUpload(jobID: String) { fabControl("/v1/fab/upload", body: ["job_id": jobID], success: "Uploaded to the printer.") }
+    /// Called only after the readiness-confirmation dialog — the human click IS the approval.
+    func fabStart(jobID: String) { fabControl("/v1/fab/start", body: ["job_id": jobID], success: "Print started.") }
+    func fabPause(printerID: String) { fabControl("/v1/fab/pause", body: ["printer_id": printerID], success: "Paused.") }
+    func fabResume(printerID: String) { fabControl("/v1/fab/resume", body: ["printer_id": printerID], success: "Resumed.") }
+    func fabCancel(printerID: String, jobID: String) {
+        fabControl("/v1/fab/cancel", body: ["printer_id": printerID, "job_id": jobID], success: "Print cancelled.")
+    }
+
+    /// Fetch the camera descriptor for a printer.
+    func fabLoadCamera(printerID: String) {
+        let sock = spine.socketPath, tok = currentToken()
+        let body = try? JSONSerialization.data(withJSONObject: ["printer_id": printerID])
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/camera", token: tok, jsonBody: body, timeoutSecs: 30)
+            }.value
+            guard case .success(let r) = res, r.status < 400, let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { fabCamera = nil; return }
+            fabCamera = FabCamera.parse(o)
+        }
+    }
+
     /// The human clicking "clear" IS the physical confirmation that the plate is empty. The core
     /// refuses to clear a still-printing job (409); surface that instead of silently dropping it.
     func fabClearJob(_ id: String) {

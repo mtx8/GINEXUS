@@ -108,6 +108,205 @@ impl FabState {
             let _ = jobs.transition(&id, to);
         }
     }
+
+    // ── Composite operations — the SINGLE source of truth for the fabrication workflow. The agent
+    // tools (fab_*) and the app's /v1/fab/* routes both call these, so safety logic (mesh gate,
+    // plate-clear, live-status re-read, per-job workspace) is written and tested exactly once. The
+    // difference is only WHO is authorized: the agent tools that mutate hardware are HITL/hard-gated
+    // in the agent loop; the routes are reached from explicit human clicks in the signed app (a
+    // deliberate click, behind a readiness confirmation for start, IS the human approval — the same
+    // principle the plate-clear route already uses). ──
+
+    /// Mesh gate on an STL → ModelReport. Autonomous (reads a file, touches no hardware).
+    pub fn analyze_model(&self, raw_path: &str) -> Result<crate::geometry::ModelReport, String> {
+        let path = resolve_model_path(raw_path)?;
+        let mut r = crate::geometry::analyze_stl(&path)?;
+        r.file = abbreviate_home(&r.file);
+        Ok(r)
+    }
+
+    /// Slice a model for a printer into a fresh per-job workspace and create the job (state Sliced).
+    /// Returns (job_id, sliced_path, validation_summary). Autonomous (produces files).
+    pub fn slice_job(
+        &self, raw_path: &str, printer_id: &str, profile_raw: &str, name_in: &str,
+    ) -> Result<(String, PathBuf, String), String> {
+        let path = resolve_model_path(raw_path)?;
+        let cfg = self
+            .printers
+            .lock()
+            .unwrap()
+            .get(printer_id)
+            .cloned()
+            .ok_or_else(|| format!("no printer '{printer_id}'"))?;
+        // Mesh gate first — never slice a broken solid.
+        let report = crate::geometry::analyze_stl(&path)?;
+        if !report.passes() {
+            return Err(format!(
+                "model failed the mesh gate: {} — repair it before slicing",
+                report.notes.join("; ")
+            ));
+        }
+        let (tech, ext) = pipeline::native_format_for(&cfg.model);
+        let profile_path = if profile_raw.trim().is_empty() {
+            None
+        } else {
+            Some(resolve_model_path(profile_raw).map_err(|e| format!("profile_ini: {e}"))?)
+        };
+        let name = if name_in.trim().is_empty() {
+            path.file_stem().and_then(|s| s.to_str()).unwrap_or("part").to_string()
+        } else {
+            name_in.trim().to_string()
+        };
+
+        // Per-job workspace so no run can ever see another run's artifacts.
+        let job_id = self.jobs.lock().unwrap().create(&name, printer_id, &path.to_string_lossy());
+        let job_dir = self.workspace.join(&job_id);
+        let cleanup = |st: &Self| {
+            let _ = st.jobs.lock().unwrap().remove(&job_id);
+        };
+        if std::fs::create_dir_all(&job_dir).is_err() {
+            cleanup(self);
+            return Err("could not create the job workspace".into());
+        }
+
+        let (sliced, validation) = match tech {
+            pipeline::Tech::Fdm => match pipeline::slice_fdm(&path, profile_path.as_deref(), &job_dir) {
+                Ok(g) => (g, String::from("gcode produced")),
+                Err(e) => {
+                    cleanup(self);
+                    return Err(e);
+                }
+            },
+            pipeline::Tech::Resin => {
+                let Some(prof) = profile_path.as_deref() else {
+                    cleanup(self);
+                    return Err(
+                        "resin slicing requires a profile (profile_ini) — a curated profile for \
+                         this exact printer + resin; exposure settings are never invented"
+                            .into(),
+                    );
+                };
+                let sl1 = match pipeline::slice_resin_sl1(&path, prof, &job_dir) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        cleanup(self);
+                        return Err(e);
+                    }
+                };
+                let native = match pipeline::convert_sl1(&sl1, ext, &job_dir) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        cleanup(self);
+                        return Err(e);
+                    }
+                };
+                let validation = pipeline::validate_sliced(&native)
+                    .unwrap_or_else(|e| format!("validation unavailable: {e}"));
+                (native, validation)
+            }
+        };
+
+        {
+            let mut jobs = self.jobs.lock().unwrap();
+            let sliced_s = sliced.to_string_lossy().to_string();
+            let val = validation.clone();
+            let _ = jobs.update(&job_id, |j| {
+                j.sliced_path = sliced_s;
+                j.validation = val;
+            });
+            let _ = jobs.transition(&job_id, JobState::Sliced);
+        }
+        Ok((job_id, sliced, validation))
+    }
+
+    /// Upload a Sliced job's file to its printer. Irreversible (writes to the printer).
+    pub fn upload_job(&self, job_id: &str) -> Result<String, String> {
+        let job = self
+            .jobs
+            .lock()
+            .unwrap()
+            .get(job_id)
+            .cloned()
+            .ok_or_else(|| format!("no job '{job_id}'"))?;
+        if job.state != JobState::Sliced {
+            return Err(format!("job '{}' is {:?} — only Sliced jobs can be uploaded", job.name, job.state));
+        }
+        let (cfg, live) = self.live_status(&job.printer_id)?;
+        if live.state == PrinterState::Offline {
+            return Err(format!("'{}' is offline — cannot upload", cfg.name));
+        }
+        let driver = self.driver_for(&cfg)?;
+        let fref = driver.upload(Path::new(&job.sliced_path))?;
+        let mut jobs = self.jobs.lock().unwrap();
+        let (storage, rname) = (fref.storage.clone(), fref.name.clone());
+        let _ = jobs.update(job_id, |j| {
+            j.remote_storage = storage;
+            j.remote_name = rname;
+        });
+        let _ = jobs.transition(job_id, JobState::Uploaded);
+        Ok(format!("uploaded '{}' to {}", fref.name, cfg.name))
+    }
+
+    /// Start a print. Irreversible + physically dangerous — the caller must have obtained explicit
+    /// human authorization (agent: hard-gate/biometric; UI: readiness-confirmation dialog). This
+    /// method still enforces every machine pre-check: job Uploaded, plate clear, printer live-Idle.
+    pub fn start_job(&self, job_id: &str) -> Result<String, String> {
+        let job = self
+            .jobs
+            .lock()
+            .unwrap()
+            .get(job_id)
+            .cloned()
+            .ok_or_else(|| format!("no job '{job_id}'"))?;
+        if job.state != JobState::Uploaded {
+            return Err(format!("job '{}' is {:?} — upload it first", job.name, job.state));
+        }
+        self.jobs.lock().unwrap().printer_clear(&job.printer_id)?;
+        // Zero-auth doctrine: re-read LIVE state immediately before commanding motion.
+        let (cfg, live) = self.live_status(&job.printer_id)?;
+        if live.state != PrinterState::Idle {
+            return Err(format!("'{}' is {} right now — refusing to start '{}'",
+                               cfg.name, live.state.label(), job.name));
+        }
+        let driver = self.driver_for(&cfg)?;
+        let fref = crate::driver::FileRef::new(job.remote_storage.clone(), job.remote_name.clone());
+        driver.start(&fref)?;
+        let _ = self.jobs.lock().unwrap().transition(job_id, JobState::Printing);
+        Ok(format!("print '{}' started on {}", job.name, cfg.name))
+    }
+
+    /// Pause — the SAFE action, always allowed.
+    pub fn pause_printer(&self, printer_id: &str) -> Result<String, String> {
+        let (cfg, _live) = self.live_status(printer_id)?;
+        self.driver_for(&cfg)?.pause()?;
+        Ok(format!("'{}' paused", cfg.name))
+    }
+
+    /// Resume — dangerous (plate can crash into FEP/LCD); needs human authorization upstream.
+    pub fn resume_printer(&self, printer_id: &str) -> Result<String, String> {
+        let (cfg, live) = self.live_status(printer_id)?;
+        if live.state != PrinterState::Paused {
+            return Err(format!("'{}' is {} — only paused printers can resume", cfg.name, live.state.label()));
+        }
+        self.driver_for(&cfg)?.resume()?;
+        Ok(format!("'{}' resumed", cfg.name))
+    }
+
+    /// Cancel the active print; optionally mark a fab job Cancelled.
+    pub fn cancel_printer(&self, printer_id: &str, job_id: &str) -> Result<String, String> {
+        let (cfg, _live) = self.live_status(printer_id)?;
+        self.driver_for(&cfg)?.cancel()?;
+        if !job_id.is_empty() {
+            let _ = self.jobs.lock().unwrap().transition(job_id, JobState::Cancelled);
+        }
+        Ok(format!("print on '{}' cancelled", cfg.name))
+    }
+
+    /// Camera descriptor for a printer.
+    pub fn camera_of(&self, printer_id: &str) -> Result<crate::driver::CameraSource, String> {
+        let (cfg, _live) = self.live_status(printer_id)?;
+        self.driver_for(&cfg)?.camera()
+    }
 }
 
 fn is_icloud(p: &str) -> bool {
@@ -281,6 +480,7 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
     ));
 
     // ── fab_analyze_model ────────────────────────────────────────────────────
+    let st = state.clone();
     tools.push(Tool::new(
         "fab_analyze_model",
         "Analyze a 3D model (STL) BEFORE printing: watertight/manifold check, dimensions (mm), \
@@ -289,18 +489,9 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
         json!({"type": "object", "properties": {"path": {"type": "string"}},
                "required": ["path"]}),
         false,
-        Arc::new(move |a: Value| {
-            let path = match resolve_model_path(&arg_str(&a, "path")) {
-                Ok(p) => p,
-                Err(e) => return ToolResult::err(e),
-            };
-            match crate::geometry::analyze_stl(&path) {
-                Ok(mut r) => {
-                    r.file = abbreviate_home(&r.file);
-                    ToolResult::ok(serde_json::to_string_pretty(&r).unwrap_or_default())
-                }
-                Err(e) => ToolResult::err(e),
-            }
+        Arc::new(move |a: Value| match st.analyze_model(&arg_str(&a, "path")) {
+            Ok(r) => ToolResult::ok(serde_json::to_string_pretty(&r).unwrap_or_default()),
+            Err(e) => ToolResult::err(e),
         }),
     ));
 
@@ -322,97 +513,17 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
             "required": ["path", "printer_id"]}),
         false,
         Arc::new(move |a: Value| {
-            let path = match resolve_model_path(&arg_str(&a, "path")) {
-                Ok(p) => p,
-                Err(e) => return ToolResult::err(e),
-            };
-            let printer_id = arg_str(&a, "printer_id");
-            let Some(cfg) = st.printers.lock().unwrap().get(&printer_id).cloned() else {
-                return ToolResult::err(format!("no printer '{printer_id}'"));
-            };
-            // Mesh gate first — never slice a broken solid.
-            let report = match crate::geometry::analyze_stl(&path) {
-                Ok(r) => r,
-                Err(e) => return ToolResult::err(e),
-            };
-            if !report.passes() {
-                return ToolResult::err(format!(
-                    "model failed the mesh gate: {} — repair it before slicing",
-                    report.notes.join("; ")
-                ));
+            match st.slice_job(&arg_str(&a, "path"), &arg_str(&a, "printer_id"),
+                               &arg_str(&a, "profile_ini"), &arg_str(&a, "name")) {
+                Ok((job_id, sliced, validation)) => ToolResult::ok(format!(
+                    "job '{job_id}' sliced → {}\nvalidation: {}\nnext: fab_upload {{job_id}}, then \
+                     fab_start_print (requires approval)",
+                    abbreviate_home(&sliced.to_string_lossy()),
+                    validation.lines().take(6).collect::<Vec<_>>().join(" | ")
+                ))
+                .with_artifact(sliced.to_string_lossy().to_string()),
+                Err(e) => ToolResult::err(e),
             }
-            let (tech, ext) = pipeline::native_format_for(&cfg.model);
-            let profile = arg_str(&a, "profile_ini");
-            let profile_path = if profile.is_empty() { None } else {
-                match resolve_model_path(&profile) {
-                    Ok(p) => Some(p),
-                    Err(e) => return ToolResult::err(format!("profile_ini: {e}")),
-                }
-            };
-            let name = {
-                let n = arg_str(&a, "name");
-                if n.is_empty() {
-                    path.file_stem().and_then(|s| s.to_str()).unwrap_or("part").to_string()
-                } else { n }
-            };
-
-            // Create the job FIRST so slicing lands in a fresh per-job subdirectory — no run can
-            // ever see another run's artifacts (the stale-slice → wrong-part failure mode).
-            let job_id = st.jobs.lock().unwrap().create(&name, &printer_id, &path.to_string_lossy());
-            let job_dir = st.workspace.join(&job_id);
-            if std::fs::create_dir_all(&job_dir).is_err() {
-                let _ = st.jobs.lock().unwrap().remove(&job_id);
-                return ToolResult::err("could not create the job workspace");
-            }
-
-            let (sliced, validation) = match tech {
-                pipeline::Tech::Fdm => {
-                    match pipeline::slice_fdm(&path, profile_path.as_deref(), &job_dir) {
-                        Ok(g) => (g, String::from("gcode produced")),
-                        Err(e) => { let _ = st.jobs.lock().unwrap().remove(&job_id); return ToolResult::err(e); }
-                    }
-                }
-                pipeline::Tech::Resin => {
-                    let Some(prof) = profile_path.as_deref() else {
-                        let _ = st.jobs.lock().unwrap().remove(&job_id);
-                        return ToolResult::err(
-                            "resin slicing requires `profile_ini` — a curated profile for this \
-                             exact printer + resin (UVtools ships per-printer PrusaSlicer \
-                             profiles; exposure settings are never invented)",
-                        );
-                    };
-                    let sl1 = match pipeline::slice_resin_sl1(&path, prof, &job_dir) {
-                        Ok(s) => s,
-                        Err(e) => { let _ = st.jobs.lock().unwrap().remove(&job_id); return ToolResult::err(e); }
-                    };
-                    let native = match pipeline::convert_sl1(&sl1, ext, &job_dir) {
-                        Ok(n) => n,
-                        Err(e) => { let _ = st.jobs.lock().unwrap().remove(&job_id); return ToolResult::err(e); }
-                    };
-                    let validation = pipeline::validate_sliced(&native)
-                        .unwrap_or_else(|e| format!("validation unavailable: {e}"));
-                    (native, validation)
-                }
-            };
-
-            {
-                let mut jobs = st.jobs.lock().unwrap();
-                let sliced_s = sliced.to_string_lossy().to_string();
-                let val = validation.clone();
-                let _ = jobs.update(&job_id, |j| {
-                    j.sliced_path = sliced_s;
-                    j.validation = val;
-                });
-                let _ = jobs.transition(&job_id, JobState::Sliced);
-            }
-            ToolResult::ok(format!(
-                "job '{job_id}' sliced for {} → {}\nvalidation: {}\nnext: fab_upload {{job_id}}, \
-                 then fab_start_print (requires approval)",
-                cfg.name,
-                abbreviate_home(&sliced.to_string_lossy()),
-                validation.lines().take(6).collect::<Vec<_>>().join(" | ")
-            ))
-            .with_artifact(sliced.to_string_lossy().to_string())
         }),
     ));
 
@@ -424,43 +535,9 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
         json!({"type": "object", "properties": {"job_id": {"type": "string"}},
                "required": ["job_id"]}),
         true,
-        Arc::new(move |a: Value| {
-            let job_id = arg_str(&a, "job_id");
-            let job = match st.jobs.lock().unwrap().get(&job_id).cloned() {
-                Some(j) => j,
-                None => return ToolResult::err(format!("no job '{job_id}'")),
-            };
-            if job.state != JobState::Sliced {
-                return ToolResult::err(format!(
-                    "job '{}' is {:?} — only Sliced jobs can be uploaded", job.name, job.state));
-            }
-            let (cfg, live) = match st.live_status(&job.printer_id) {
-                Ok(x) => x,
-                Err(e) => return ToolResult::err(e),
-            };
-            if live.state == PrinterState::Offline {
-                return ToolResult::err(format!("'{}' is offline — cannot upload", cfg.name));
-            }
-            let driver = match st.driver_for(&cfg) {
-                Ok(d) => d,
-                Err(e) => return ToolResult::err(e),
-            };
-            match driver.upload(Path::new(&job.sliced_path)) {
-                Ok(fref) => {
-                    let mut jobs = st.jobs.lock().unwrap();
-                    let (storage, name) = (fref.storage.clone(), fref.name.clone());
-                    let _ = jobs.update(&job_id, |j| {
-                        j.remote_storage = storage;
-                        j.remote_name = name;
-                    });
-                    let _ = jobs.transition(&job_id, JobState::Uploaded);
-                    ToolResult::ok(format!(
-                        "uploaded '{}' to {} — fab_start_print '{job_id}' starts it (approval required)",
-                        fref.name, cfg.name
-                    ))
-                }
-                Err(e) => ToolResult::err(e),
-            }
+        Arc::new(move |a: Value| match st.upload_job(&arg_str(&a, "job_id")) {
+            Ok(msg) => ToolResult::ok(msg),
+            Err(e) => ToolResult::err(e),
         }),
     ));
 
@@ -476,42 +553,9 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
             json!({"type": "object", "properties": {"job_id": {"type": "string"}},
                    "required": ["job_id"]}),
             true,
-            Arc::new(move |a: Value| {
-                let job_id = arg_str(&a, "job_id");
-                let job = match st.jobs.lock().unwrap().get(&job_id).cloned() {
-                    Some(j) => j,
-                    None => return ToolResult::err(format!("no job '{job_id}'")),
-                };
-                if job.state != JobState::Uploaded {
-                    return ToolResult::err(format!(
-                        "job '{}' is {:?} — upload it first (fab_upload)", job.name, job.state));
-                }
-                // Manual-unload gate across the queue.
-                if let Err(e) = st.jobs.lock().unwrap().printer_clear(&job.printer_id) {
-                    return ToolResult::err(e);
-                }
-                // Zero-auth doctrine: re-read LIVE state immediately before commanding motion.
-                let (cfg, live) = match st.live_status(&job.printer_id) {
-                    Ok(x) => x,
-                    Err(e) => return ToolResult::err(e),
-                };
-                if live.state != PrinterState::Idle {
-                    return ToolResult::err(format!(
-                        "'{}' is {} right now — refusing to start '{}'",
-                        cfg.name, live.state.label(), job.name));
-                }
-                let driver = match st.driver_for(&cfg) {
-                    Ok(d) => d,
-                    Err(e) => return ToolResult::err(e),
-                };
-                let fref = crate::driver::FileRef::new(job.remote_storage.clone(), job.remote_name.clone());
-                match driver.start(&fref) {
-                    Ok(()) => {
-                        let _ = st.jobs.lock().unwrap().transition(&job_id, JobState::Printing);
-                        ToolResult::ok(format!("print '{}' started on {}", job.name, cfg.name))
-                    }
-                    Err(e) => ToolResult::err(e),
-                }
+            Arc::new(move |a: Value| match st.start_job(&arg_str(&a, "job_id")) {
+                Ok(msg) => ToolResult::ok(msg),
+                Err(e) => ToolResult::err(e),
             }),
         )
         .hard_gated(),
@@ -526,15 +570,9 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
         json!({"type": "object", "properties": {"printer_id": {"type": "string"}},
                "required": ["printer_id"]}),
         false,
-        Arc::new(move |a: Value| {
-            let (cfg, _live) = match st.live_status(&arg_str(&a, "printer_id")) {
-                Ok(x) => x,
-                Err(e) => return ToolResult::err(e),
-            };
-            match st.driver_for(&cfg).and_then(|d| d.pause()) {
-                Ok(()) => ToolResult::ok(format!("'{}' paused", cfg.name)),
-                Err(e) => ToolResult::err(e),
-            }
+        Arc::new(move |a: Value| match st.pause_printer(&arg_str(&a, "printer_id")) {
+            Ok(msg) => ToolResult::ok(msg),
+            Err(e) => ToolResult::err(e),
         }),
     ));
 
@@ -548,19 +586,9 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
             json!({"type": "object", "properties": {"printer_id": {"type": "string"}},
                    "required": ["printer_id"]}),
             true,
-            Arc::new(move |a: Value| {
-                let (cfg, live) = match st.live_status(&arg_str(&a, "printer_id")) {
-                    Ok(x) => x,
-                    Err(e) => return ToolResult::err(e),
-                };
-                if live.state != PrinterState::Paused {
-                    return ToolResult::err(format!(
-                        "'{}' is {} — only paused printers can resume", cfg.name, live.state.label()));
-                }
-                match st.driver_for(&cfg).and_then(|d| d.resume()) {
-                    Ok(()) => ToolResult::ok(format!("'{}' resumed", cfg.name)),
-                    Err(e) => ToolResult::err(e),
-                }
+            Arc::new(move |a: Value| match st.resume_printer(&arg_str(&a, "printer_id")) {
+                Ok(msg) => ToolResult::ok(msg),
+                Err(e) => ToolResult::err(e),
             }),
         )
         .hard_gated(),
@@ -577,18 +605,8 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
             "required": ["printer_id"]}),
         true,
         Arc::new(move |a: Value| {
-            let (cfg, _live) = match st.live_status(&arg_str(&a, "printer_id")) {
-                Ok(x) => x,
-                Err(e) => return ToolResult::err(e),
-            };
-            match st.driver_for(&cfg).and_then(|d| d.cancel()) {
-                Ok(()) => {
-                    let job_id = arg_str(&a, "job_id");
-                    if !job_id.is_empty() {
-                        let _ = st.jobs.lock().unwrap().transition(&job_id, JobState::Cancelled);
-                    }
-                    ToolResult::ok(format!("print on '{}' cancelled", cfg.name))
-                }
+            match st.cancel_printer(&arg_str(&a, "printer_id"), &arg_str(&a, "job_id")) {
+                Ok(msg) => ToolResult::ok(msg),
                 Err(e) => ToolResult::err(e),
             }
         }),
@@ -653,15 +671,9 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
         json!({"type": "object", "properties": {"printer_id": {"type": "string"}},
                "required": ["printer_id"]}),
         false,
-        Arc::new(move |a: Value| {
-            let (cfg, _live) = match st.live_status(&arg_str(&a, "printer_id")) {
-                Ok(x) => x,
-                Err(e) => return ToolResult::err(e),
-            };
-            match st.driver_for(&cfg).and_then(|d| d.camera()) {
-                Ok(cam) => ToolResult::ok(serde_json::to_string_pretty(&cam).unwrap_or_default()),
-                Err(e) => ToolResult::err(e),
-            }
+        Arc::new(move |a: Value| match st.camera_of(&arg_str(&a, "printer_id")) {
+            Ok(cam) => ToolResult::ok(serde_json::to_string_pretty(&cam).unwrap_or_default()),
+            Err(e) => ToolResult::err(e),
         }),
     ));
 

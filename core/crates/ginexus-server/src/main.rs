@@ -11,6 +11,10 @@
 //!   GET  /v1/schedule    → list schedules (name, cadence, enabled, attachments, last result)
 //!   POST /v1/schedule/toggle {id, enabled}  → pause / resume a task
 //!   POST /v1/schedule/remove {id}  → remove a schedule (and its attachment copies)
+//!   GET  /v1/fab/printers  · POST /v1/fab/printers · POST /v1/fab/printers/remove · POST /v1/fab/discover
+//!   GET  /v1/fab/jobs · POST /v1/fab/jobs/remove
+//!   POST /v1/fab/analyze · /v1/fab/slice · /v1/fab/upload · /v1/fab/start · /v1/fab/pause
+//!        · /v1/fab/resume · /v1/fab/cancel · /v1/fab/camera   (SP-FAB fabrication cockpit)
 //!   GET  /v1/admin/killswitch          → {engaged, tier, boot_id}
 //!   POST /v1/admin/killswitch/engage   {tier, reason}
 //!   POST /v1/admin/killswitch/reset    {token, nonce, expiry_ms, boot_id, reason}  (approval-gated)
@@ -1123,6 +1127,104 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                     .collect()
             };
             json_ok(&mut stream, json!({"jobs": rows})).await;
+        }
+        ("POST", "/v1/fab/analyze") => {
+            // Mesh gate on an STL → ModelReport. Autonomous (reads a file). Off-loop: geometry can
+            // be heavy on big meshes.
+            let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let fab = state.fab.clone();
+            let out = tokio::task::spawn_blocking(move || fab.analyze_model(&path)).await;
+            match out {
+                Ok(Ok(report)) => json_ok(&mut stream, serde_json::to_value(&report).unwrap_or(json!({}))).await,
+                Ok(Err(e)) => err(&mut stream, 400, "Bad Request", &e).await,
+                Err(e) => err(&mut stream, 500, "Internal", &format!("analyze task failed: {e}")).await,
+            }
+        }
+        ("POST", "/v1/fab/slice") => {
+            // Slice a model into a fresh job. Autonomous (produces files); long-running → blocking pool.
+            let (path, printer, profile, name) = (
+                body.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                body.get("printer_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                body.get("profile_ini").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            );
+            let fab = state.fab.clone();
+            let out = tokio::task::spawn_blocking(move || fab.slice_job(&path, &printer, &profile, &name)).await;
+            match out {
+                Ok(Ok((job_id, _sliced, validation))) => {
+                    let _ = state.audit.record("fab_slice", json!({"job_id": job_id}));
+                    json_ok(&mut stream, json!({"job_id": job_id, "validation": validation})).await;
+                }
+                Ok(Err(e)) => err(&mut stream, 400, "Bad Request", &e).await,
+                Err(e) => err(&mut stream, 500, "Internal", &format!("slice task failed: {e}")).await,
+            }
+        }
+        ("POST", "/v1/fab/upload") => {
+            // Human-authorized (explicit UI click). Blocking (network upload).
+            let job_id = body.get("job_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let fab = state.fab.clone();
+            let out = tokio::task::spawn_blocking(move || fab.upload_job(&job_id)).await;
+            match out {
+                Ok(Ok(msg)) => { let _ = state.audit.record("fab_upload_ui", json!({})); json_ok(&mut stream, json!({"ok": true, "message": msg})).await; }
+                Ok(Err(e)) => err(&mut stream, 409, "Conflict", &e).await,
+                Err(e) => err(&mut stream, 500, "Internal", &format!("upload task failed: {e}")).await,
+            }
+        }
+        ("POST", "/v1/fab/start") => {
+            // Reached ONLY from an explicit UI readiness-confirmation dialog — a deliberate human
+            // click IS the approval the hard-gate demands of the agent. Machine pre-checks (job
+            // Uploaded, plate clear, printer live-Idle) still enforced in start_job.
+            let job_id = body.get("job_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let fab = state.fab.clone();
+            let out = tokio::task::spawn_blocking(move || fab.start_job(&job_id)).await;
+            match out {
+                Ok(Ok(msg)) => { let _ = state.audit.record("fab_start_ui", json!({"message": msg})); json_ok(&mut stream, json!({"ok": true, "message": msg})).await; }
+                Ok(Err(e)) => err(&mut stream, 409, "Conflict", &e).await,
+                Err(e) => err(&mut stream, 500, "Internal", &format!("start task failed: {e}")).await,
+            }
+        }
+        ("POST", "/v1/fab/pause") => {
+            let printer = body.get("printer_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let fab = state.fab.clone();
+            let out = tokio::task::spawn_blocking(move || fab.pause_printer(&printer)).await;
+            match out {
+                Ok(Ok(msg)) => json_ok(&mut stream, json!({"ok": true, "message": msg})).await,
+                Ok(Err(e)) => err(&mut stream, 409, "Conflict", &e).await,
+                Err(e) => err(&mut stream, 500, "Internal", &format!("pause task failed: {e}")).await,
+            }
+        }
+        ("POST", "/v1/fab/resume") => {
+            let printer = body.get("printer_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let fab = state.fab.clone();
+            let out = tokio::task::spawn_blocking(move || fab.resume_printer(&printer)).await;
+            match out {
+                Ok(Ok(msg)) => { let _ = state.audit.record("fab_resume_ui", json!({})); json_ok(&mut stream, json!({"ok": true, "message": msg})).await; }
+                Ok(Err(e)) => err(&mut stream, 409, "Conflict", &e).await,
+                Err(e) => err(&mut stream, 500, "Internal", &format!("resume task failed: {e}")).await,
+            }
+        }
+        ("POST", "/v1/fab/cancel") => {
+            let (printer, job_id) = (
+                body.get("printer_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                body.get("job_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            );
+            let fab = state.fab.clone();
+            let out = tokio::task::spawn_blocking(move || fab.cancel_printer(&printer, &job_id)).await;
+            match out {
+                Ok(Ok(msg)) => { let _ = state.audit.record("fab_cancel_ui", json!({})); json_ok(&mut stream, json!({"ok": true, "message": msg})).await; }
+                Ok(Err(e)) => err(&mut stream, 409, "Conflict", &e).await,
+                Err(e) => err(&mut stream, 500, "Internal", &format!("cancel task failed: {e}")).await,
+            }
+        }
+        ("POST", "/v1/fab/camera") => {
+            let printer = body.get("printer_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let fab = state.fab.clone();
+            let out = tokio::task::spawn_blocking(move || fab.camera_of(&printer)).await;
+            match out {
+                Ok(Ok(cam)) => json_ok(&mut stream, serde_json::to_value(&cam).unwrap_or(json!({}))).await,
+                Ok(Err(e)) => err(&mut stream, 409, "Conflict", &e).await,
+                Err(e) => err(&mut stream, 500, "Internal", &format!("camera task failed: {e}")).await,
+            }
         }
         ("POST", "/v1/fab/jobs/remove") => {
             // The UI's "clear job" — a human clicking IS the physical plate-clear confirmation.

@@ -43,6 +43,35 @@ final class FabTypesTests: XCTestCase {
         XCTAssertNil(FabJobItem.parse([:]))
     }
 
+    func testModelReportParsesAndDerives() throws {
+        let json = """
+        {"file":"~/parts/bracket.stl","triangles":12,"vertices":8,"watertight":true,
+         "boundary_edges":0,"non_manifold_edges":0,"bbox_mm":[10,10,10],"volume_mm3":1000,
+         "surface_area_mm2":600,"overhang_area_fraction":0.1667,
+         "notes":["watertight manifold solid — sliceable"]}
+        """
+        let o = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        let r = try XCTUnwrap(FabModelReport.parse(o))
+        XCTAssertTrue(r.watertight)
+        XCTAssertTrue(r.passes)
+        XCTAssertEqual(r.volumeCM3, 1.0, accuracy: 0.0001)   // 1000 mm³ = 1 cm³
+        XCTAssertEqual(r.dims, "10.0 × 10.0 × 10.0 mm")
+        XCTAssertEqual(r.triangles, 12)
+        // A non-solid model fails the gate.
+        var bad = o; bad["watertight"] = false; bad["volume_mm3"] = 0
+        let r2 = try XCTUnwrap(FabModelReport.parse(bad))
+        XCTAssertFalse(r2.passes)
+        XCTAssertNil(FabModelReport.parse([:]))
+    }
+
+    func testCameraParse() {
+        let mjpeg = FabCamera.parse(["kind": "mjpeg_url", "url": "http://x/stream"])
+        XCTAssertTrue(mjpeg.hasStream)
+        let none = FabCamera.parse(["kind": "none", "url": ""])
+        XCTAssertFalse(none.hasStream)
+        XCTAssertFalse(FabCamera.parse([:]).hasStream)
+    }
+
     func testETAGrammar() {
         XCTAssertEqual(fabETA(45), "45s")
         XCTAssertEqual(fabETA(60), "1m")
