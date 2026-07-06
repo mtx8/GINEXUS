@@ -1518,6 +1518,7 @@ final class AppModel: ObservableObject {
                let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
                let arr = o["printers"] as? [[String: Any]] {
                 fabPrinters = arr.compactMap { FabPrinter.parse($0) }
+                fabPrintersAt = Date()   // sample time — lets the UI tick elapsed/remaining between polls
             }
             if case .success(let r) = jobs, let d = r.body.data(using: .utf8),
                let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
@@ -1595,6 +1596,7 @@ final class AppModel: ObservableObject {
     @Published var fabBusy = false                    // any physical control in flight
     @Published var fabCamera: FabCamera?
     @Published var fabNotice: String?                 // transient success/info line
+    @Published var fabPrintersAt = Date()             // when fabPrinters was last sampled (live ticking)
 
     /// Pick a model file (STL). iCloud paths are refused up front (HARD RULE #1).
     func fabPickModel() {

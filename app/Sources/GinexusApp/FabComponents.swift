@@ -3,6 +3,8 @@
 // Aesthetic: OMNISCIENT "Bloomberg × Gotham" density over the Silo Unison ink/ember palette;
 // cyan is reserved for LIVE data values. Local to Fabrication so the rest of the app is untouched.
 import SwiftUI
+import AppKit
+import GinexusCore
 
 // MARK: - button
 
@@ -162,6 +164,76 @@ struct FabDataRow: View {
                 .monospacedDigit().foregroundStyle(valueColor).lineLimit(1)
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - a metric whose value ticks in real time (elapsed grows, remaining shrinks)
+
+struct FabLiveMetric: View {
+    let key: String
+    let baseSecs: Int
+    let since: Date       // when baseSecs was sampled from the core
+    let countUp: Bool     // true = elapsed, false = remaining
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            let delta = Int(ctx.date.timeIntervalSince(since))
+            let v = countUp ? baseSecs + delta : max(0, baseSecs - delta)
+            FabMetric(key: key, value: fabETADuration(v), live: true)
+        }
+    }
+}
+
+// MARK: - indeterminate progress (rectangular sweep) for long ops
+
+struct FabIndeterminateBar: View {
+    var tint: Color = Brand.ember500
+    @State private var phase: CGFloat = 0
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            RoundedRectangle(cornerRadius: 2).fill(Brand.line1)
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2).fill(tint)
+                        .frame(width: w * 0.3)
+                        .offset(x: phase * w * 1.3 - w * 0.3)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 2))
+        }
+        .frame(height: 3)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: false)) { phase = 1 }
+        }
+    }
+}
+
+// MARK: - a key/value row with a copy affordance on hover
+
+struct FabCopyRow: View {
+    let key: String
+    let value: String
+    @State private var hover = false
+    @State private var copied = false
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(key.uppercased()).font(.system(size: 9.5, weight: .medium)).kerning(0.6).foregroundStyle(Brand.bone400)
+            Spacer(minLength: 8)
+            Text(value).font(.system(size: 11.5, weight: .medium, design: .monospaced)).monospacedDigit()
+                .foregroundStyle(Brand.bone100).lineLimit(1).textSelection(.enabled)
+            if hover || copied {
+                Button {
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(value, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 9.5)).foregroundStyle(copied ? Brand.success : Brand.bone400)
+                }
+                .buttonStyle(.plain).help("Copy")
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
     }
 }
 

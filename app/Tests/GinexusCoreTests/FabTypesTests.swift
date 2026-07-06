@@ -79,4 +79,21 @@ final class FabTypesTests: XCTestCase {
         XCTAssertEqual(fabETA(8040), "2h 14m")
         XCTAssertEqual(fabETA(3600), "1h 0m")
     }
+
+    func testDurationGrammarWithSeconds() {
+        XCTAssertEqual(fabETADuration(45), "45s")
+        XCTAssertEqual(fabETADuration(63), "1m 03s")
+        XCTAssertEqual(fabETADuration(8040), "2h 14m 00s")
+        XCTAssertEqual(fabETADuration(3661), "1h 01m 01s")
+    }
+
+    func testRelativeTime() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let ms = { (secsAgo: Double) -> Int64 in Int64((10_000 - secsAgo) * 1000) }
+        XCTAssertEqual(fabRelTime(ms(3), now: now), "just now")
+        XCTAssertEqual(fabRelTime(ms(30), now: now), "30s ago")
+        XCTAssertEqual(fabRelTime(ms(120), now: now), "2m ago")
+        XCTAssertEqual(fabRelTime(ms(7200), now: now), "2h ago")
+        XCTAssertEqual(fabRelTime(0, now: now), "—")
+    }
 }

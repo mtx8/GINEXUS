@@ -24,6 +24,8 @@ struct FabricationView: View {
                 if let sel = model.fabSelectedID,
                    let printer = model.fabPrinters.first(where: { $0.id == sel }) {
                     PrinterCockpit(model: model, printer: printer)
+                        .id(sel)   // fresh transition per printer
+                        .transition(.opacity)
                 } else {
                     fleetOverview
                 }
@@ -49,8 +51,16 @@ struct FabricationView: View {
             }
             Spacer(minLength: 0)
             if model.fabLoading {
-                Text("SYNC").font(.system(size: 9, weight: .semibold, design: .monospaced)).kerning(1.5)
-                    .foregroundStyle(Brand.bone400)
+                HStack(spacing: 5) {
+                    ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 10, height: 10)
+                    Text("SYNCING").font(.system(size: 8.5, weight: .semibold, design: .monospaced)).kerning(1.4).foregroundStyle(Brand.bone400)
+                }
+            } else if !model.fabPrinters.isEmpty {
+                TimelineView(.periodic(from: .now, by: 5)) { ctx in
+                    let s = Int(ctx.date.timeIntervalSince(model.fabPrintersAt))
+                    Text("SYNCED \(s < 5 ? "NOW" : "\(s)s AGO")")
+                        .font(.system(size: 8.5, weight: .semibold, design: .monospaced)).kerning(1.2).foregroundStyle(Brand.bone400)
+                }
             }
             FabButton(title: "Refresh", icon: "arrow.clockwise", style: .ghost, compact: true) { model.refreshFab() }
             FabButton(title: "Add Printer", icon: "plus", style: .primary) { model.fabAddSheetOpen = true }
@@ -220,10 +230,10 @@ private struct PrinterCockpit: View {
                     }
                     Spacer(minLength: 0)
                 }
-                // Connection detail rows.
+                // Connection detail rows (host/board id are copyable on hover).
                 VStack(spacing: 0) {
-                    if !printer.host.isEmpty { FabDataRow(key: "Host", value: printer.host) }
-                    if !printer.mainboardID.isEmpty { FabDataRow(key: "Board ID", value: printer.mainboardID) }
+                    if !printer.host.isEmpty { FabCopyRow(key: "Host", value: printer.host) }
+                    if !printer.mainboardID.isEmpty { FabCopyRow(key: "Board ID", value: printer.mainboardID) }
                     FabDataRow(key: "Protocol", value: protocolName)
                     if let j = printer.jobName, !j.isEmpty { FabDataRow(key: "Active File", value: (j as NSString).lastPathComponent) }
                 }
@@ -251,13 +261,31 @@ private struct PrinterCockpit: View {
 
     // MARK: telemetry grid
     private var telemetryPanel: some View {
-        FabPanel(title: "Live Telemetry") {
+        let active = printer.isActive
+        return FabPanel(title: "Live Telemetry",
+                        accessory: active ? AnyView(HStack(spacing: 5) {
+                            Circle().fill(Brand.cyan500).frame(width: 5, height: 5)
+                            Text("LIVE").font(.system(size: 8.5, weight: .bold, design: .monospaced)).kerning(1.4).foregroundStyle(Brand.cyan500)
+                        }) : nil) {
             VStack(alignment: .leading, spacing: 12) {
                 if printer.state == "printing" || printer.state == "paused" {
                     ThinProgressBar(value: printer.progress ?? 0, tint: Brand.cyan500).frame(height: 5)
                 }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), spacing: 14) {
-                    ForEach(metrics, id: \.0) { m in FabMetric(key: m.0, value: m.1, live: m.2) }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), spacing: 16) {
+                    FabMetric(key: "STATE", value: printer.state.uppercased(), live: active)
+                    if let p = printer.progress { FabMetric(key: "PROGRESS", value: "\(Int((p * 100).rounded()))%", live: active) }
+                    if let c = printer.currentLayer, let t = printer.totalLayers { FabMetric(key: "LAYER", value: "\(c) / \(t)", live: active) }
+                    if let e = printer.elapsedSecs, active {
+                        FabLiveMetric(key: "ELAPSED", baseSecs: e, since: model.fabPrintersAt, countUp: true)
+                    }
+                    if let s = printer.timeLeftSecs {
+                        if active { FabLiveMetric(key: "REMAINING", baseSecs: s, since: model.fabPrintersAt, countUp: false) }
+                        else { FabMetric(key: "REMAINING", value: fabETA(s)) }
+                    }
+                    ForEach(printer.extra) { t in FabMetric(key: t.label, value: t.value, live: true) }
+                    if !active && printer.progress == nil {
+                        FabMetric(key: "PROTOCOL", value: protocolShort)
+                    }
                 }
                 if let d = printer.detail, !d.isEmpty, printer.state == "error" {
                     Text(d).font(Brand.body(11)).foregroundStyle(Brand.error)
@@ -266,17 +294,9 @@ private struct PrinterCockpit: View {
         }
     }
 
-    private var metrics: [(String, String, Bool)] {
-        var m: [(String, String, Bool)] = []
-        let active = printer.isActive
-        m.append(("STATE", printer.state.uppercased(), active))
-        if let p = printer.progress { m.append(("PROGRESS", "\(Int((p * 100).rounded()))%", active)) }
-        if let c = printer.currentLayer, let t = printer.totalLayers { m.append(("LAYER", "\(c) / \(t)", active)) }
-        if let e = printer.elapsedSecs, active { m.append(("ELAPSED", fabETA(e), true)) }
-        if let s = printer.timeLeftSecs { m.append(("REMAINING", fabETA(s), active)) }
-        for t in printer.extra { m.append((t.label, t.value, true)) }
-        if m.count < 2 { m.append(("HOST", printer.host.isEmpty ? "—" : printer.host, false)) }
-        return m
+    private var protocolShort: String {
+        switch printer.kind { case "sdcp": return "SDCP V3"; case "octoprint": return "OCTOPRINT"
+        case "moonraker": return "MOONRAKER"; case "mock": return "SIMULATOR"; default: return printer.kind.uppercased() }
     }
 
     private var stateColor: Color { fabStateColor(printer.state) }
@@ -290,10 +310,13 @@ private struct PrinterCockpit: View {
             HStack(spacing: 8) {
                 FabButton(title: "Pause", icon: "pause.fill",
                           enabled: printer.state == "printing" && !model.fabBusy) { model.fabPause(printerID: printer.id) }
+                    .help("Pause immediately — always safe; resume after inspection")
                 FabButton(title: "Resume", icon: "play.fill", style: .primary,
                           enabled: printer.state == "paused" && !model.fabBusy) { model.fabResume(printerID: printer.id) }
+                    .help("Resume — confirm the machine is clear first")
                 FabButton(title: "Cancel", icon: "stop.fill", style: .danger,
                           enabled: (printer.state == "printing" || printer.state == "paused") && !model.fabBusy) { confirmCancel = true }
+                    .help("Stop the print — destroys the in-progress part")
             }
         }
     }
@@ -352,6 +375,7 @@ private struct PrinterCockpit: View {
                     VStack(alignment: .leading, spacing: 10) {
                         FabButton(title: model.fabAnalyzing ? "Analyzing…" : "Run Analysis", icon: "waveform.path.ecg",
                                   enabled: hasModel && !model.fabAnalyzing, compact: true) { model.fabAnalyze() }
+                        if model.fabAnalyzing { FabIndeterminateBar().frame(maxWidth: 320) }
                         if let r = model.fabReport { reportGrid(r) }
                     }
                 }
@@ -370,8 +394,14 @@ private struct PrinterCockpit: View {
                     VStack(alignment: .leading, spacing: 6) {
                         FabButton(title: model.fabSlicing ? "Slicing…" : "Slice → Queue", icon: "square.stack.3d.up",
                                   style: .primary, enabled: hasModel && !model.fabSlicing) { model.fabSlice(printerID: printer.id) }
-                        Text("Runs the official PrusaSlicer + UVtools (must be installed at /Applications). Nothing is downloaded.")
-                            .font(Brand.body(10)).foregroundStyle(Brand.bone400)
+                        if model.fabSlicing {
+                            FabIndeterminateBar().frame(maxWidth: 320)
+                            Text("Slicing can take a minute or two on detailed models — this stays live.")
+                                .font(Brand.body(10)).foregroundStyle(Brand.cyan500)
+                        } else {
+                            Text("Runs the official PrusaSlicer + UVtools (must be installed at /Applications). Nothing is downloaded.")
+                                .font(Brand.body(10)).foregroundStyle(Brand.bone400)
+                        }
                     }
                 }
             }
@@ -420,6 +450,8 @@ private struct PrinterCockpit: View {
                 reportColumn("MASS · SUPPORT", [
                     ("Volume", String(format: "%.2f cm³", r.volumeCM3), Brand.cyan500),
                     ("≈ Resin", String(format: "%.1f ml", r.volumeCM3), Brand.bone100),
+                    // PLA ≈ 1.24 g/cm³ — a real derived estimate, model volume only (excludes supports/infill).
+                    ("≈ Filament", String(format: "%.0f g PLA", r.volumeCM3 * 1.24), Brand.bone100),
                     ("Overhang area", "\(Int((r.overhangFraction * 100).rounded()))%", r.overhangFraction > 0.25 ? Brand.warning : Brand.bone100),
                 ])
             }
@@ -486,17 +518,20 @@ private struct JobTable: View {
     let showPrinter: Bool
     let cockpit: JobActions?
 
+    @State private var hoveredJob: String?
+
     var body: some View {
         VStack(spacing: 0) {
             // header row
             HStack(spacing: 10) {
                 col("JOB", width: nil)
-                if showPrinter { col("PRINTER", width: 120) }
-                col("STATE", width: 90)
+                if showPrinter { col("PRINTER", width: 110) }
+                col("STATE", width: 84)
                 col("VALIDATION", width: nil)
+                col("UPDATED", width: 74)
                 col("ACTION", width: 130, trailing: true)
             }
-            .padding(.vertical, 6)
+            .padding(.horizontal, 8).padding(.vertical, 6)
             Rectangle().fill(Brand.line1).frame(height: 1)
             ForEach(Array(jobs.enumerated()), id: \.element.id) { i, job in
                 HStack(spacing: 10) {
@@ -504,20 +539,24 @@ private struct JobTable: View {
                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                     if showPrinter {
                         Text(model.fabPrinters.first { $0.id == job.printerID }?.name ?? job.printerID)
-                            .font(Brand.body(11)).foregroundStyle(Brand.bone300).lineLimit(1).frame(width: 120, alignment: .leading)
+                            .font(Brand.body(11)).foregroundStyle(Brand.bone300).lineLimit(1).frame(width: 110, alignment: .leading)
                     }
                     Text(job.state.uppercased()).font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(0.8)
                         .foregroundStyle(jobStateColor(job.state))
-                        .frame(width: 90, alignment: .leading)
+                        .frame(width: 84, alignment: .leading)
                     Text(job.validation.split(separator: "\n").first.map(String.init) ?? "—")
                         .font(.system(size: 9, design: .monospaced)).foregroundStyle(Brand.bone400)
                         .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    Text(fabRelTime(job.updatedMs)).font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(Brand.bone400).frame(width: 74, alignment: .leading)
                     HStack(spacing: 6) {
                         Spacer(minLength: 0)
                         actions(job)
                     }.frame(width: 130, alignment: .trailing)
                 }
-                .padding(.vertical, 8)
+                .padding(.horizontal, 8).padding(.vertical, 8)
+                .background(hoveredJob == job.id ? Brand.ink600 : .clear)
+                .onHover { hoveredJob = $0 ? job.id : (hoveredJob == job.id ? nil : hoveredJob) }
                 if i < jobs.count - 1 { Rectangle().fill(Brand.line1).frame(height: 1) }
             }
         }

@@ -159,6 +159,27 @@ public struct FabCamera: Equatable, Sendable {
     public var hasStream: Bool { kind != "none" && !url.isEmpty }
 }
 
+/// "just now" / "3m ago" / "2h ago" / "5d ago" — relative time from an epoch-ms timestamp.
+public func fabRelTime(_ ms: Int64, now: Date = Date()) -> String {
+    guard ms > 0 else { return "—" }
+    let secs = Int(now.timeIntervalSince1970 - Double(ms) / 1000.0)
+    if secs < 10 { return "just now" }
+    if secs < 60 { return "\(secs)s ago" }
+    let m = secs / 60
+    if m < 60 { return "\(m)m ago" }
+    let h = m / 60
+    if h < 24 { return "\(h)h ago" }
+    return "\(h / 24)d ago"
+}
+
+/// Duration grammar WITH seconds for the live-ticking readouts: "2h 14m 03s" / "1m 03s" / "45s".
+public func fabETADuration(_ secs: Int) -> String {
+    let s = secs % 60, m = (secs / 60) % 60, h = secs / 3600
+    if h > 0 { return String(format: "%dh %02dm %02ds", h, m, s) }
+    if m > 0 { return String(format: "%dm %02ds", m, s) }
+    return "\(s)s"
+}
+
 /// "2h 14m" / "14m" / "45s" — the ETA grammar used across the Fabrication console.
 public func fabETA(_ secs: Int) -> String {
     if secs < 60 { return "\(secs)s" }
