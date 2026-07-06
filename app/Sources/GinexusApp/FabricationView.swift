@@ -1,9 +1,9 @@
-// FabricationView.swift — the SP-FAB manufacturing cockpit. ALL view = the printer fleet at a
-// glance; selecting a printer opens its workstation: live telemetry, camera, physical controls,
-// and a model-prep pipeline (pick STL → analyze the mesh → slice → queue → upload → start).
-// Silo Unison recipe; OMNISCIENT cyan reserved for LIVE telemetry VALUES; ember = chrome/actions.
-// Physical START/RESUME/CANCEL go through an explicit readiness confirmation — that deliberate
-// human click is the approval a hard-gated action requires.
+// FabricationView.swift — the SP-FAB manufacturing cockpit. ALL view = the fleet at a glance;
+// selecting a printer opens its workstation: an identity strip with connection detail, a dense
+// live-telemetry grid, physical controls, camera, a numbered model-prep pipeline (model → analyze
+// → profile → slice), and a job table. Rectangular throughout (no pills); OMNISCIENT density over
+// the Silo Unison palette; cyan reserved for live values. Physical START/RESUME/CANCEL go through
+// an explicit readiness confirmation — the deliberate click is the approval a hard action requires.
 import SwiftUI
 import AppKit
 import GinexusCore
@@ -14,13 +14,13 @@ struct FabricationView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding(.horizontal, 22).padding(.top, 26).padding(.bottom, 12)
-            Divider().overlay(Brand.line1)
+                .padding(.horizontal, 24).padding(.top, 24).padding(.bottom, 14)
+            Rectangle().fill(Brand.line1).frame(height: 1)
             if model.fabPrinters.isEmpty {
                 emptyState
             } else {
                 fleetTabs
-                    .padding(.horizontal, 22).padding(.vertical, 10)
+                    .padding(.horizontal, 24).padding(.vertical, 12)
                 if let sel = model.fabSelectedID,
                    let printer = model.fabPrinters.first(where: { $0.id == sel }) {
                     PrinterCockpit(model: model, printer: printer)
@@ -28,51 +28,57 @@ struct FabricationView: View {
                     fleetOverview
                 }
             }
-            if let n = model.fabNotice { noticeBar(n, color: Brand.success) }
-            if let e = model.fabError { noticeBar(e, color: Brand.error) }
+            if let n = model.fabNotice { noticeBar(n, isError: false) }
+            if let e = model.fabError { noticeBar(e, isError: true) }
         }
         .sheet(isPresented: $model.fabAddSheetOpen) { AddPrinterSheet(model: model) }
     }
 
     // MARK: header
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            StampText(text: "FABRICATION BAY", size: 13, ember: "BAY")
-            if printingCount > 0 {
-                HStack(spacing: 5) {
-                    StatusDot(color: Brand.cyan500, glow: true, size: 6)
-                    Text("\(printingCount) PRINTING")
-                        .font(Brand.mono(10, weight: .semibold)).kerning(1.2)
-                        .foregroundStyle(Brand.cyan500)
-                }
+        HStack(alignment: .center, spacing: 14) {
+            HStack(spacing: 4) {
+                Text("FABRICATION").font(.system(size: 14, weight: .semibold)).kerning(3).foregroundStyle(Brand.bone300)
+                Text("BAY").font(.system(size: 14, weight: .semibold)).kerning(3).foregroundStyle(Brand.ember500)
+            }
+            if !model.fabPrinters.isEmpty {
+                Rectangle().fill(Brand.line1).frame(width: 1, height: 16)
+                statCount("\(model.fabPrinters.count)", "PRINTERS")
+                if printingCount > 0 { statCount("\(printingCount)", "ACTIVE", color: Brand.cyan500) }
+                if !model.fabJobs.isEmpty { statCount("\(model.fabJobs.count)", "JOBS") }
             }
             Spacer(minLength: 0)
             if model.fabLoading {
-                Text("SYNC").font(Brand.mono(9, weight: .semibold)).kerning(1.5)
+                Text("SYNC").font(.system(size: 9, weight: .semibold, design: .monospaced)).kerning(1.5)
                     .foregroundStyle(Brand.bone400)
             }
-            Button { model.refreshFab() } label: { BrandChip(icon: "arrow.clockwise", label: "Refresh") }
-                .buttonStyle(.plain).help("Poll the fleet now")
-            EmberButton(title: "Add Printer", icon: "plus") { model.fabAddSheetOpen = true }
+            FabButton(title: "Refresh", icon: "arrow.clockwise", style: .ghost, compact: true) { model.refreshFab() }
+            FabButton(title: "Add Printer", icon: "plus", style: .primary) { model.fabAddSheetOpen = true }
+        }
+    }
+
+    private func statCount(_ n: String, _ label: String, color: Color = Brand.bone100) -> some View {
+        HStack(spacing: 5) {
+            Text(n).font(.system(size: 14, weight: .heavy, design: .monospaced)).foregroundStyle(color)
+            Text(label).font(.system(size: 9, weight: .semibold)).kerning(1.2).foregroundStyle(Brand.bone400)
         }
     }
 
     private var printingCount: Int { model.fabPrinters.filter { $0.state == "printing" }.count }
 
-    private func noticeBar(_ text: String, color: Color) -> some View {
+    private func noticeBar(_ text: String, isError: Bool) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: color == Brand.error ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .font(.system(size: 11)).foregroundStyle(color)
+            Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 11)).foregroundStyle(isError ? Brand.error : Brand.success)
             Text(text).font(Brand.body(12)).foregroundStyle(Brand.bone100)
             Spacer(minLength: 0)
-            Button {
-                if color == Brand.error { model.fabError = nil } else { model.fabNotice = nil }
-            } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(Brand.bone400) }
-                .buttonStyle(.plain)
+            Button { if isError { model.fabError = nil } else { model.fabNotice = nil } } label: {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(Brand.bone400)
+            }.buttonStyle(.plain)
         }
-        .padding(.horizontal, 22).padding(.vertical, 9)
+        .padding(.horizontal, 24).padding(.vertical, 10)
         .background(Brand.ink850)
-        .overlay(Rectangle().frame(height: 1).foregroundStyle(Brand.line1), alignment: .top)
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(isError ? Brand.error.opacity(0.4) : Brand.line1), alignment: .top)
     }
 
     // MARK: empty state
@@ -80,87 +86,65 @@ struct FabricationView: View {
         VStack(spacing: 16) {
             Spacer()
             GlyphMark(size: 40)
-            StampText(text: "NO PRINTERS IN THE FLEET", size: 11)
-            Text("Discover Elegoo/SDCP printers on your network, or add OctoPrint, Moonraker, "
-                 + "or a mock printer by address. Then pick a printer to open its workstation.")
+            Text("NO PRINTERS IN THE FLEET").font(.system(size: 11, weight: .semibold)).kerning(2).foregroundStyle(Brand.bone300)
+            Text("Discover Elegoo/SDCP printers on your network, or add OctoPrint, Moonraker, or a "
+                 + "mock printer by address. Then select a printer to open its workstation.")
                 .font(Brand.body(13)).foregroundStyle(Brand.bone300)
                 .multilineTextAlignment(.center).frame(maxWidth: 440)
             HStack(spacing: 10) {
-                EmberButton(title: "Add Printer", icon: "plus") { model.fabAddSheetOpen = true }
-                Button { model.fabAddSheetOpen = true; model.fabDiscover() } label: {
-                    TacticalLabel(text: "Discover", icon: "dot.radiowaves.left.and.right")
-                }.buttonStyle(.plain)
+                FabButton(title: "Add Printer", icon: "plus", style: .primary) { model.fabAddSheetOpen = true }
+                FabButton(title: "Discover", icon: "dot.radiowaves.left.and.right") { model.fabAddSheetOpen = true; model.fabDiscover() }
             }
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: fleet tabs — ALL + one per printer
+    // MARK: fleet tabs
     private var fleetTabs: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                fleetTab(nil, label: "ALL")
-                ForEach(model.fabPrinters) { p in fleetTab(p.id, label: p.name.uppercased()) }
+            HStack(spacing: 4) {
+                FabSegment(label: "All", selected: model.fabSelectedID == nil) { select(nil) }
+                ForEach(model.fabPrinters) { p in
+                    FabSegment(label: p.name, selected: model.fabSelectedID == p.id) { select(p.id) }
+                }
             }
         }
     }
 
-    private func fleetTab(_ id: String?, label: String) -> some View {
-        let selected = model.fabSelectedID == id
-        return Button {
-            withAnimation(Brand.ease(0.18)) {
-                model.fabSelectedID = id
-                model.fabCamera = nil; model.fabNotice = nil; model.fabError = nil
-            }
-        } label: {
-            Text(label)
-                .font(.system(size: 10.5, weight: .semibold)).kerning(1.4)
-                .foregroundStyle(selected ? Brand.bone50 : Brand.bone300)
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(selected ? Brand.ink600 : Brand.ink700, in: Capsule())
-                .overlay(Capsule().stroke(selected ? Brand.ember700 : Brand.line1, lineWidth: 1))
-                .contentShape(Capsule())
-        }.buttonStyle(.plain)
+    private func select(_ id: String?) {
+        withAnimation(Brand.ease(0.18)) {
+            model.fabSelectedID = id; model.fabCamera = nil; model.fabNotice = nil; model.fabError = nil
+        }
     }
 
-    // MARK: ALL view — rack + global queue
+    // MARK: ALL view — rack + global job table
     private var fleetOverview: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 12)], spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 14)], spacing: 14) {
                     ForEach(model.fabPrinters) { p in
-                        FabPrinterCard(printer: p,
-                                       onOpen: { withAnimation(Brand.ease(0.18)) { model.fabSelectedID = p.id } },
-                                       onRemove: { model.fabRemovePrinter(p.id) })
+                        FabPrinterCard(printer: p, onOpen: { select(p.id) }, onRemove: { model.fabRemovePrinter(p.id) })
                     }
                 }
-                Panel(title: "ALL JOBS") {
+                FabPanel(title: "All Jobs") {
                     if model.fabJobs.isEmpty {
                         Text("No fabrication jobs yet. Open a printer to prepare and slice a model.")
                             .font(Brand.body(12)).foregroundStyle(Brand.bone300)
                     } else {
-                        VStack(spacing: 0) {
-                            ForEach(Array(model.fabJobs.enumerated()), id: \.element.id) { i, job in
-                                FabJobRow(job: job,
-                                          printerName: model.fabPrinters.first { $0.id == job.printerID }?.name ?? job.printerID) {
-                                    model.fabClearJob(job.id)
-                                }
-                                if i < model.fabJobs.count - 1 { Divider().overlay(Brand.line1) }
-                            }
-                        }
+                        JobTable(model: model, jobs: model.fabJobs, showPrinter: true, cockpit: nil)
                     }
                 }
                 safetyStamp
             }
-            .padding(.horizontal, 22).padding(.bottom, 24)
+            .padding(.horizontal, 24).padding(.bottom, 28)
         }
     }
 
     private var safetyStamp: some View {
         HStack(spacing: 8) {
             Image(systemName: "hand.raised.fill").font(.system(size: 10)).foregroundStyle(Brand.bone400)
-            Text("START · RESUME · PLATE-CLEAR always ask you to confirm the machine is physically ready — PAUSE is instant")
+            Text("START · RESUME · PLATE-CLEAR always ask you to confirm the machine is physically ready — PAUSE is instant.")
                 .font(Brand.body(11)).foregroundStyle(Brand.bone400)
             Spacer(minLength: 0)
         }
@@ -180,145 +164,151 @@ private struct PrinterCockpit: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                identityPanel
                 telemetryPanel
-                controlsPanel
-                cameraPanel
+                HStack(alignment: .top, spacing: 14) {
+                    controlsPanel.frame(maxWidth: .infinity)
+                    cameraPanel.frame(maxWidth: .infinity)
+                }
                 preparePanel
-                jobsPanel
+                FabPanel(title: "Jobs · This Printer") {
+                    if jobs.isEmpty {
+                        Text("No jobs yet. Prepare a model below, then Slice → Queue.")
+                            .font(Brand.body(12)).foregroundStyle(Brand.bone300)
+                    } else {
+                        JobTable(model: model, jobs: jobs, showPrinter: false,
+                                 cockpit: JobActions(onStart: { confirmStartJob = $0 }))
+                    }
+                }
             }
-            .padding(.horizontal, 22).padding(.vertical, 4).padding(.bottom, 24)
+            .padding(.horizontal, 24).padding(.vertical, 2).padding(.bottom, 28)
         }
         .confirmationDialog("Start this print?", isPresented: Binding(
             get: { confirmStartJob != nil }, set: { if !$0 { confirmStartJob = nil } }
         ), presenting: confirmStartJob) { job in
-            Button("Printer is ready — start", role: .destructive) {
-                model.fabStart(jobID: job.id); confirmStartJob = nil
-            }
+            Button("Printer is ready — start", role: .destructive) { model.fabStart(jobID: job.id); confirmStartJob = nil }
             Button("Cancel", role: .cancel) { confirmStartJob = nil }
         } message: { _ in
-            Text("Confirm the machine is physically ready: resin in the vat (or filament loaded), "
-                 + "build plate installed, previous part removed, and the lid/cover closed. "
-                 + "The printer cannot sense these — starting is irreversible.")
+            Text("Confirm the machine is physically ready: resin in the vat (or filament loaded), build "
+                 + "plate installed, previous part removed, and the lid/cover closed. The printer cannot "
+                 + "sense these — starting is irreversible.")
         }
         .confirmationDialog("Cancel the active print?", isPresented: $confirmCancel) {
             Button("Cancel the print", role: .destructive) {
-                let activeJob = jobs.first { $0.state == "printing" }?.id ?? ""
-                model.fabCancel(printerID: printer.id, jobID: activeJob); confirmCancel = false
+                let active = jobs.first { $0.state == "printing" }?.id ?? ""
+                model.fabCancel(printerID: printer.id, jobID: active); confirmCancel = false
             }
             Button("Keep printing", role: .cancel) { confirmCancel = false }
         } message: { Text("This stops the print and destroys the in-progress part. It cannot be undone.") }
     }
 
-    // MARK: telemetry
-    private var telemetryPanel: some View {
-        Panel {
+    // MARK: identity
+    private var identityPanel: some View {
+        FabPanel(title: "Printer", accent: stateColor,
+                 accessory: AnyView(HStack(spacing: 6) {
+                    Text(printer.state.uppercased())
+                        .font(.system(size: 11, weight: .heavy, design: .monospaced)).kerning(1.4)
+                        .foregroundStyle(stateColor == Brand.ink500 ? Brand.bone400 : stateColor)
+                 })) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 10) {
                     StatusDot(color: stateColor, glow: printer.isActive, size: 9)
-                    Text(printer.name).font(Brand.body(17, weight: .semibold)).foregroundStyle(Brand.bone50)
-                    BrandChip(label: printer.kind.uppercased())
+                    Text(printer.name).font(.system(size: 18, weight: .semibold)).foregroundStyle(Brand.bone50)
+                    FabTag(text: printer.kind)
+                    if !printer.model.isEmpty {
+                        Text(printer.model).font(Brand.body(12)).foregroundStyle(Brand.bone300).lineLimit(1)
+                    }
                     Spacer(minLength: 0)
-                    Text(printer.state.uppercased())
-                        .font(Brand.mono(11, weight: .semibold)).kerning(1.6)
-                        .foregroundStyle(stateColor == Brand.ink500 ? Brand.bone400 : stateColor)
                 }
-                if !printer.model.isEmpty {
-                    Text(printer.model).font(Brand.body(12)).foregroundStyle(Brand.bone300)
+                // Connection detail rows.
+                VStack(spacing: 0) {
+                    if !printer.host.isEmpty { FabDataRow(key: "Host", value: printer.host) }
+                    if !printer.mainboardID.isEmpty { FabDataRow(key: "Board ID", value: printer.mainboardID) }
+                    FabDataRow(key: "Protocol", value: protocolName)
+                    if let j = printer.jobName, !j.isEmpty { FabDataRow(key: "Active File", value: (j as NSString).lastPathComponent) }
                 }
-                if printer.state == "printing" || printer.state == "paused" {
-                    ThinProgressBar(value: printer.progress ?? 0, tint: Brand.cyan500)
-                    HStack(spacing: 22) {
-                        if let c = printer.currentLayer, let t = printer.totalLayers { metric("LAYER", "\(c) / \(t)") }
-                        if let p = printer.progress { metric("PROGRESS", "\(Int((p * 100).rounded()))%") }
-                        if let s = printer.timeLeftSecs { metric("TIME LEFT", fabETA(s)) }
-                        Spacer(minLength: 0)
-                    }
-                    if let j = printer.jobName, !j.isEmpty {
-                        Text(j).font(Brand.mono(10)).foregroundStyle(Brand.bone300).lineLimit(1)
-                    }
-                } else {
-                    HStack(spacing: 22) {
-                        metric("HOST", printer.host.isEmpty ? "—" : printer.host)
-                        if let d = printer.detail, !d.isEmpty { metric("STATUS", d) }
-                        Spacer(minLength: 0)
-                    }
+                // Capability tags.
+                HStack(spacing: 6) {
+                    ForEach(capabilities, id: \.self) { FabTag(text: $0, color: Brand.bone400) }
+                    Spacer(minLength: 0)
                 }
             }
         }
     }
 
-    private func metric(_ key: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(key).font(Brand.mono(9, weight: .semibold)).kerning(1.3).foregroundStyle(Brand.bone400)
-            Text(value).font(Brand.mono(13, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(printer.isActive ? Brand.cyan500 : Brand.bone100)
+    private var protocolName: String {
+        switch printer.kind {
+        case "sdcp": return "SDCP V3 (LAN)"
+        case "octoprint": return "OctoPrint REST"
+        case "moonraker": return "Moonraker (Klipper)"
+        case "mock": return "Simulator"
+        default: return printer.kind.uppercased()
+        }
+    }
+    private var capabilities: [String] {
+        printer.kind == "mock" ? ["UPLOAD", "START", "PAUSE"] : ["UPLOAD", "START", "PAUSE", "CANCEL", "CAMERA"]
+    }
+
+    // MARK: telemetry grid
+    private var telemetryPanel: some View {
+        FabPanel(title: "Live Telemetry") {
+            VStack(alignment: .leading, spacing: 12) {
+                if printer.state == "printing" || printer.state == "paused" {
+                    ThinProgressBar(value: printer.progress ?? 0, tint: Brand.cyan500).frame(height: 5)
+                }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), spacing: 14) {
+                    ForEach(metrics, id: \.0) { m in FabMetric(key: m.0, value: m.1, live: m.2) }
+                }
+                if let d = printer.detail, !d.isEmpty, printer.state == "error" {
+                    Text(d).font(Brand.body(11)).foregroundStyle(Brand.error)
+                }
+            }
         }
     }
 
-    private var stateColor: Color {
-        switch printer.state {
-        case "printing": return Brand.cyan500
-        case "paused": return Brand.warning
-        case "complete": return Brand.success
-        case "error": return Brand.error
-        case "offline", "unknown": return Brand.ink500
-        default: return Brand.ok
-        }
+    private var metrics: [(String, String, Bool)] {
+        var m: [(String, String, Bool)] = []
+        let active = printer.isActive
+        m.append(("STATE", printer.state.uppercased(), active))
+        if let p = printer.progress { m.append(("PROGRESS", "\(Int((p * 100).rounded()))%", active)) }
+        if let c = printer.currentLayer, let t = printer.totalLayers { m.append(("LAYER", "\(c) / \(t)", active)) }
+        if let e = printer.elapsedSecs, active { m.append(("ELAPSED", fabETA(e), true)) }
+        if let s = printer.timeLeftSecs { m.append(("REMAINING", fabETA(s), active)) }
+        for t in printer.extra { m.append((t.label, t.value, true)) }
+        if m.count < 2 { m.append(("HOST", printer.host.isEmpty ? "—" : printer.host, false)) }
+        return m
     }
+
+    private var stateColor: Color { fabStateColor(printer.state) }
 
     // MARK: controls
     private var controlsPanel: some View {
-        Panel(title: "CONTROLS") {
-            HStack(spacing: 10) {
-                // Pause is the safe action — always available while printing.
-                Button { model.fabPause(printerID: printer.id) } label: {
-                    TacticalLabel(text: "Pause", icon: "pause.fill")
-                }
-                .buttonStyle(.plain)
-                .disabled(printer.state != "printing" || model.fabBusy)
-                .opacity(printer.state == "printing" ? 1 : 0.4)
-
-                Button { model.fabResume(printerID: printer.id) } label: {
-                    TacticalLabel(text: "Resume", icon: "play.fill", filled: true)
-                }
-                .buttonStyle(.plain)
-                .disabled(printer.state != "paused" || model.fabBusy)
-                .opacity(printer.state == "paused" ? 1 : 0.4)
-
-                Button { confirmCancel = true } label: {
-                    TacticalLabel(text: "Cancel", icon: "stop.fill", tint: Brand.hi500)
-                }
-                .buttonStyle(.plain)
-                .disabled(!(printer.state == "printing" || printer.state == "paused") || model.fabBusy)
-                .opacity((printer.state == "printing" || printer.state == "paused") ? 1 : 0.4)
-
-                Spacer(minLength: 0)
-                DestructiveIconButton(icon: "trash", size: 12, help: "Remove printer") {
-                    model.fabRemovePrinter(printer.id)
-                    model.fabSelectedID = nil
-                }
+        FabPanel(title: "Controls",
+                 accessory: AnyView(Button { model.fabRemovePrinter(printer.id); model.fabSelectedID = nil } label: {
+                    Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(Brand.bone400)
+                 }.buttonStyle(.plain).help("Remove printer"))) {
+            HStack(spacing: 8) {
+                FabButton(title: "Pause", icon: "pause.fill",
+                          enabled: printer.state == "printing" && !model.fabBusy) { model.fabPause(printerID: printer.id) }
+                FabButton(title: "Resume", icon: "play.fill", style: .primary,
+                          enabled: printer.state == "paused" && !model.fabBusy) { model.fabResume(printerID: printer.id) }
+                FabButton(title: "Cancel", icon: "stop.fill", style: .danger,
+                          enabled: (printer.state == "printing" || printer.state == "paused") && !model.fabBusy) { confirmCancel = true }
             }
         }
     }
 
     // MARK: camera
     private var cameraPanel: some View {
-        Panel(title: "CAMERA") {
+        FabPanel(title: "Camera",
+                 accessory: AnyView(FabButton(title: "Get Stream", icon: "video.fill", compact: true) { model.fabLoadCamera(printerID: printer.id) })) {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Button { model.fabLoadCamera(printerID: printer.id) } label: {
-                        TacticalLabel(text: "Get Stream", icon: "video.fill")
-                    }.buttonStyle(.plain)
-                    if let cam = model.fabCamera, cam.hasStream {
-                        Text(cam.kind.replacingOccurrences(of: "_url", with: "").uppercased())
-                            .font(Brand.mono(9, weight: .semibold)).kerning(1.2).foregroundStyle(Brand.cyan500)
-                    }
-                    Spacer(minLength: 0)
-                }
                 if let cam = model.fabCamera {
                     if cam.hasStream {
+                        FabDataRow(key: "Type", value: cam.kind.replacingOccurrences(of: "_url", with: "").uppercased(), valueColor: Brand.cyan500)
                         HStack(spacing: 8) {
-                            Text(cam.url).font(Brand.mono(11)).foregroundStyle(Brand.bone200).lineLimit(1)
+                            Text(cam.url).font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.bone200).lineLimit(1)
+                            Spacer(minLength: 0)
                             Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(cam.url, forType: .string) } label: {
                                 Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(Brand.bone400)
                             }.buttonStyle(.plain).help("Copy stream URL")
@@ -334,154 +324,231 @@ private struct PrinterCockpit: View {
                         Text("No camera reported by this printer.").font(Brand.body(11)).foregroundStyle(Brand.bone400)
                     }
                 } else {
-                    Text("Streams open in your external player — inline RTSP/MJPEG isn't supported by macOS natively.")
+                    Text("Streams open in your external player — macOS can't render RTSP/MJPEG inline.")
                         .font(Brand.body(11)).foregroundStyle(Brand.bone400)
                 }
             }
         }
     }
 
-    // MARK: prepare — model → analyze → slice
+    // MARK: prepare — numbered pipeline
     private var preparePanel: some View {
-        Panel(title: "PREPARE · MODEL") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Button { model.fabPickModel() } label: { TacticalLabel(text: "Choose STL", icon: "cube") }
-                        .buttonStyle(.plain)
-                    if !model.fabModelPath.isEmpty {
-                        Text((model.fabModelPath as NSString).lastPathComponent)
-                            .font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
-                    } else {
-                        Text("no model selected").font(Brand.body(11)).foregroundStyle(Brand.bone400)
-                    }
-                    Spacer(minLength: 0)
-                    Button { model.fabAnalyze() } label: {
-                        TacticalLabel(text: model.fabAnalyzing ? "Analyzing…" : "Analyze", icon: "waveform.path.ecg")
-                    }
-                    .buttonStyle(.plain).disabled(model.fabModelPath.isEmpty || model.fabAnalyzing)
-                }
-
-                if let r = model.fabReport { reportCard(r) }
-
-                Divider().overlay(Brand.line1)
-                HStack(spacing: 8) {
-                    Button { model.fabPickProfile() } label: { TacticalLabel(text: "Profile .ini", icon: "slider.horizontal.3") }
-                        .buttonStyle(.plain)
-                    if !model.fabProfilePath.isEmpty {
-                        Text((model.fabProfilePath as NSString).lastPathComponent)
-                            .font(Brand.mono(11)).foregroundStyle(Brand.bone100).lineLimit(1)
-                    } else {
-                        Text("resin needs a profile; FDM optional").font(Brand.body(11)).foregroundStyle(Brand.bone400)
-                    }
-                    Spacer(minLength: 0)
-                    EmberButton(title: model.fabSlicing ? "Slicing…" : "Slice → Queue", icon: "square.stack.3d.up",
-                                enabled: !model.fabModelPath.isEmpty && !model.fabSlicing) {
-                        model.fabSlice(printerID: printer.id)
+        let hasModel = !model.fabModelPath.isEmpty
+        let analyzed = model.fabReport != nil
+        let hasProfile = !model.fabProfilePath.isEmpty
+        return FabPanel(title: "Prepare · Model → Print") {
+            VStack(alignment: .leading, spacing: 0) {
+                stepRow(1, "Model", done: hasModel, active: !hasModel) {
+                    HStack(spacing: 8) {
+                        FabButton(title: "Choose STL", icon: "cube", compact: true) { model.fabPickModel() }
+                        Text(hasModel ? (model.fabModelPath as NSString).lastPathComponent : "no model selected")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(hasModel ? Brand.bone100 : Brand.bone400).lineLimit(1)
+                        Spacer(minLength: 0)
                     }
                 }
-                Text("Slicing runs the official PrusaSlicer + UVtools (must be installed). Nothing is downloaded.")
-                    .font(Brand.body(10)).foregroundStyle(Brand.bone400)
+                stepConnector
+                stepRow(2, "Analyze — mesh gate", done: analyzed, active: hasModel && !analyzed) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        FabButton(title: model.fabAnalyzing ? "Analyzing…" : "Run Analysis", icon: "waveform.path.ecg",
+                                  enabled: hasModel && !model.fabAnalyzing, compact: true) { model.fabAnalyze() }
+                        if let r = model.fabReport { reportGrid(r) }
+                    }
+                }
+                stepConnector
+                stepRow(3, "Slicer Profile", done: hasProfile, active: analyzed && !hasProfile) {
+                    HStack(spacing: 8) {
+                        FabButton(title: "Profile .ini", icon: "slider.horizontal.3", compact: true) { model.fabPickProfile() }
+                        Text(hasProfile ? (model.fabProfilePath as NSString).lastPathComponent : "resin requires a profile; FDM optional")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(hasProfile ? Brand.bone100 : Brand.bone400).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                }
+                stepConnector
+                stepRow(4, "Slice → Queue", done: false, active: analyzed) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        FabButton(title: model.fabSlicing ? "Slicing…" : "Slice → Queue", icon: "square.stack.3d.up",
+                                  style: .primary, enabled: hasModel && !model.fabSlicing) { model.fabSlice(printerID: printer.id) }
+                        Text("Runs the official PrusaSlicer + UVtools (must be installed at /Applications). Nothing is downloaded.")
+                            .font(Brand.body(10)).foregroundStyle(Brand.bone400)
+                    }
+                }
             }
         }
     }
 
-    private func reportCard(_ r: FabModelReport) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func stepRow<C: View>(_ n: Int, _ title: String, done: Bool, active: Bool, @ViewBuilder content: () -> C) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            FabStepBadge(n: n, done: done, active: active)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title.uppercased()).font(.system(size: 10, weight: .semibold)).kerning(1.4)
+                    .foregroundStyle(active ? Brand.bone100 : Brand.bone300)
+                content()
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10)
+    }
+
+    private var stepConnector: some View {
+        Rectangle().fill(Brand.line1).frame(width: 1, height: 12).padding(.leading, 10)
+    }
+
+    // MARK: analyze report — a proper engineering grid
+    private func reportGrid(_ r: FabModelReport) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: r.passes ? "checkmark.seal.fill" : "xmark.seal.fill")
                     .font(.system(size: 12)).foregroundStyle(r.passes ? Brand.success : Brand.error)
-                Text(r.passes ? "SLICEABLE SOLID" : "NOT PRINTABLE")
-                    .font(Brand.mono(10, weight: .heavy)).kerning(1.8)
+                Text(r.passes ? "SLICEABLE SOLID" : "NOT PRINTABLE — REPAIR FIRST")
+                    .font(.system(size: 10, weight: .heavy)).kerning(1.6)
                     .foregroundStyle(r.passes ? Brand.success : Brand.error)
                 Spacer(minLength: 0)
             }
-            HStack(spacing: 22) {
-                reportMetric("SIZE", r.dims)
-                reportMetric("VOLUME", String(format: "%.2f cm³", r.volumeCM3))
-                reportMetric("TRIANGLES", "\(r.triangles)")
-                reportMetric("OVERHANG", "\(Int((r.overhangFraction * 100).rounded()))%")
-                Spacer(minLength: 0)
+            HStack(alignment: .top, spacing: 24) {
+                reportColumn("TOPOLOGY", [
+                    ("Watertight", r.watertight ? "YES" : "NO", r.watertight ? Brand.success : Brand.error),
+                    ("Boundary edges", "\(r.boundaryEdges)", r.boundaryEdges == 0 ? Brand.bone100 : Brand.error),
+                    ("Non-manifold", "\(r.nonManifoldEdges)", r.nonManifoldEdges == 0 ? Brand.bone100 : Brand.error),
+                ])
+                reportColumn("GEOMETRY", [
+                    ("Triangles", "\(r.triangles)", Brand.bone100),
+                    ("Vertices", "\(r.vertices)", Brand.bone100),
+                    ("Bounding box", r.dims, Brand.cyan500),
+                ])
+                reportColumn("MASS · SUPPORT", [
+                    ("Volume", String(format: "%.2f cm³", r.volumeCM3), Brand.cyan500),
+                    ("≈ Resin", String(format: "%.1f ml", r.volumeCM3), Brand.bone100),
+                    ("Overhang area", "\(Int((r.overhangFraction * 100).rounded()))%", r.overhangFraction > 0.25 ? Brand.warning : Brand.bone100),
+                ])
             }
-            ForEach(Array(r.notes.enumerated()), id: \.offset) { _, note in
-                Text("• \(note)").font(Brand.body(11)).foregroundStyle(Brand.bone200)
-            }
-        }
-        .padding(12)
-        .background(Brand.ink600, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
-    }
-
-    private func reportMetric(_ key: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(key).font(Brand.mono(8, weight: .semibold)).kerning(1.2).foregroundStyle(Brand.bone400)
-            Text(value).font(Brand.mono(12, weight: .semibold)).monospacedDigit().foregroundStyle(Brand.cyan500)
-        }
-    }
-
-    // MARK: jobs (this printer) with inline actions
-    private var jobsPanel: some View {
-        Panel(title: "JOBS · THIS PRINTER") {
-            if jobs.isEmpty {
-                Text("No jobs yet. Prepare a model above, then Slice → Queue.")
-                    .font(Brand.body(12)).foregroundStyle(Brand.bone300)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(jobs.enumerated()), id: \.element.id) { i, job in
-                        cockpitJobRow(job)
-                        if i < jobs.count - 1 { Divider().overlay(Brand.line1) }
+            if !r.notes.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(r.notes.enumerated()), id: \.offset) { _, note in
+                        Text("• \(note)").font(Brand.body(11)).foregroundStyle(Brand.bone200)
                     }
                 }
             }
         }
+        .padding(12)
+        .background(Brand.ink600, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.line1, lineWidth: 1))
     }
 
-    private func cockpitJobRow(_ job: FabJobItem) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Text(job.name).font(Brand.body(13, weight: .medium)).foregroundStyle(Brand.bone50).lineLimit(1)
-                Text(job.state.uppercased()).font(Brand.mono(9, weight: .semibold)).kerning(1.2)
-                    .foregroundStyle(jobStateColor(job.state))
-                Spacer(minLength: 0)
-                jobActions(job)
-            }
-            if !job.validation.isEmpty, let first = job.validation.split(separator: "\n").first {
-                Text(String(first)).font(Brand.mono(9)).foregroundStyle(Brand.bone400).lineLimit(1)
+    private func reportColumn(_ title: String, _ rows: [(String, String, Color)]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.system(size: 8.5, weight: .bold)).kerning(1.4).foregroundStyle(Brand.bone400)
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 10) {
+                    Text(row.0).font(.system(size: 10)).foregroundStyle(Brand.bone300)
+                    Spacer(minLength: 8)
+                    Text(row.1).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(row.2)
+                }
             }
         }
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private func fabStateColor(_ s: String) -> Color {
+    switch s {
+    case "printing": return Brand.cyan500
+    case "paused": return Brand.warning
+    case "complete": return Brand.success
+    case "error", "failed": return Brand.error
+    case "offline", "unknown", "cancelled": return Brand.ink500
+    default: return Brand.ok
+    }
+}
+
+/// Job-state color (distinct from printer-state: sliced/uploaded are in-flight ember).
+private func jobStateColor(_ s: String) -> Color {
+    switch s {
+    case "printing": return Brand.cyan500
+    case "complete": return Brand.success
+    case "failed": return Brand.error
+    case "cancelled": return Brand.bone400
+    case "sliced", "uploaded": return Brand.ember400
+    default: return Brand.bone300
+    }
+}
+
+// MARK: - job table (rectangular rows, inline actions)
+
+private struct JobActions {
+    let onStart: (FabJobItem) -> Void
+}
+
+private struct JobTable: View {
+    @ObservedObject var model: AppModel
+    let jobs: [FabJobItem]
+    let showPrinter: Bool
+    let cockpit: JobActions?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // header row
+            HStack(spacing: 10) {
+                col("JOB", width: nil)
+                if showPrinter { col("PRINTER", width: 120) }
+                col("STATE", width: 90)
+                col("VALIDATION", width: nil)
+                col("ACTION", width: 130, trailing: true)
+            }
+            .padding(.vertical, 6)
+            Rectangle().fill(Brand.line1).frame(height: 1)
+            ForEach(Array(jobs.enumerated()), id: \.element.id) { i, job in
+                HStack(spacing: 10) {
+                    Text(job.name).font(Brand.body(12, weight: .medium)).foregroundStyle(Brand.bone50)
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    if showPrinter {
+                        Text(model.fabPrinters.first { $0.id == job.printerID }?.name ?? job.printerID)
+                            .font(Brand.body(11)).foregroundStyle(Brand.bone300).lineLimit(1).frame(width: 120, alignment: .leading)
+                    }
+                    Text(job.state.uppercased()).font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(0.8)
+                        .foregroundStyle(jobStateColor(job.state))
+                        .frame(width: 90, alignment: .leading)
+                    Text(job.validation.split(separator: "\n").first.map(String.init) ?? "—")
+                        .font(.system(size: 9, design: .monospaced)).foregroundStyle(Brand.bone400)
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 6) {
+                        Spacer(minLength: 0)
+                        actions(job)
+                    }.frame(width: 130, alignment: .trailing)
+                }
+                .padding(.vertical, 8)
+                if i < jobs.count - 1 { Rectangle().fill(Brand.line1).frame(height: 1) }
+            }
+        }
     }
 
-    @ViewBuilder private func jobActions(_ job: FabJobItem) -> some View {
+    private func col(_ t: String, width: CGFloat?, trailing: Bool = false) -> some View {
+        Text(t).font(.system(size: 8.5, weight: .bold)).kerning(1.2).foregroundStyle(Brand.bone400)
+            .frame(maxWidth: width == nil ? .infinity : nil, alignment: trailing ? .trailing : .leading)
+            .frame(width: width, alignment: trailing ? .trailing : .leading)
+    }
+
+    @ViewBuilder private func actions(_ job: FabJobItem) -> some View {
         switch job.state {
         case "sliced":
-            Button { model.fabUpload(jobID: job.id) } label: { TacticalLabel(text: "Upload", icon: "arrow.up.circle") }
-                .buttonStyle(.plain).disabled(model.fabBusy)
+            FabButton(title: "Upload", icon: "arrow.up.circle", enabled: !model.fabBusy, compact: true) { model.fabUpload(jobID: job.id) }
         case "uploaded":
-            Button { confirmStartJob = job } label: { TacticalLabel(text: "Start", icon: "play.fill", filled: true) }
-                .buttonStyle(.plain).disabled(model.fabBusy)
+            if let ck = cockpit {
+                FabButton(title: "Start", icon: "play.fill", style: .primary, enabled: !model.fabBusy, compact: true) { ck.onStart(job) }
+            } else {
+                Text("open printer").font(.system(size: 9)).foregroundStyle(Brand.bone400)
+            }
         case "complete", "failed", "cancelled":
-            Button { model.fabClearJob(job.id) } label: {
-                TacticalLabel(text: job.awaitsClearance ? "Plate Cleared" : "Dismiss",
-                              filled: job.awaitsClearance)
-            }.buttonStyle(.plain)
+            FabButton(title: job.awaitsClearance ? "Plate Cleared" : "Dismiss",
+                      style: job.awaitsClearance ? .primary : .ghost, compact: true) { model.fabClearJob(job.id) }
         default:
             EmptyView()
         }
     }
-
-    private func jobStateColor(_ s: String) -> Color {
-        switch s {
-        case "printing": return Brand.cyan500
-        case "complete": return Brand.success
-        case "failed": return Brand.error
-        case "cancelled": return Brand.bone400
-        case "uploaded", "sliced": return Brand.ember400
-        default: return Brand.bone300
-        }
-    }
 }
 
-// MARK: - one printer card (ALL view)
+// MARK: - printer card (ALL view)
 
 private struct FabPrinterCard: View {
     let printer: FabPrinter
@@ -489,52 +556,45 @@ private struct FabPrinterCard: View {
     let onRemove: () -> Void
     @State private var hover = false
 
-    private var stateColor: Color {
-        switch printer.state {
-        case "printing": return Brand.cyan500
-        case "paused": return Brand.warning
-        case "complete": return Brand.success
-        case "error": return Brand.error
-        case "offline", "unknown": return Brand.ink500
-        default: return Brand.ok
-        }
-    }
-
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    StatusDot(color: stateColor, glow: printer.isActive, size: 7)
-                    Text(printer.name).font(Brand.body(14, weight: .semibold)).foregroundStyle(Brand.bone50).lineLimit(1)
-                    Spacer(minLength: 0)
-                    Text(printer.state.uppercased()).font(Brand.mono(9, weight: .semibold)).kerning(1.4)
-                        .foregroundStyle(stateColor == Brand.ink500 ? Brand.bone400 : stateColor)
+            VStack(alignment: .leading, spacing: 0) {
+                // header strip with accent spine
+                HStack(spacing: 0) {
+                    Rectangle().fill(fabStateColor(printer.state)).frame(width: 2, height: 12)
+                    StatusDot(color: fabStateColor(printer.state), glow: printer.isActive, size: 7).padding(.leading, 8)
+                    Text(printer.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Brand.bone50).lineLimit(1).padding(.leading, 7)
+                    Spacer(minLength: 8)
+                    Text(printer.state.uppercased()).font(.system(size: 9, weight: .bold, design: .monospaced)).kerning(1.0)
+                        .foregroundStyle(fabStateColor(printer.state) == Brand.ink500 ? Brand.bone400 : fabStateColor(printer.state))
                 }
-                HStack(spacing: 6) {
-                    BrandChip(label: printer.kind.uppercased())
-                    if !printer.model.isEmpty {
-                        Text(printer.model).font(Brand.body(11)).foregroundStyle(Brand.bone300).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                if printer.state == "printing" || printer.state == "paused" {
-                    ThinProgressBar(value: printer.progress ?? 0, tint: Brand.cyan500)
-                    HStack(spacing: 14) {
-                        if let c = printer.currentLayer, let t = printer.totalLayers { telemetry("LAYER", "\(c)/\(t)") }
-                        if let s = printer.timeLeftSecs { telemetry("ETA", fabETA(s)) }
+                .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 10)
+                Rectangle().fill(Brand.line1).frame(height: 1)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        FabTag(text: printer.kind)
+                        if !printer.model.isEmpty { Text(printer.model).font(Brand.body(11)).foregroundStyle(Brand.bone300).lineLimit(1) }
                         Spacer(minLength: 0)
-                        Text("OPEN →").font(Brand.mono(8, weight: .semibold)).kerning(1.4).foregroundStyle(Brand.ember500)
                     }
-                } else {
-                    HStack {
-                        Text(printer.host.isEmpty ? "" : printer.host).font(Brand.mono(10)).foregroundStyle(Brand.bone400)
-                        Spacer(minLength: 0)
-                        Text("OPEN →").font(Brand.mono(8, weight: .semibold)).kerning(1.4)
-                            .foregroundStyle(hover ? Brand.ember400 : Brand.ember500)
+                    if printer.state == "printing" || printer.state == "paused" {
+                        ThinProgressBar(value: printer.progress ?? 0, tint: Brand.cyan500).frame(height: 4)
+                        HStack(spacing: 16) {
+                            if let c = printer.currentLayer, let t = printer.totalLayers { mini("LAYER", "\(c)/\(t)") }
+                            if let s = printer.timeLeftSecs { mini("ETA", fabETA(s)) }
+                            Spacer(minLength: 0)
+                            Text("OPEN →").font(.system(size: 8, weight: .bold, design: .monospaced)).kerning(1.2).foregroundStyle(Brand.ember500)
+                        }
+                    } else {
+                        HStack {
+                            Text(printer.host.isEmpty ? "no address" : printer.host).font(.system(size: 10, design: .monospaced)).foregroundStyle(Brand.bone400)
+                            Spacer(minLength: 0)
+                            Text("OPEN →").font(.system(size: 8, weight: .bold, design: .monospaced)).kerning(1.2)
+                                .foregroundStyle(hover ? Brand.ember400 : Brand.ember500)
+                        }
                     }
                 }
+                .padding(12)
             }
-            .padding(14)
             .background(hover ? Brand.ink600 : Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8)
                 .stroke(printer.isActive ? Brand.cyan700 : (hover ? Brand.line2 : Brand.line1), lineWidth: 1))
@@ -543,54 +603,20 @@ private struct FabPrinterCard: View {
         .buttonStyle(.plain)
         .onHover { h in withAnimation(Brand.ease(0.15)) { hover = h } }
         .overlay(alignment: .topTrailing) {
-            DestructiveIconButton(icon: "trash", size: 11, help: "Remove printer", action: onRemove)
-                .padding(8).opacity(hover ? 1 : 0)
+            Button(action: onRemove) { Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(Brand.bone400) }
+                .buttonStyle(.plain).padding(9).opacity(hover ? 1 : 0)
         }
     }
 
-    private func telemetry(_ key: String, _ value: String) -> some View {
+    private func mini(_ k: String, _ v: String) -> some View {
         HStack(spacing: 5) {
-            Text(key).font(Brand.mono(9, weight: .semibold)).kerning(1.2).foregroundStyle(Brand.bone400)
-            Text(value).font(Brand.mono(11, weight: .semibold)).monospacedDigit().foregroundStyle(Brand.cyan500)
+            Text(k).font(.system(size: 8.5, weight: .semibold)).kerning(1.0).foregroundStyle(Brand.bone400)
+            Text(v).font(.system(size: 11, weight: .semibold, design: .monospaced)).monospacedDigit().foregroundStyle(Brand.cyan500)
         }
     }
 }
 
-// MARK: - one job row (ALL view, read-only + clear)
-
-private struct FabJobRow: View {
-    let job: FabJobItem
-    let printerName: String
-    let onClear: () -> Void
-
-    private var stateColor: Color {
-        switch job.state {
-        case "printing": return Brand.cyan500
-        case "complete": return Brand.success
-        case "failed": return Brand.error
-        case "cancelled": return Brand.bone400
-        default: return Brand.bone300
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Text(job.name).font(Brand.body(12, weight: .medium)).foregroundStyle(Brand.bone50).lineLimit(1)
-            Text(printerName).font(Brand.body(11)).foregroundStyle(Brand.bone300).lineLimit(1)
-            Spacer(minLength: 0)
-            Text(job.state.uppercased()).font(Brand.mono(9, weight: .semibold)).kerning(1.2).foregroundStyle(stateColor)
-            if job.awaitsClearance {
-                Button(action: onClear) { TacticalLabel(text: "Plate Cleared", filled: true) }
-                    .buttonStyle(.plain).help("Confirm the finished part has been removed from the plate")
-            } else if job.state == "failed" || job.state == "cancelled" {
-                Button(action: onClear) { TacticalLabel(text: "Dismiss") }.buttonStyle(.plain)
-            }
-        }
-        .padding(.vertical, 8)
-    }
-}
-
-// MARK: - add printer sheet (discover + manual; manual is first-class for LAN-privacy blind spots)
+// MARK: - add printer sheet (rectangular)
 
 private struct AddPrinterSheet: View {
     @ObservedObject var model: AppModel
@@ -602,61 +628,51 @@ private struct AddPrinterSheet: View {
     @State private var probeHost = ""
 
     private let kinds = [
-        ("sdcp", "Elegoo / SDCP"),
-        ("octoprint", "OctoPrint"),
-        ("moonraker", "Moonraker (Klipper)"),
-        ("mock", "Mock (simulator)"),
+        ("sdcp", "Elegoo / SDCP"), ("octoprint", "OctoPrint"),
+        ("moonraker", "Moonraker (Klipper)"), ("mock", "Mock (simulator)"),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                StampText(text: "ADD PRINTER", size: 12)
+                Text("ADD PRINTER").font(.system(size: 12, weight: .semibold)).kerning(2.5).foregroundStyle(Brand.bone300)
                 Spacer()
                 Button { model.fabAddSheetOpen = false } label: {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Brand.bone400)
                 }.buttonStyle(.plain)
             }
 
-            Panel(title: "DISCOVER · SDCP") {
+            FabPanel(title: "Discover · SDCP") {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
-                        Button { model.fabDiscover() } label: {
-                            TacticalLabel(text: model.fabDiscovering ? "Scanning…" : "Scan Network",
-                                          icon: "dot.radiowaves.left.and.right")
-                        }.buttonStyle(.plain).disabled(model.fabDiscovering)
-                        TextField("or probe an IP, e.g. 192.168.1.44", text: $probeHost)
-                            .textFieldStyle(.plain).font(Brand.mono(12)).foregroundStyle(Brand.bone50)
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(Brand.ink600, in: RoundedRectangle(cornerRadius: 6))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Brand.line1, lineWidth: 1))
-                        Button { model.fabDiscover(host: probeHost) } label: { TacticalLabel(text: "Probe") }
-                            .buttonStyle(.plain).disabled(probeHost.trimmingCharacters(in: .whitespaces).isEmpty)
+                        FabButton(title: model.fabDiscovering ? "Scanning…" : "Scan Network", icon: "dot.radiowaves.left.and.right",
+                                  enabled: !model.fabDiscovering, compact: true) { model.fabDiscover() }
+                        field("or probe an IP, e.g. 192.168.1.44", text: $probeHost, mono: true)
+                        FabButton(title: "Probe",
+                                  enabled: !probeHost.trimmingCharacters(in: .whitespaces).isEmpty, compact: true) { model.fabDiscover(host: probeHost) }
                     }
                     if model.fabDiscovered.isEmpty && !model.fabDiscovering {
-                        Text("Nothing yet. Broadcast can be blocked by VLANs or the macOS Local Network "
-                             + "permission — probing the printer's IP always works.")
+                        Text("Nothing yet. Broadcast can be blocked by VLANs or the macOS Local Network permission — "
+                             + "probing the printer's IP always works.")
                             .font(Brand.body(11)).foregroundStyle(Brand.bone400)
                     }
                     ForEach(Array(model.fabDiscovered.enumerated()), id: \.offset) { _, d in
                         HStack(spacing: 8) {
                             StatusDot(color: Brand.ok, size: 6)
                             Text(d["model"] ?? d["name"] ?? "printer").font(Brand.body(12, weight: .medium)).foregroundStyle(Brand.bone50)
-                            Text(d["ip"] ?? "").font(Brand.mono(11)).foregroundStyle(Brand.cyan500)
+                            Text(d["ip"] ?? "").font(.system(size: 11, design: .monospaced)).foregroundStyle(Brand.cyan500)
                             Spacer(minLength: 0)
-                            Button {
-                                model.fabAddPrinter(
-                                    name: d["name"]?.isEmpty == false ? d["name"]! : (d["model"] ?? "Printer"),
-                                    kind: "sdcp", host: d["ip"] ?? "", model: d["model"] ?? "",
-                                    mainboardID: d["mainboard_id"] ?? "")
+                            FabButton(title: "Add", style: .primary, compact: true) {
+                                model.fabAddPrinter(name: d["name"]?.isEmpty == false ? d["name"]! : (d["model"] ?? "Printer"),
+                                                    kind: "sdcp", host: d["ip"] ?? "", model: d["model"] ?? "", mainboardID: d["mainboard_id"] ?? "")
                                 model.fabAddSheetOpen = false
-                            } label: { TacticalLabel(text: "Add", filled: true) }.buttonStyle(.plain)
+                            }
                         }
                     }
                 }
             }
 
-            Panel(title: "MANUAL") {
+            FabPanel(title: "Manual") {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
                         field("Name", text: $name, mono: false)
@@ -672,9 +688,8 @@ private struct AddPrinterSheet: View {
                     }
                     HStack {
                         Spacer(minLength: 0)
-                        EmberButton(title: "Add Printer", icon: "plus",
-                                    enabled: !name.trimmingCharacters(in: .whitespaces).isEmpty
-                                        && (kind == "mock" || !host.trimmingCharacters(in: .whitespaces).isEmpty)) {
+                        FabButton(title: "Add Printer", icon: "plus", style: .primary,
+                                  enabled: !name.trimmingCharacters(in: .whitespaces).isEmpty && (kind == "mock" || !host.trimmingCharacters(in: .whitespaces).isEmpty)) {
                             model.fabAddPrinter(name: name, kind: kind, host: host, model: printerModel, apiKeyEnv: apiKeyEnv)
                             model.fabAddSheetOpen = false
                         }
@@ -684,7 +699,7 @@ private struct AddPrinterSheet: View {
 
             if let e = model.fabError { Text(e).font(Brand.body(11)).foregroundStyle(Brand.error) }
         }
-        .padding(20).frame(width: 560).background(Brand.ink900).preferredColorScheme(.dark)
+        .padding(20).frame(width: 580).background(Brand.ink900).preferredColorScheme(.dark)
     }
 
     private func field(_ placeholder: String, text: Binding<String>, mono: Bool) -> some View {

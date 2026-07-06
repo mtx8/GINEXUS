@@ -2,46 +2,62 @@
 // Parsed from the core's /v1/fab/* JSON. Pure data + parsing → unit-testable in GinexusCore.
 import Foundation
 
+/// A labeled live telemetry reading (NOZZLE → "210 °C").
+public struct FabTelemetry: Equatable, Sendable, Identifiable {
+    public let label: String
+    public let value: String
+    public var id: String { label }
+    public init(label: String, value: String) { self.label = label; self.value = value }
+}
+
 /// One configured printer with its latest live status snapshot.
 public struct FabPrinter: Identifiable, Equatable, Sendable {
     public let id: String            // printer_id (registry slug)
     public var name: String
     public var kind: String          // sdcp | octoprint | moonraker | mock
     public var host: String
+    public var mainboardID: String
     public var model: String
     public var state: String         // idle|printing|paused|error|offline|…
     public var progress: Double?     // 0…1
     public var currentLayer: Int?
     public var totalLayers: Int?
     public var timeLeftSecs: Int?
+    public var elapsedSecs: Int?
     public var jobName: String?
     public var detail: String?
+    public var extra: [FabTelemetry]  // granular live readings (temps, Z, release-film…)
 
-    public init(id: String, name: String, kind: String, host: String, model: String,
-                state: String, progress: Double? = nil, currentLayer: Int? = nil,
-                totalLayers: Int? = nil, timeLeftSecs: Int? = nil,
-                jobName: String? = nil, detail: String? = nil) {
-        self.id = id; self.name = name; self.kind = kind; self.host = host; self.model = model
+    public init(id: String, name: String, kind: String, host: String, mainboardID: String = "",
+                model: String, state: String, progress: Double? = nil, currentLayer: Int? = nil,
+                totalLayers: Int? = nil, timeLeftSecs: Int? = nil, elapsedSecs: Int? = nil,
+                jobName: String? = nil, detail: String? = nil, extra: [FabTelemetry] = []) {
+        self.id = id; self.name = name; self.kind = kind; self.host = host
+        self.mainboardID = mainboardID; self.model = model
         self.state = state; self.progress = progress; self.currentLayer = currentLayer
-        self.totalLayers = totalLayers; self.timeLeftSecs = timeLeftSecs
-        self.jobName = jobName; self.detail = detail
+        self.totalLayers = totalLayers; self.timeLeftSecs = timeLeftSecs; self.elapsedSecs = elapsedSecs
+        self.jobName = jobName; self.detail = detail; self.extra = extra
     }
 
     public static func parse(_ o: [String: Any]) -> FabPrinter? {
         guard let id = o["printer_id"] as? String, !id.isEmpty else { return nil }
+        func i(_ k: String) -> Int? { (o[k] as? Int) ?? (o[k] as? NSNumber)?.intValue }
+        let extra = (o["extra"] as? [[String: Any]])?.compactMap { row -> FabTelemetry? in
+            guard let l = row["label"] as? String, let v = row["value"] as? String else { return nil }
+            return FabTelemetry(label: l, value: v)
+        } ?? []
         return FabPrinter(
             id: id,
             name: (o["name"] as? String) ?? id,
             kind: (o["kind"] as? String) ?? "",
             host: (o["host"] as? String) ?? "",
+            mainboardID: (o["mainboard_id"] as? String) ?? "",
             model: (o["model"] as? String) ?? "",
             state: (o["state"] as? String) ?? "unknown",
             progress: o["progress"] as? Double,
-            currentLayer: (o["current_layer"] as? Int) ?? (o["current_layer"] as? NSNumber)?.intValue,
-            totalLayers: (o["total_layers"] as? Int) ?? (o["total_layers"] as? NSNumber)?.intValue,
-            timeLeftSecs: (o["time_left_secs"] as? Int) ?? (o["time_left_secs"] as? NSNumber)?.intValue,
-            jobName: o["job_name"] as? String,
-            detail: o["detail"] as? String
+            currentLayer: i("current_layer"), totalLayers: i("total_layers"),
+            timeLeftSecs: i("time_left_secs"), elapsedSecs: i("elapsed_secs"),
+            jobName: o["job_name"] as? String, detail: o["detail"] as? String, extra: extra
         )
     }
 

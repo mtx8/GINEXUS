@@ -200,18 +200,33 @@ pub fn parse_status_frame(frame: &Value) -> Option<PrinterStatus> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
+    let elapsed_secs = current_ticks.map(|c| c / 1000);
     let error_number =
         print_info.and_then(|p| p.get("ErrorNumber")).and_then(|v| v.as_i64()).unwrap_or(0);
     let state = if error_number != 0 { PrinterState::Error } else { state };
-    let detail = if error_number != 0 {
-        Some(format!("printer error code {error_number}"))
-    } else {
-        // Surface release-film state if the (misspelled) field is present — resin health signal.
-        status
-            .get("RelaseFilmState")
-            .and_then(|v| v.as_i64())
-            .map(|v| format!("release film state {v}"))
-    };
+    let detail =
+        (error_number != 0).then(|| format!("printer error code {error_number}"));
+
+    // Granular resin telemetry — real fields from the status payload (misspellings load-bearing).
+    let mut extra = Vec::new();
+    if let Some(rf) = status.get("RelaseFilmState").and_then(|v| v.as_i64()) {
+        extra.push(crate::driver::Telemetry::new(
+            "RELEASE FILM",
+            if rf == 1 { "OK".to_string() } else { format!("state {rf}") },
+        ));
+    }
+    if let Some(uv) = status.get("TempOfUVLED").and_then(|v| v.as_f64()) {
+        extra.push(crate::driver::Telemetry::new("UV LED", format!("{uv:.0} °C")));
+    }
+    if let Some(box_temp) = status.get("TempOfBox").and_then(|v| v.as_f64()) {
+        extra.push(crate::driver::Telemetry::new("CHAMBER", format!("{box_temp:.0} °C")));
+    }
+    if let Some(z) = print_info.and_then(|p| p.get("CurrenCoord")).and_then(|v| v.as_str()) {
+        extra.push(crate::driver::Telemetry::new("Z COORD", z.to_string()));
+    }
+    if let Some(sw) = print_info.and_then(|p| p.get("PrintSpeedPct")).and_then(|v| v.as_i64()) {
+        extra.push(crate::driver::Telemetry::new("SPEED", format!("{sw}%")));
+    }
 
     Some(PrinterStatus {
         state,
@@ -219,8 +234,10 @@ pub fn parse_status_frame(frame: &Value) -> Option<PrinterStatus> {
         current_layer,
         total_layers,
         time_left_secs,
+        elapsed_secs,
         job_name,
         detail,
+        extra,
     })
 }
 

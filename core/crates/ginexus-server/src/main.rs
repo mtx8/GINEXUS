@@ -1037,15 +1037,7 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                             .driver_for(&cfg)
                             .and_then(|d| d.status())
                             .unwrap_or_else(|_| ginexus_print::driver::PrinterStatus::offline());
-                        json!({
-                            "printer_id": cfg.id, "name": cfg.name, "kind": cfg.kind,
-                            "host": cfg.host, "model": cfg.model,
-                            "state": status.state.label(), "progress": status.progress,
-                            "current_layer": status.current_layer,
-                            "total_layers": status.total_layers,
-                            "time_left_secs": status.time_left_secs,
-                            "job_name": status.job_name, "detail": status.detail,
-                        })
+                        ginexus_print::tools::status_json(&cfg, &status)
                     })
                     .collect::<Vec<_>>()
             })

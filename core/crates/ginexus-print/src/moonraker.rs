@@ -86,7 +86,7 @@ impl PrinterDriver for MoonrakerPrinter {
 
     fn status(&self) -> Result<PrinterStatus, String> {
         let v = match self.get(
-            "/printer/objects/query?print_stats&display_status&virtual_sdcard",
+            "/printer/objects/query?print_stats&display_status&virtual_sdcard&extruder&heater_bed&toolhead&gcode_move&fan",
         ) {
             Ok(v) => v,
             Err(e) if e.contains("unreachable") => return Ok(PrinterStatus::offline()),
@@ -106,14 +106,42 @@ impl PrinterDriver for MoonrakerPrinter {
             ps["info"]["current_layer"].as_u64().map(|v| v as u32);
         let total_layers = ps["info"]["total_layer"].as_u64().map(|v| v as u32);
         let detail = ps["message"].as_str().filter(|m| !m.is_empty()).map(String::from);
+        let elapsed_secs = ps["print_duration"].as_f64().map(|d| d as u64);
+
+        // Granular FDM telemetry — real values from Klipper objects.
+        let mut extra = Vec::new();
+        let temp = |cur: Option<f64>, tgt: Option<f64>| match (cur, tgt) {
+            (Some(c), Some(t)) if t > 0.0 => format!("{c:.0} → {t:.0} °C"),
+            (Some(c), _) => format!("{c:.0} °C"),
+            _ => String::new(),
+        };
+        let nozzle = temp(s["extruder"]["temperature"].as_f64(), s["extruder"]["target"].as_f64());
+        if !nozzle.is_empty() { extra.push(crate::driver::Telemetry::new("NOZZLE", nozzle)); }
+        let bed = temp(s["heater_bed"]["temperature"].as_f64(), s["heater_bed"]["target"].as_f64());
+        if !bed.is_empty() { extra.push(crate::driver::Telemetry::new("BED", bed)); }
+        if let Some(z) = s["toolhead"]["position"].get(2).and_then(|v| v.as_f64()) {
+            extra.push(crate::driver::Telemetry::new("Z HEIGHT", format!("{z:.2} mm")));
+        }
+        if let Some(spd) = s["gcode_move"]["speed_factor"].as_f64() {
+            extra.push(crate::driver::Telemetry::new("SPEED", format!("{:.0}%", spd * 100.0)));
+        }
+        if let Some(flow) = s["gcode_move"]["extrude_factor"].as_f64() {
+            extra.push(crate::driver::Telemetry::new("FLOW", format!("{:.0}%", flow * 100.0)));
+        }
+        if let Some(fan) = s["fan"]["speed"].as_f64() {
+            extra.push(crate::driver::Telemetry::new("FAN", format!("{:.0}%", fan * 100.0)));
+        }
+
         Ok(PrinterStatus {
             state,
             progress,
             current_layer,
             total_layers,
             time_left_secs: None, // needs estimate math (print_duration vs slicer estimate) — R2
+            elapsed_secs,
             job_name,
             detail,
+            extra,
         })
     }
 

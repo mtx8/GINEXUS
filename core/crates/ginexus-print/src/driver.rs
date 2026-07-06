@@ -39,6 +39,20 @@ impl PrinterState {
     }
 }
 
+/// A labeled telemetry reading (e.g. "NOZZLE" → "210 °C"). Drivers fill `extra` with whatever
+/// granular, REAL values they can read — no fabricated numbers (brand rule: real data or none).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Telemetry {
+    pub label: String,
+    pub value: String,
+}
+
+impl Telemetry {
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { label: label.into(), value: value.into() }
+    }
+}
+
 /// One normalized status snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrinterStatus {
@@ -48,10 +62,14 @@ pub struct PrinterStatus {
     pub current_layer: Option<u32>,
     pub total_layers: Option<u32>,
     pub time_left_secs: Option<u64>,
+    /// Seconds elapsed on the current print, when reported.
+    pub elapsed_secs: Option<u64>,
     /// Active job/file name if the backend reports one.
     pub job_name: Option<String>,
-    /// Backend-specific detail worth surfacing verbatim (temps, z-height, error text).
+    /// Backend-specific detail worth surfacing verbatim (error text, notes).
     pub detail: Option<String>,
+    /// Granular, driver-specific live readings (temps, Z-height, release-film state, fan, speed…).
+    pub extra: Vec<Telemetry>,
 }
 
 impl PrinterStatus {
@@ -62,9 +80,21 @@ impl PrinterStatus {
             current_layer: None,
             total_layers: None,
             time_left_secs: None,
+            elapsed_secs: None,
             job_name: None,
             detail: None,
+            extra: Vec::new(),
         }
+    }
+
+    /// A blank snapshot in a given state — the base every driver builds on.
+    pub fn of(state: PrinterState) -> Self {
+        Self { state, ..Self::offline() }
+    }
+
+    pub fn with_extra(mut self, label: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra.push(Telemetry::new(label, value));
+        self
     }
 }
 

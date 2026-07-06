@@ -107,10 +107,10 @@ impl PrinterDriver for OctoPrinter {
             Err(e) => return Err(e),
         };
         let text = job.get("state").and_then(|v| v.as_str()).unwrap_or("");
-        // /api/job's state is a string; the flags live on /api/printer — one extra call, best-effort.
-        let flags = self
-            .get("/api/printer?exclude=temperature,sd")
-            .ok()
+        // /api/job's state is a string; the flags + temps live on /api/printer — one extra call.
+        let printer = self.get("/api/printer?exclude=sd").ok();
+        let flags = printer
+            .as_ref()
             .and_then(|p| p.get("state").and_then(|s| s.get("flags")).cloned());
         let state = Self::map_state(text, flags.as_ref());
         let progress = job
@@ -129,14 +129,38 @@ impl PrinterDriver for OctoPrinter {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from);
+        let elapsed_secs = job.get("progress").and_then(|p| p.get("printTime")).and_then(|v| v.as_u64());
+
+        // Granular temps from /api/printer (real values; tool0 + bed).
+        let mut extra = Vec::new();
+        if let Some(temps) = printer.as_ref().and_then(|p| p.get("temperature")) {
+            let fmt = |t: &Value| -> String {
+                match (t.get("actual").and_then(|v| v.as_f64()), t.get("target").and_then(|v| v.as_f64())) {
+                    (Some(a), Some(tg)) if tg > 0.0 => format!("{a:.0} → {tg:.0} °C"),
+                    (Some(a), _) => format!("{a:.0} °C"),
+                    _ => String::new(),
+                }
+            };
+            if let Some(t0) = temps.get("tool0") {
+                let s = fmt(t0);
+                if !s.is_empty() { extra.push(crate::driver::Telemetry::new("NOZZLE", s)); }
+            }
+            if let Some(bed) = temps.get("bed") {
+                let s = fmt(bed);
+                if !s.is_empty() { extra.push(crate::driver::Telemetry::new("BED", s)); }
+            }
+        }
+
         Ok(PrinterStatus {
             state,
             progress,
             current_layer: None, // OctoPrint core does not report layers (plugin territory)
             total_layers: None,
             time_left_secs,
+            elapsed_secs,
             job_name,
             detail: Some(text.to_string()).filter(|s| !s.is_empty()),
+            extra,
         })
     }
 

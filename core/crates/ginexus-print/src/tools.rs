@@ -340,12 +340,16 @@ fn arg_str(a: &Value, k: &str) -> String {
     a.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().to_string()
 }
 
-fn status_json(cfg: &PrinterConfig, s: &PrinterStatus) -> Value {
+/// Full status JSON incl. granular telemetry + connection metadata — the app's cockpit renders it.
+pub fn status_json(cfg: &PrinterConfig, s: &PrinterStatus) -> Value {
     json!({
         "printer_id": cfg.id, "name": cfg.name, "kind": cfg.kind, "model": cfg.model,
+        "host": cfg.host, "mainboard_id": cfg.mainboard_id,
         "state": s.state.label(), "progress": s.progress,
         "current_layer": s.current_layer, "total_layers": s.total_layers,
-        "time_left_secs": s.time_left_secs, "job_name": s.job_name, "detail": s.detail,
+        "time_left_secs": s.time_left_secs, "elapsed_secs": s.elapsed_secs,
+        "job_name": s.job_name, "detail": s.detail,
+        "extra": s.extra.iter().map(|t| json!({"label": t.label, "value": t.value})).collect::<Vec<_>>(),
     })
 }
 

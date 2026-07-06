@@ -57,6 +57,8 @@ impl PrinterDriver for MockPrinter {
                 s.state = PrinterState::Complete;
             }
         }
+        // The mock is a SIMULATOR — its progress is synthetic by nature, but it never fabricates
+        // sensor readings (no fake temps): extra telemetry stays empty (brand rule, real data or none).
         Ok(PrinterStatus {
             state: s.state,
             progress: if s.job.is_some() {
@@ -67,8 +69,10 @@ impl PrinterDriver for MockPrinter {
             current_layer: s.job.as_ref().map(|_| s.layer),
             total_layers: s.job.as_ref().map(|_| TOTAL_LAYERS),
             time_left_secs: s.job.as_ref().map(|_| u64::from(TOTAL_LAYERS - s.layer) * 6),
+            elapsed_secs: s.job.as_ref().map(|_| u64::from(s.layer) * 6),
             job_name: s.job.clone(),
-            detail: Some("mock printer".into()),
+            detail: Some("simulator".into()),
+            extra: Vec::new(),
         })
     }
 
