@@ -28,9 +28,20 @@
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
+    <!-- Single-instance: two app instances mint two bearer tokens but share one core socket, so
+         the second instance's writes 401 against the core the first spawned. Prohibiting multiple
+         instances makes `open` reactivate the existing window instead of launching a rival. -->
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>GINEXUS reads your calendar so the agent can reason about and schedule around your events.</string>
     <key>NSCalendarsUsageDescription</key>
     <string>GINEXUS reads your calendar so the agent can reason about and schedule around your events.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>GINEXUS uses the microphone for hands-free voice conversation — your speech is transcribed locally on this Mac and never leaves the device.</string>
+    <!-- SP-FAB: UDP broadcast discovery + printer control on the LAN triggers macOS 15+ Local
+         Network privacy; without this string, discovery silently finds nothing. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>GINEXUS finds and monitors your 3D printers on your local network.</string>
 </dict>
 </plist>

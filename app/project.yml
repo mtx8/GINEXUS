@@ -63,6 +63,9 @@ targets:
         CFBundleIconFile: AppIcon
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.productivity
+        # Single-instance: two instances mint two tokens but share one core socket → the rival's
+        # writes 401. `open` should reactivate the existing window, not launch a second app.
+        LSMultipleInstancesProhibited: true
         NSHighResolutionCapable: true
         NSCalendarsFullAccessUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
         NSCalendarsUsageDescription: "GINEXUS reads your calendar so the agent can reason about and schedule around your events."
