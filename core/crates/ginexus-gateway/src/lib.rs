@@ -92,13 +92,20 @@ impl Gateway {
                 label: "Fast · Qwen3 1.7B".into(),
             },
         );
+        // The Setup Assistant right-sizes the daily driver to the machine (a 16 GB Mac mini can't
+        // run the 30B). It records the choice as GINEXUS_SMART_MODEL, honored here so the chosen
+        // model becomes the "smart"/daily-driver tier without hand-editing a roster file.
+        let smart_model = std::env::var("GINEXUS_SMART_MODEL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "qwen3:30b-a3b-instruct-2507-q4_K_M".into());
         m.insert(
             "smart".to_string(),
             Endpoint {
-                model: "qwen3:30b-a3b-instruct-2507-q4_K_M".into(),
+                label: format!("Smart · {smart_model}"),
+                model: smart_model,
                 api_base: base.clone(),
                 api_key: "ollama".into(),
-                label: "Smart · Qwen3 30B-A3B".into(),
             },
         );
         m.insert(

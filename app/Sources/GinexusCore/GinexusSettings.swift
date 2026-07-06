@@ -40,6 +40,8 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
     public var defaultModel: String          // picker default: "auto" | a roster tier id
     public var defaultMode: String           // "hitl" | "autonomous"
     public var ollamaBase: String            // OpenAI-compatible base, must end in /v1
+    public var smartModel: String            // Setup Assistant's chosen daily-driver Ollama tag ("" = built-in default)
+    public var setupComplete: Bool           // first-run Setup Assistant finished
     public var obsidianVaultPath: String?    // nil → auto-detect the open vault
     public var mediaSidecarEnabled: Bool     // gate the local image-generation sidecar + tool
     public var voiceEnabled: Bool            // gate the local voice (audio) sidecar + conversation loop
@@ -53,6 +55,8 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
     public init(defaultModel: String = "auto",
                 defaultMode: String = "hitl",
                 ollamaBase: String = GinexusSettings.defaultOllamaBase,
+                smartModel: String = "",
+                setupComplete: Bool = false,
                 obsidianVaultPath: String? = nil,
                 mediaSidecarEnabled: Bool = true,
                 voiceEnabled: Bool = true,
@@ -63,6 +67,8 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
         self.defaultModel = defaultModel
         self.defaultMode = defaultMode
         self.ollamaBase = ollamaBase
+        self.smartModel = smartModel
+        self.setupComplete = setupComplete
         self.obsidianVaultPath = obsidianVaultPath
         self.mediaSidecarEnabled = mediaSidecarEnabled
         self.voiceEnabled = voiceEnabled
@@ -78,6 +84,8 @@ public struct GinexusSettings: Codable, Sendable, Equatable {
         defaultModel = try c.decodeIfPresent(String.self, forKey: .defaultModel) ?? d.defaultModel
         defaultMode = try c.decodeIfPresent(String.self, forKey: .defaultMode) ?? d.defaultMode
         ollamaBase = try c.decodeIfPresent(String.self, forKey: .ollamaBase) ?? d.ollamaBase
+        smartModel = try c.decodeIfPresent(String.self, forKey: .smartModel) ?? d.smartModel
+        setupComplete = try c.decodeIfPresent(Bool.self, forKey: .setupComplete) ?? d.setupComplete
         obsidianVaultPath = try c.decodeIfPresent(String.self, forKey: .obsidianVaultPath)
         mediaSidecarEnabled = try c.decodeIfPresent(Bool.self, forKey: .mediaSidecarEnabled) ?? d.mediaSidecarEnabled
         voiceEnabled = try c.decodeIfPresent(Bool.self, forKey: .voiceEnabled) ?? d.voiceEnabled

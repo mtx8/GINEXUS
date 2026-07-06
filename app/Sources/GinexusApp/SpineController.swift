@@ -123,6 +123,10 @@ final class SpineController {
            settings.ollamaBaseIsValid, settings.ollamaBaseHostAllowed {
             env["GINEXUS_OLLAMA_BASE"] = settings.ollamaBase
         }
+        // Setup Assistant right-sizes the daily driver to the machine (a 16 GB Mac mini can't run
+        // the 30B). The chosen Ollama tag becomes the "smart" tier via this env override.
+        let smart = settings.smartModel.trimmingCharacters(in: .whitespaces)
+        if !smart.isEmpty { env["GINEXUS_SMART_MODEL"] = smart }
         // Obsidian: explicit setting wins (rejecting iCloud); else auto-detect the open vault. Skipped
         // entirely if it lands in iCloud (hard rule: never touch ~/Library/Mobile Documents).
         if let vault = Self.resolveVault(settings.obsidianVaultPath) {

@@ -15,6 +15,7 @@
 //!   GET  /v1/fab/jobs · POST /v1/fab/jobs/remove
 //!   POST /v1/fab/analyze · /v1/fab/slice · /v1/fab/upload · /v1/fab/start · /v1/fab/pause
 //!        · /v1/fab/resume · /v1/fab/cancel · /v1/fab/camera   (SP-FAB fabrication cockpit)
+//!   GET  /v1/setup/probe   → hardware + deps + model catalog-with-fit + recommendation (onboarding)
 //!   GET  /v1/admin/killswitch          → {engaged, tier, boot_id}
 //!   POST /v1/admin/killswitch/engage   {tier, reason}
 //!   POST /v1/admin/killswitch/reset    {token, nonce, expiry_ms, boot_id, reason}  (approval-gated)
@@ -46,6 +47,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 mod scheduler;
+mod setup;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1249,6 +1251,31 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
                 Ok(v) => json_ok(&mut stream, v).await,
                 Err(e) => err(&mut stream, 502, "Bad Gateway", &e).await,
             }
+        }
+        ("GET", "/v1/setup/probe") => {
+            // Onboarding: detect hardware + dependencies, and recommend a right-sized model. The
+            // hardware/dep probe shells out (sysctl/df/paths) — off the async loop on the blocking
+            // pool. Already-installed tags come from Ollama /api/tags (best-effort; empty if down).
+            let installed: Vec<String> = state
+                .gateway
+                .ollama_get("/api/tags")
+                .await
+                .ok()
+                .and_then(|v| v.get("models").and_then(|m| m.as_array()).cloned())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Liveness via the gateway's async client (installed-but-not-running is distinct).
+            let version = state.gateway.ollama_get("/api/version").await.ok();
+            let running = version.is_some();
+            let ver = version.and_then(|v| v.get("version").and_then(|x| x.as_str()).map(String::from));
+            let probe = tokio::task::spawn_blocking(move || setup::probe_json(running, ver, &installed))
+                .await
+                .unwrap_or_else(|e| json!({"error": format!("probe failed: {e}")}));
+            json_ok(&mut stream, probe).await;
         }
         ("GET", "/v1/ollama/version") => {
             // Preflight: some models (e.g. qwen3-vl vision) need a newer Ollama; the app warns.

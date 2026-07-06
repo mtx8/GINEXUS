@@ -1158,6 +1158,74 @@ final class AppModel: ObservableObject {
             await fetchModels()
         }
     }
+    // MARK: Setup Assistant — first-run onboarding (detect specs, guide Ollama, choose + pull model)
+    @Published var setupOpen = false
+    @Published var setupProbe: SetupProbe?
+    @Published var setupProbing = false
+    @Published var setupStep: SetupStep = .system
+    @Published var setupChosenModel = ""       // the daily-driver tag the user picked
+    @Published var setupCustomModel = ""       // free-text Ollama tag
+
+    enum SetupStep: Int, CaseIterable { case system, runtime, model, download, ready }
+
+    /// Whether the first-run wizard should appear (setup not yet completed).
+    var needsSetup: Bool { !settings.settings.setupComplete }
+
+    func openSetup() {
+        setupOpen = true
+        setupStep = .system
+        runSetupProbe()
+    }
+
+    /// Detect hardware + dependencies + model fit from the core.
+    func runSetupProbe() {
+        guard connected, !setupProbing else { return }
+        setupProbing = true
+        let sock = spine.socketPath, tok = currentToken()
+        Task {
+            let res = await Task.detached {
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/setup/probe", token: tok, jsonBody: nil, timeoutSecs: 30)
+            }.value
+            setupProbing = false
+            guard case .success(let r) = res, let d = r.body.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let probe = SetupProbe.parse(o) else { return }
+            setupProbe = probe
+            if setupChosenModel.isEmpty { setupChosenModel = probe.recommendedDailyDriver }
+        }
+    }
+
+    func setupOpenOllamaDownload() {
+        if let u = URL(string: "https://ollama.com/download") { NSWorkspace.shared.open(u) }
+    }
+
+    /// Copy a one-line Homebrew install+start command for users who have brew.
+    func setupCopyBrewInstall() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("brew install ollama && brew services start ollama", forType: .string)
+        setupNotice = "Copied — paste it into Terminal, then click Re-check."
+    }
+    @Published var setupNotice: String?
+
+    /// Finish: record the chosen daily driver, mark setup complete, and restart the core so the
+    /// new model tier takes effect.
+    func setupFinish() {
+        let model = (setupCustomModel.trimmingCharacters(in: .whitespaces).isEmpty
+                     ? setupChosenModel : setupCustomModel).trimmingCharacters(in: .whitespaces)
+        settings.update { s in
+            if !model.isEmpty { s.smartModel = model }
+            s.setupComplete = true
+        }
+        setupOpen = false
+        restartCore()   // apply GINEXUS_SMART_MODEL
+    }
+
+    /// Skip setup (mark complete without changing the model) — reachable but discouraged.
+    func setupSkip() {
+        settings.update { s in s.setupComplete = true }
+        setupOpen = false
+    }
+
     /// Stream a pull (Ollama /api/pull — registry tag OR hf.co/<repo>:<quant>) with live progress.
     func pullModel(_ name: String) {
         let m = name.trimmingCharacters(in: .whitespacesAndNewlines)

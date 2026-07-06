@@ -25,7 +25,11 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .onAppear { if model.connected { hasBooted = true } }
         .onChange(of: model.connected) { _, on in
-            if on { withAnimation(Brand.ease) { hasBooted = true } }
+            if on {
+                withAnimation(Brand.ease) { hasBooted = true }
+                // First run: greet the user with the Setup Assistant once the core is up.
+                if model.needsSetup && !model.setupOpen { model.openSetup() }
+            }
         }
         .overlay { if model.paletteOpen { CommandPalette(model: model) } }
         .animation(Brand.ease(0.18), value: model.paletteOpen)
@@ -37,6 +41,7 @@ struct ContentView: View {
         .sheet(isPresented: $model.projectsOpen) { ProjectsSheet(model: model) }
         .sheet(isPresented: $model.schedulesOpen) { ScheduledTasksSheet(model: model) }
         .sheet(isPresented: $model.scheduleSheetOpen) { ScheduleEditorSheet(model: model) }
+        .sheet(isPresented: $model.setupOpen) { SetupWizard(model: model) }
     }
 
     // MARK: ── boot screen — shown until the local core reports healthy ────────
@@ -93,6 +98,7 @@ struct ContentView: View {
                 navItem("clock.arrow.circlepath", "Schedules", id: "schedules", enabled: model.connected) { model.openSchedules() }
                 navItem("printer", "Fabrication", id: "fab", enabled: model.connected,
                         selected: model.section == .fabrication) { model.openFabrication() }
+                navItem("wand.and.stars", "Setup Assistant", id: "setup", enabled: model.connected) { model.openSetup() }
             }
             .padding(.horizontal, 12)
 
