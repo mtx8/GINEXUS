@@ -10,6 +10,7 @@ pub mod jobs;
 pub mod mock;
 pub mod moonraker;
 pub mod octoprint;
+pub mod persist;
 pub mod pipeline;
 pub mod registry;
 pub mod sdcp {

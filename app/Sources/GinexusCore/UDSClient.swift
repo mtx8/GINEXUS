@@ -24,7 +24,8 @@ public enum UDSClient {
         method: String = "GET",
         path: String = "/",
         token: String? = nil,
-        jsonBody: Data? = nil
+        jsonBody: Data? = nil,
+        timeoutSecs: Int = 0
     ) -> Result<UDSResponse, UDSError> {
         let cap = MemoryLayout.size(ofValue: sockaddr_un().sun_path)
         if socketPath.utf8.count >= cap { return .failure(.connect("socket path too long")) }
@@ -55,6 +56,15 @@ public enum UDSClient {
         if fd < 0 { return .failure(.connect(lastErr)) }
         defer { close(fd) }
 
+        // Bounded read: a wedged core (connected but never answering) must not hang the caller
+        // forever. SO_RCVTIMEO makes read() return with EAGAIN after the deadline. 0 = no timeout
+        // (default, for callers like long-poll that manage their own lifetime).
+        if timeoutSecs > 0 {
+            var tv = timeval(tv_sec: timeoutSecs, tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        }
+
         var head = "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
         if let token { head += "Authorization: Bearer \(token)\r\n" }
         if let jsonBody {
@@ -79,7 +89,11 @@ public enum UDSClient {
         var buf = [UInt8](repeating: 0, count: 8192)
         while true {
             let n = read(fd, &buf, buf.count)
-            if n < 0 { return .failure(.io("read failed")) }
+            if n < 0 {
+                // SO_RCVTIMEO fires EAGAIN/EWOULDBLOCK: report a clean timeout, don't spin.
+                if errno == EAGAIN || errno == EWOULDBLOCK { return .failure(.io("timed out")) }
+                return .failure(.io("read failed"))
+            }
             if n == 0 { break }
             resp.append(buf, count: n)
         }

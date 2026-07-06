@@ -1472,6 +1472,10 @@ final class AppModel: ObservableObject {
     @Published var fabDiscovering = false
     @Published var fabError: String?
     private var fabTimer: Timer?
+    /// Bumped on every optimistic local fab edit (remove/clear/add). A poll that started before
+    /// the edit is discarded when it lands, so a stale server snapshot can't resurrect a row the
+    /// user just removed.
+    private var fabGeneration = 0
 
     /// Open the Fabrication section and start the live poll (4 s while the section is visible).
     func openFabrication() {
@@ -1496,15 +1500,20 @@ final class AppModel: ObservableObject {
     func refreshFab() {
         guard connected, !fabLoading else { return }
         fabLoading = true
+        let gen = fabGeneration
         let sock = spine.socketPath, tok = currentToken()
         Task {
+            // defer guarantees fabLoading is released even if a request hangs — the boolean can
+            // never latch true and permanently freeze future polls.
+            defer { fabLoading = false }
             let printers = await Task.detached {
-                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/fab/printers", token: tok, jsonBody: nil)
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/fab/printers", token: tok, jsonBody: nil, timeoutSecs: 20)
             }.value
             let jobs = await Task.detached {
-                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/fab/jobs", token: tok, jsonBody: nil)
+                UDSClient.request(socketPath: sock, method: "GET", path: "/v1/fab/jobs", token: tok, jsonBody: nil, timeoutSecs: 20)
             }.value
-            fabLoading = false
+            // Discard a snapshot that predates a local edit (optimistic remove/clear/add).
+            guard gen == fabGeneration else { return }
             if case .success(let r) = printers, let d = r.body.data(using: .utf8),
                let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
                let arr = o["printers"] as? [[String: Any]] {
@@ -1528,7 +1537,7 @@ final class AppModel: ObservableObject {
         let body = try? JSONSerialization.data(withJSONObject: host.isEmpty ? [:] : ["host": host])
         Task {
             let res = await Task.detached {
-                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/discover", token: tok, jsonBody: body)
+                UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/discover", token: tok, jsonBody: body, timeoutSecs: 25)
             }.value
             fabDiscovering = false
             guard case .success(let r) = res, let d = r.body.data(using: .utf8),
@@ -1547,6 +1556,7 @@ final class AppModel: ObservableObject {
 
     func fabAddPrinter(name: String, kind: String, host: String, model: String,
                        mainboardID: String = "", apiKeyEnv: String = "") {
+        fabGeneration += 1
         let sock = spine.socketPath, tok = currentToken()
         let body = try? JSONSerialization.data(withJSONObject: [
             "name": name, "kind": kind, "host": host, "model": model,
@@ -1564,6 +1574,7 @@ final class AppModel: ObservableObject {
     }
 
     func fabRemovePrinter(_ id: String) {
+        fabGeneration += 1
         fabPrinters.removeAll { $0.id == id }
         let sock = spine.socketPath, tok = currentToken()
         let body = try? JSONSerialization.data(withJSONObject: ["id": id])
@@ -1575,15 +1586,20 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// The human clicking "clear" IS the physical confirmation that the plate is empty.
+    /// The human clicking "clear" IS the physical confirmation that the plate is empty. The core
+    /// refuses to clear a still-printing job (409); surface that instead of silently dropping it.
     func fabClearJob(_ id: String) {
+        fabGeneration += 1
         fabJobs.removeAll { $0.id == id }
         let sock = spine.socketPath, tok = currentToken()
         let body = try? JSONSerialization.data(withJSONObject: ["id": id])
         Task {
-            _ = await Task.detached {
+            let res = await Task.detached {
                 UDSClient.request(socketPath: sock, method: "POST", path: "/v1/fab/jobs/remove", token: tok, jsonBody: body)
             }.value
+            if case .success(let r) = res, r.status == 409 {
+                fabError = "that job is still printing — cancel it first"
+            }
             refreshFab()
         }
     }
@@ -1838,6 +1854,11 @@ final class AppModel: ObservableObject {
             }
             let st = (o["status"] as? String) ?? "final"
             if st == "pending_approval", let p = o["pending"] as? [String: Any] {
+                // The approval prompt renders only inside the chat detail pane. If the user is on
+                // the Fabrication section (e.g. an agent-driven fab_start_print they kicked off
+                // from chat, then switched to watch the rack), return to chat so the biometric
+                // prompt is visible — otherwise the whole turn silently stalls awaiting approval.
+                if section == .fabrication { section = .chat }
                 chat.remove(at: i)   // drop the empty placeholder; the approval sheet drives the re-run
                 let tool = (p["tool"] as? String) ?? "?"
                 let args = (p["arguments"] as? [String: Any]) ?? [:]

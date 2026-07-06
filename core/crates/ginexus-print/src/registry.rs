@@ -59,11 +59,27 @@ impl PrinterConfig {
     }
 
     fn api_key(&self) -> Option<String> {
-        if self.api_key_env.is_empty() {
+        if self.api_key_env.is_empty() || !api_key_env_allowed(&self.api_key_env) {
             return None;
         }
         std::env::var(&self.api_key_env).ok().filter(|v| !v.is_empty())
     }
+}
+
+/// A printer's `api_key_env` names an env var the driver will read. Since an agent can call
+/// fab_add_printer autonomously, an attacker could otherwise point it at a CORE secret
+/// (GINEXUS_APPROVAL_KEY, GINEXUS_TOKEN, …) and read that secret's value back through the
+/// driver's outbound request. Restrict it to the fab namespace and hard-deny core secrets.
+pub fn api_key_env_allowed(name: &str) -> bool {
+    const DENY: [&str; 6] = [
+        "GINEXUS_APPROVAL_KEY", "GINEXUS_AUDIT_KEY", "GINEXUS_TOKEN",
+        "GINEXUS_APP_HOST_TOKEN", "GINEXUS_APP_HOST_SOCK", "GINEXUS_MCP_SERVERS",
+    ];
+    if DENY.iter().any(|d| name.eq_ignore_ascii_case(d)) {
+        return false;
+    }
+    // Namespace fence: only fab-owned env vars are addressable.
+    name.starts_with("GINEXUS_FAB_") || name.starts_with("FAB_")
 }
 
 pub struct PrinterRegistry {
@@ -81,16 +97,18 @@ impl PrinterRegistry {
             let _ = std::fs::set_permissions(&fab_dir, std::fs::Permissions::from_mode(0o700));
         }
         let path = fab_dir.join("printers.json");
-        let printers = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let printers = match crate::persist::load::<Vec<PrinterConfig>>(&path) {
+            crate::persist::Load::Loaded(v) => v,
+            // A corrupt printer list is not safety-critical (unlike jobs) — start empty; the
+            // corrupt file is quarantined by persist::load so it isn't silently overwritten.
+            crate::persist::Load::Fresh | crate::persist::Load::Poisoned(_) => Vec::new(),
+        };
         Self { path, printers }
     }
 
     fn save(&self) {
-        if let Ok(json) = serde_json::to_string_pretty(&self.printers) {
-            let _ = std::fs::write(&self.path, json);
+        if let Err(e) = crate::persist::save(&self.path, &self.printers) {
+            eprintln!("fab: failed to persist printers.json: {e}");
         }
     }
 
@@ -112,6 +130,14 @@ impl PrinterRegistry {
         }
         if cfg.kind != "mock" && cfg.host.trim().is_empty() {
             return Err("printer needs a host/IP".into());
+        }
+        // PSS: an api_key_env pointing at a core secret would leak it through the driver's
+        // outbound request. Restrict to the fab namespace.
+        if !cfg.api_key_env.is_empty() && !api_key_env_allowed(&cfg.api_key_env) {
+            return Err(format!(
+                "api_key_env '{}' is not allowed — use a GINEXUS_FAB_* variable (never a core secret)",
+                cfg.api_key_env
+            ));
         }
         let base: String = cfg
             .name
@@ -225,7 +251,23 @@ mod tests {
                 api_key_env: String::new(),
             })
             .is_err());
-        // Driver construction: octoprint without a key errors; mock always works.
+        // api_key_env pointing at a core secret is rejected at add().
+        assert!(reg
+            .add(PrinterConfig {
+                id: String::new(),
+                name: "Leaky".into(),
+                kind: "octoprint".into(),
+                host: "1.2.3.4".into(),
+                mainboard_id: String::new(),
+                model: String::new(),
+                api_key_env: "GINEXUS_APPROVAL_KEY".into(),
+            })
+            .is_err());
+        assert!(!api_key_env_allowed("GINEXUS_TOKEN"));
+        assert!(!api_key_env_allowed("PATH"));
+        assert!(api_key_env_allowed("GINEXUS_FAB_KEY_saturn"));
+
+        // Driver construction: octoprint with a fab-namespaced but unset key errors; mock works.
         let cfg = PrinterConfig {
             id: "x".into(),
             name: "X".into(),
@@ -233,7 +275,7 @@ mod tests {
             host: "1.2.3.4".into(),
             mainboard_id: String::new(),
             model: String::new(),
-            api_key_env: "GX_TEST_NO_SUCH_ENV".into(),
+            api_key_env: "GINEXUS_FAB_KEY_NO_SUCH_ENV".into(),
         };
         assert!(cfg.driver().is_err());
         let mock = PrinterConfig {

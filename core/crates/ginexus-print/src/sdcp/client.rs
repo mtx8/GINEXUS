@@ -265,13 +265,52 @@ impl SdcpPrinter {
                 .multipart(form)
                 .send()
                 .map_err(|e| format!("upload: {e}"))?;
-            if !resp.status().is_success() {
-                return Err(format!("upload chunk at offset {offset} failed: HTTP {}", resp.status()));
+            let status = resp.status();
+            let body = resp.text().unwrap_or_default();
+            if !status.is_success() {
+                return Err(format!("upload chunk at offset {offset} failed: HTTP {status} — {body}"));
+            }
+            // The printer ALSO reports application errors in a 2xx body (SDCP upload codes: -1
+            // offset error, -2 offset mismatch, -3 file open failed, -4 unknown). A status-only
+            // check would report a corrupt/rejected upload as success, and the human would then
+            // approve a print of a file the printer never accepted. Parse and enforce the body.
+            if let Some(err) = upload_body_error(&body) {
+                return Err(format!("printer rejected upload at offset {offset}: {err}"));
             }
             offset += n as u64;
         }
         Ok(FileRef::new("local", name))
     }
+}
+
+/// Inspect an SDCP upload response body for an application-level failure. Returns Some(reason)
+/// when the printer signals rejection, None when the chunk was accepted (or the body is an
+/// unrecognized-but-non-failing shape — we don't reject on unknown firmware output).
+fn upload_body_error(body: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(body.trim()).ok()?;
+    // Numeric ack/code fields: negative or non-"success" values are failures.
+    for key in ["code", "Code", "ack", "Ack"] {
+        if let Some(n) = v.get(key).and_then(|x| x.as_i64()) {
+            if n < 0 {
+                return Some(match n {
+                    -1 => "offset error".into(),
+                    -2 => "offset mismatch".into(),
+                    -3 => "file open failed".into(),
+                    _ => format!("error code {n}"),
+                });
+            }
+        }
+        // String codes: "000000" is the CBD-Tech success sentinel.
+        if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+            if !s.is_empty() && s != "000000" && s != "0" && !s.eq_ignore_ascii_case("success") {
+                return Some(format!("code {s}"));
+            }
+        }
+    }
+    if v.get("success").and_then(|x| x.as_bool()) == Some(false) {
+        return Some("printer reported success=false".into());
+    }
+    None
 }
 
 impl PrinterDriver for SdcpPrinter {
@@ -401,6 +440,20 @@ mod tests {
         assert_eq!(s.state, PrinterState::Offline);
         // But state-changing commands must surface the failure loudly.
         assert!(p.pause().is_err());
+    }
+
+    #[test]
+    fn upload_body_error_detection() {
+        // Documented SDCP failure codes are caught.
+        assert!(upload_body_error(r#"{"code": -2}"#).is_some());
+        assert!(upload_body_error(r#"{"Ack": -1}"#).is_some());
+        assert!(upload_body_error(r#"{"code": "100001"}"#).is_some());
+        assert!(upload_body_error(r#"{"success": false}"#).is_some());
+        // Success shapes and unknown/empty bodies are accepted (don't over-reject firmware).
+        assert!(upload_body_error(r#"{"code": "000000"}"#).is_none());
+        assert!(upload_body_error(r#"{"ack": 0}"#).is_none());
+        assert!(upload_body_error("").is_none());
+        assert!(upload_body_error("OK").is_none());
     }
 
     #[test]

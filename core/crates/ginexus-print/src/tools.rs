@@ -60,7 +60,19 @@ impl FabState {
         self.drivers.lock().unwrap().remove(id);
     }
 
+    /// Remove a printer AND invalidate its cached driver in one step — the only correct way to
+    /// remove, used by both the fab_remove_printer tool and the /v1/fab/printers/remove route
+    /// (a raw registry.remove would leave a stale driver serving the freed id).
+    pub fn remove_printer(&self, id: &str) -> bool {
+        self.drop_driver(id);
+        self.printers.lock().unwrap().remove(id)
+    }
+
     /// Live status for one configured printer (offline on connect failure, error on bad config).
+    /// Also reconciles the job queue: when the queue holds a Printing job for this printer but the
+    /// printer now reports Complete (or Idle with no active job), the job advances to Complete so
+    /// the manual-unload gate engages — nothing else drives Printing→Complete, since drivers, not
+    /// this process, own the physical print.
     pub fn live_status(&self, printer_id: &str) -> Result<(PrinterConfig, PrinterStatus), String> {
         let cfg = self
             .printers
@@ -70,7 +82,31 @@ impl FabState {
             .cloned()
             .ok_or_else(|| format!("no printer '{printer_id}' — fab_list_printers shows the fleet"))?;
         let status = self.driver_for(&cfg)?.status()?;
+        self.reconcile(printer_id, &status);
         Ok((cfg, status))
+    }
+
+    /// Advance a Printing job to Complete/Failed based on live printer state (keeps the plate gate
+    /// honest without a driver→queue callback).
+    fn reconcile(&self, printer_id: &str, status: &PrinterStatus) {
+        let terminal = match status.state {
+            PrinterState::Complete => Some(JobState::Complete),
+            PrinterState::Error => Some(JobState::Failed),
+            // Printer went Idle with no active job → the print finished (or was stopped elsewhere).
+            PrinterState::Idle if status.job_name.is_none() => Some(JobState::Complete),
+            _ => None,
+        };
+        let Some(to) = terminal else { return };
+        let mut jobs = self.jobs.lock().unwrap();
+        let live: Vec<String> = jobs
+            .list()
+            .iter()
+            .filter(|j| j.printer_id == printer_id && j.state == JobState::Printing)
+            .map(|j| j.id.clone())
+            .collect();
+        for id in live {
+            let _ = jobs.transition(&id, to);
+        }
     }
 }
 
@@ -90,11 +126,15 @@ fn resolve_model_path(raw: &str) -> Result<PathBuf, String> {
     if is_icloud(&expanded) {
         return Err("refusing an iCloud path — keep model files local".into());
     }
-    let p = PathBuf::from(&expanded);
-    if !p.exists() {
-        return Err(format!("file not found: {}", abbreviate_home(&expanded)));
+    // Canonicalize BEFORE the final iCloud check: resolve symlinks and `..` so a symlink whose
+    // name doesn't contain "Mobile Documents" but which POINTS into iCloud is still refused
+    // (and canonicalize requires existence, replacing the separate exists() check).
+    let canon = std::fs::canonicalize(&expanded)
+        .map_err(|_| format!("file not found: {}", abbreviate_home(&expanded)))?;
+    if is_icloud(&canon.to_string_lossy()) {
+        return Err("refusing an iCloud path — keep model files local".into());
     }
-    Ok(p)
+    Ok(canon)
 }
 
 fn arg_str(a: &Value, k: &str) -> String {
@@ -191,8 +231,7 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
         true,
         Arc::new(move |a: Value| {
             let id = arg_str(&a, "printer_id");
-            st.drop_driver(&id);
-            if st.printers.lock().unwrap().remove(&id) {
+            if st.remove_printer(&id) {
                 ToolResult::ok(format!("printer '{id}' removed"))
             } else {
                 ToolResult::err(format!("no printer '{id}'"))
@@ -317,28 +356,38 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
                 } else { n }
             };
 
+            // Create the job FIRST so slicing lands in a fresh per-job subdirectory — no run can
+            // ever see another run's artifacts (the stale-slice → wrong-part failure mode).
+            let job_id = st.jobs.lock().unwrap().create(&name, &printer_id, &path.to_string_lossy());
+            let job_dir = st.workspace.join(&job_id);
+            if std::fs::create_dir_all(&job_dir).is_err() {
+                let _ = st.jobs.lock().unwrap().remove(&job_id);
+                return ToolResult::err("could not create the job workspace");
+            }
+
             let (sliced, validation) = match tech {
                 pipeline::Tech::Fdm => {
-                    match pipeline::slice_fdm(&path, profile_path.as_deref(), &st.workspace) {
+                    match pipeline::slice_fdm(&path, profile_path.as_deref(), &job_dir) {
                         Ok(g) => (g, String::from("gcode produced")),
-                        Err(e) => return ToolResult::err(e),
+                        Err(e) => { let _ = st.jobs.lock().unwrap().remove(&job_id); return ToolResult::err(e); }
                     }
                 }
                 pipeline::Tech::Resin => {
                     let Some(prof) = profile_path.as_deref() else {
+                        let _ = st.jobs.lock().unwrap().remove(&job_id);
                         return ToolResult::err(
                             "resin slicing requires `profile_ini` — a curated profile for this \
                              exact printer + resin (UVtools ships per-printer PrusaSlicer \
                              profiles; exposure settings are never invented)",
                         );
                     };
-                    let sl1 = match pipeline::slice_resin_sl1(&path, prof, &st.workspace) {
+                    let sl1 = match pipeline::slice_resin_sl1(&path, prof, &job_dir) {
                         Ok(s) => s,
-                        Err(e) => return ToolResult::err(e),
+                        Err(e) => { let _ = st.jobs.lock().unwrap().remove(&job_id); return ToolResult::err(e); }
                     };
-                    let native = match pipeline::convert_sl1(&sl1, ext, &st.workspace) {
+                    let native = match pipeline::convert_sl1(&sl1, ext, &job_dir) {
                         Ok(n) => n,
-                        Err(e) => return ToolResult::err(e),
+                        Err(e) => { let _ = st.jobs.lock().unwrap().remove(&job_id); return ToolResult::err(e); }
                     };
                     let validation = pipeline::validate_sliced(&native)
                         .unwrap_or_else(|e| format!("validation unavailable: {e}"));
@@ -346,18 +395,16 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
                 }
             };
 
-            let job_id = {
+            {
                 let mut jobs = st.jobs.lock().unwrap();
-                let id = jobs.create(&name, &printer_id, &path.to_string_lossy());
                 let sliced_s = sliced.to_string_lossy().to_string();
                 let val = validation.clone();
-                let _ = jobs.update(&id, |j| {
+                let _ = jobs.update(&job_id, |j| {
                     j.sliced_path = sliced_s;
                     j.validation = val;
                 });
-                let _ = jobs.transition(&id, JobState::Sliced);
-                id
-            };
+                let _ = jobs.transition(&job_id, JobState::Sliced);
+            }
             ToolResult::ok(format!(
                 "job '{job_id}' sliced for {} → {}\nvalidation: {}\nnext: fab_upload {{job_id}}, \
                  then fab_start_print (requires approval)",
@@ -587,10 +634,10 @@ pub fn fab_tools(state: Arc<FabState>) -> Vec<Tool> {
                     Some(JobState::Printing) => {
                         ToolResult::err("job is still printing — cancel it first")
                     }
-                    Some(_) => {
-                        st.jobs.lock().unwrap().remove(&job_id);
-                        ToolResult::ok(format!("job '{job_id}' cleared — printer is free"))
-                    }
+                    Some(_) => match st.jobs.lock().unwrap().remove(&job_id) {
+                        Ok(_) => ToolResult::ok(format!("job '{job_id}' cleared — printer is free")),
+                        Err(e) => ToolResult::err(e),
+                    },
                 }
             }),
         )

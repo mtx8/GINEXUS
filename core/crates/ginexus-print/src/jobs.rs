@@ -42,6 +42,12 @@ pub struct FabJob {
     /// UVtools print-issues summary (resin) or slicer estimate (FDM).
     #[serde(default)]
     pub validation: String,
+    /// True once this job actually reached the printer (Uploaded→Printing). A job cancelled
+    /// while still Draft/Sliced/Uploaded never put a part on the plate, so it need not block the
+    /// manual-unload gate; a job that WAS printing leaves a partial part and must block until
+    /// physically cleared. Persisted so the gate survives a restart.
+    #[serde(default)]
+    pub printed: bool,
     pub created_ms: i64,
     pub updated_ms: i64,
 }
@@ -53,23 +59,32 @@ fn now_ms() -> i64 {
 pub struct JobQueue {
     path: PathBuf,
     jobs: Vec<FabJob>,
+    /// Set when jobs.json was present but corrupt: the queue is DEGRADED and safety-critical
+    /// reads (printer_clear) refuse rather than silently trusting an empty queue.
+    poisoned: Option<String>,
 }
 
 impl JobQueue {
     pub fn open(fab_dir: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&fab_dir);
         let path = fab_dir.join("jobs.json");
-        let jobs = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        Self { path, jobs }
+        let (jobs, poisoned) = match crate::persist::load::<Vec<FabJob>>(&path) {
+            crate::persist::Load::Loaded(v) => (v, None),
+            crate::persist::Load::Fresh => (Vec::new(), None),
+            crate::persist::Load::Poisoned(msg) => (Vec::new(), Some(msg)),
+        };
+        Self { path, jobs, poisoned }
     }
 
     fn save(&self) {
-        if let Ok(json) = serde_json::to_string_pretty(&self.jobs) {
-            let _ = std::fs::write(&self.path, json);
+        if let Err(e) = crate::persist::save(&self.path, &self.jobs) {
+            eprintln!("fab: failed to persist jobs.json: {e}");
         }
+    }
+
+    /// True when the on-disk queue was corrupt at open — the plate-clear gate can't be trusted.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.is_some()
     }
 
     pub fn list(&self) -> &[FabJob] {
@@ -96,6 +111,7 @@ impl JobQueue {
             remote_storage: String::new(),
             state: JobState::Draft,
             validation: String::new(),
+            printed: false,
             created_ms: now_ms(),
             updated_ms: now_ms(),
         });
@@ -128,6 +144,9 @@ impl JobQueue {
                 job.name, job.state, to
             ));
         }
+        if to == JobState::Printing {
+            job.printed = true; // it reached the plate — now it gates the manual-unload check
+        }
         job.state = to;
         job.updated_ms = now_ms();
         self.save();
@@ -146,19 +165,36 @@ impl JobQueue {
         Ok(())
     }
 
-    pub fn remove(&mut self, id: &str) -> bool {
-        let before = self.jobs.len();
-        self.jobs.retain(|j| j.id != id);
-        let removed = self.jobs.len() != before;
-        if removed {
-            self.save();
+    /// Remove a job — but REFUSE to silently drop a Printing job (that would strand a live print
+    /// with no queue record). Callers must cancel first. Returns Ok(true) if removed, Ok(false)
+    /// if no such job.
+    pub fn remove(&mut self, id: &str) -> Result<bool, String> {
+        if let Some(j) = self.jobs.iter().find(|j| j.id == id) {
+            if j.state == JobState::Printing {
+                return Err(format!(
+                    "'{}' is still printing — cancel it first (fab_cancel_print) before removing",
+                    j.name
+                ));
+            }
+        } else {
+            return Ok(false);
         }
-        removed
+        self.jobs.retain(|j| j.id != id);
+        self.save();
+        Ok(true)
     }
 
-    /// The manual-unload gate: a printer is start-clear only if NO job on it is Printing and no
-    /// completed job is still awaiting plate clearance (Complete jobs block until removed).
+    /// The manual-unload gate: a printer is start-clear only if NO job on it left something on the
+    /// plate. Printing (live), Complete (finished part), and Cancelled/Failed jobs that WERE
+    /// printing (partial part bonded to the plate) all block until physically cleared. A corrupt
+    /// queue at open() poisons this check — we refuse rather than trust an empty (wiped) queue.
     pub fn printer_clear(&self, printer_id: &str) -> Result<(), String> {
+        if let Some(msg) = &self.poisoned {
+            return Err(format!(
+                "job records were corrupt — cannot confirm the plate is clear. Physically verify \
+                 the printer, then clear jobs to acknowledge. ({msg})"
+            ));
+        }
         for j in &self.jobs {
             if j.printer_id != printer_id {
                 continue;
@@ -170,8 +206,16 @@ impl JobQueue {
                 JobState::Complete => {
                     return Err(format!(
                         "'{}' finished but the plate has not been cleared — remove the part and \
-                         delete/acknowledge the job first",
+                         clear the job first",
                         j.name
+                    ))
+                }
+                // A cancelled/failed print that actually ran leaves a partial part on the plate.
+                JobState::Cancelled | JobState::Failed if j.printed => {
+                    return Err(format!(
+                        "'{}' was {:?} mid-print — a partial part may remain on the plate; clear \
+                         the job after removing it",
+                        j.name, j.state
                     ))
                 }
                 _ => {}
@@ -210,8 +254,60 @@ mod tests {
         // Complete-but-not-cleared still blocks (manual-unload gate).
         let err = q.printer_clear("saturn").unwrap_err();
         assert!(err.contains("plate"), "got: {err}");
-        assert!(q.remove(&id));
+        assert!(q.remove(&id).unwrap());
         assert!(q.printer_clear("saturn").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancelled_mid_print_blocks_the_gate() {
+        let (mut q, dir) = queue("cancel");
+        let id = q.create("part", "saturn", "/tmp/p.stl");
+        q.transition(&id, JobState::Sliced).unwrap();
+        q.transition(&id, JobState::Uploaded).unwrap();
+        q.transition(&id, JobState::Printing).unwrap(); // now printed = true
+        q.transition(&id, JobState::Cancelled).unwrap();
+        // A partial part remains — gate must still block until cleared.
+        let err = q.printer_clear("saturn").unwrap_err();
+        assert!(err.contains("partial"), "got: {err}");
+        assert!(q.remove(&id).unwrap());
+        assert!(q.printer_clear("saturn").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancelled_before_print_does_not_block() {
+        let (mut q, dir) = queue("cancel-early");
+        let id = q.create("part", "saturn", "/tmp/p.stl");
+        q.transition(&id, JobState::Sliced).unwrap();
+        q.transition(&id, JobState::Cancelled).unwrap(); // never reached the plate
+        assert!(q.printer_clear("saturn").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_refuses_printing_job() {
+        let (mut q, dir) = queue("rm");
+        let id = q.create("part", "saturn", "/tmp/p.stl");
+        q.transition(&id, JobState::Sliced).unwrap();
+        q.transition(&id, JobState::Uploaded).unwrap();
+        q.transition(&id, JobState::Printing).unwrap();
+        assert!(q.remove(&id).is_err(), "must not silently drop a live print");
+        assert!(!q.remove("nonexistent").unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_queue_poisons_the_gate() {
+        let dir = std::env::temp_dir().join(format!("gx-fabjobs-poison-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Simulate a crash mid-save: a truncated jobs.json.
+        std::fs::write(dir.join("jobs.json"), b"[{\"id\":\"job-1\",\"na").unwrap();
+        let q = JobQueue::open(dir.clone());
+        assert!(q.is_poisoned());
+        // The gate REFUSES rather than trusting a wiped (empty) queue.
+        assert!(q.printer_clear("saturn").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

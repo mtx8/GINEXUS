@@ -150,6 +150,38 @@ Bambu LAN (Developer-Mode-only; policy-fragile) · PrusaLink · camera streaming
 decode) + VLM failure detection · layer-time anomaly detector · Python geometry sidecar
 (trimesh/build123d) · Zoo text-to-CAD · legacy pre-V3 Elegoo (pull-model needs an HTTP listener).
 
+## Adversarial review (2026-07-06, 28-agent gate) — fixes applied
+
+A 4-dimension adversarial review with per-finding verification confirmed 22 real defects on the
+first commit; all are fixed with regression tests:
+- **iCloud symlink bypass** → `resolve_model_path` canonicalizes before the iCloud check.
+- **`api_key_env` secret exfiltration** → namespace fence (`GINEXUS_FAB_*` only) + core-secret denylist.
+- **`profile_ini` command injection** (`post_process`/`printhost_*` via PrusaSlicer `--load`) → validated/rejected.
+- **Stale-slice → wrong-part print** → per-job workspace subdir + exit-status check + mtime freshness fence.
+- **Corrupt `jobs.json` wipes queue → plate-gate bypass** → atomic write (temp+rename) + corrupt-file
+  quarantine + a poisoned queue REFUSES the plate-clear check instead of trusting an empty queue.
+- **Cancelled/Failed mid-print bypassed the unload gate** → `printed` flag; a print that reached the
+  plate blocks the gate until physically cleared.
+- **`--fab-mcp` exposed destructive tools by default** → default-deny ALL irreversible tools (was: only hard-gated).
+- **SDCP upload only checked HTTP status** → parses the printer's response body for the documented
+  upload error codes.
+- **SDCP status precedence** → a busy machine state overrides a `PrintInfo.Status:0`, so an occupied
+  printer never reads Idle to the start-gate.
+- **`run_with_timeout` pipe deadlock + zombie leak** → threaded stdout/stderr drain + `wait()` reap after kill.
+- **Route printer-remove left a stale driver** → `FabState::remove_printer` (drop cache + registry) used by both tool and route.
+- **No Printing→Complete transition** → `live_status` reconciles the queue from live printer state.
+- **Checked `jobs/remove`** → refuses a Printing job (409); Swift surfaces it.
+- **Swift**: approval prompt was hidden while in the Fabrication section (now forces `.chat` on
+  pending); `fabLoading` watchdog via `defer` + `SO_RCVTIMEO` read timeout; generation counter so a
+  stale poll can't resurrect an optimistically-removed row.
+
+**Residual (documented, low severity):** the JSON stores are now crash-safe (atomic writes) and
+corruption-safe (quarantine+poison), but concurrent MUTATION from two processes (the app's core AND a
+simultaneously-running `--fab-mcp`) can still lose an update (last-writer-wins on stale snapshots).
+This is a consistency limitation, not a safety-gate bypass — atomic rename guarantees no reader ever
+sees a half-written file. A cross-process advisory lock (flock) with reload-before-mutate is the
+follow-up if the two are ever run against the same state dir concurrently.
+
 ## Decisions log
 1. **Drivers in-crate, MCP as a façade** — GINEXUS registers fab tools natively (fast, typed);
    the same tools are exported via `--fab-mcp` for external MCP hosts. Both share one impl.

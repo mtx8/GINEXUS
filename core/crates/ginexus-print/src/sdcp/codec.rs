@@ -149,19 +149,32 @@ pub fn parse_status_frame(frame: &Value) -> Option<PrinterStatus> {
 
     let print_code = print_info.and_then(|p| p.get("Status")).and_then(|v| v.as_i64());
 
-    // Prefer the print sub-status when present; else derive from machine status
-    // (machine: 0 idle, 1 printing, 2 file transfer, 3 exposure test, 4 devices testing).
-    let state = if let Some(code) = print_code {
-        map_print_status(code)
-    } else if machine_codes.contains(&1) {
-        PrinterState::Printing
+    // Machine-level state (machine: 0 idle, 1 printing, 2 file transfer, 3 exposure test,
+    // 4 devices testing).
+    let machine_state = if machine_codes.contains(&1) {
+        Some(PrinterState::Printing)
     } else if machine_codes.contains(&2) || machine_codes.contains(&3) || machine_codes.contains(&4)
     {
-        PrinterState::Busy
+        Some(PrinterState::Busy)
     } else if !machine_codes.is_empty() {
-        PrinterState::Idle
+        Some(PrinterState::Idle)
     } else {
-        PrinterState::Unknown
+        None
+    };
+    let sub_state = print_code.map(map_print_status);
+
+    // Take the MORE-ACTIVE of the two: a busy machine (file transfer / exposure test) must never
+    // read as Idle just because PrintInfo.Status is 0 — that would let the start-gate think an
+    // occupied printer is free. Sub-status wins only when it is itself active.
+    let state = match (sub_state, machine_state) {
+        (Some(PrinterState::Idle) | Some(PrinterState::Unknown) | None, Some(m))
+            if m != PrinterState::Idle =>
+        {
+            m
+        }
+        (Some(s), _) => s,
+        (None, Some(m)) => m,
+        (None, None) => PrinterState::Unknown,
     };
 
     let current_layer =
@@ -299,6 +312,20 @@ mod tests {
         assert_eq!(s.time_left_secs, Some(3000));
         assert!((s.progress.unwrap() - 0.2).abs() < 1e-9);
         assert_eq!(s.job_name.as_deref(), Some("/local/part.goo"));
+    }
+
+    #[test]
+    fn busy_machine_overrides_idle_substatus() {
+        // File transfer in progress (machine [2]) but PrintInfo.Status=0 → must NOT read Idle,
+        // else the start-gate would think an occupied printer is free.
+        let f = json!({"Data": {"Status": {
+            "CurrentStatus": [2],
+            "PrintInfo": {"Status": 0}
+        }}});
+        assert_eq!(parse_status_frame(&f).unwrap().state, PrinterState::Busy);
+        // Truly idle (machine [0], no active sub-status) still reads Idle.
+        let idle = json!({"Data": {"Status": {"CurrentStatus": [0], "PrintInfo": {"Status": 0}}}});
+        assert_eq!(parse_status_frame(&idle).unwrap().state, PrinterState::Idle);
     }
 
     #[test]

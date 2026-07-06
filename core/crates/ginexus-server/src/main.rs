@@ -516,8 +516,13 @@ fn main() {
         let fab = ginexus_print::FabState::open(&state_dir());
         let unlock = std::env::var("GINEXUS_FAB_MCP_UNLOCK").map(|v| v == "1").unwrap_or(false);
         let mut reg = ginexus_agent::ToolRegistry::new();
+        // DEFAULT-DENY: this path has no GINEXUS approval loop, so by default expose ONLY the
+        // read-only / always-safe tools (status, list, analyze, slice, discover, pause). EVERY
+        // irreversible tool — upload, cancel ("Destroys the in-progress part"), remove-printer,
+        // and the hard-gated start/resume/clear — is withheld unless the operator opts in via
+        // GINEXUS_FAB_MCP_UNLOCK=1 and relies on the host's own confirmation UX.
         for t in ginexus_print::fab_tools(fab) {
-            if !t.hard_gate || unlock {
+            if !t.irreversible || unlock {
                 reg.register(t);
             }
         }
@@ -1065,7 +1070,9 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
         }
         ("POST", "/v1/fab/printers/remove") => {
             let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let removed = state.fab.printers.lock().unwrap().remove(&id);
+            // remove_printer drops the cached driver too — a raw registry.remove would leave a
+            // stale driver serving the freed id.
+            let removed = state.fab.remove_printer(&id);
             if removed {
                 let _ = state.audit.record("fab_printer_remove", json!({"id": id}));
             }
@@ -1119,12 +1126,18 @@ async fn handle_conn(mut stream: UnixStream, state: Arc<AppState>) -> std::io::R
         }
         ("POST", "/v1/fab/jobs/remove") => {
             // The UI's "clear job" — a human clicking IS the physical plate-clear confirmation.
+            // JobQueue::remove refuses a Printing job (would strand a live print) → surface 409.
             let id = body.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let removed = state.fab.jobs.lock().unwrap().remove(&id);
-            if removed {
-                let _ = state.audit.record("fab_job_clear", json!({"id": id}));
+            let outcome = { state.fab.jobs.lock().unwrap().remove(&id) };
+            match outcome {
+                Ok(removed) => {
+                    if removed {
+                        let _ = state.audit.record("fab_job_clear", json!({"id": id}));
+                    }
+                    json_ok(&mut stream, json!({"removed": removed})).await;
+                }
+                Err(e) => err(&mut stream, 409, "Conflict", &e).await,
             }
-            json_ok(&mut stream, json!({"removed": removed})).await;
         }
         ("GET", "/v1/models") => {
             // Roster for the app's model picker. "auto" is the implicit policy-routed default.
