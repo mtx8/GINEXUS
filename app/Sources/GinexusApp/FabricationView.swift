@@ -78,8 +78,7 @@ struct FabricationView: View {
 
     private func noticeBar(_ text: String, isError: Bool) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .font(.system(size: 11)).foregroundStyle(isError ? Brand.error : Brand.success)
+            StatusDot(color: isError ? Brand.ember500 : Brand.ok, size: 6)
             Text(text).font(Brand.body(12)).foregroundStyle(Brand.bone100)
             Spacer(minLength: 0)
             Button { if isError { model.fabError = nil } else { model.fabNotice = nil } } label: {
@@ -88,7 +87,7 @@ struct FabricationView: View {
         }
         .padding(.horizontal, 24).padding(.vertical, 10)
         .background(Brand.ink850)
-        .overlay(Rectangle().frame(height: 1).foregroundStyle(isError ? Brand.error.opacity(0.4) : Brand.line1), alignment: .top)
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(Brand.line1), alignment: .top)
     }
 
     // MARK: empty state
@@ -694,12 +693,11 @@ private struct AddPrinterSheet: View {
                     // iPhone-hotspot trap where devices can't see each other).
                     if let ln = model.fabLocalNet {
                         HStack(spacing: 6) {
-                            Image(systemName: ln.isHotspot ? "exclamationmark.triangle.fill" : "wifi")
-                                .font(.system(size: 10)).foregroundStyle(ln.isHotspot ? Brand.warning : Brand.bone400)
+                            StatusDot(color: ln.isHotspot ? Brand.ember500 : Brand.bone400, size: 5)
                             Text(ln.isHotspot
                                  ? "Your Mac is on an iPhone Personal Hotspot (\(ln.cidr)) — devices are isolated and can't see each other. Put the Mac and printer on the same Wi‑Fi router."
                                  : "Your Mac: \(ln.cidr). The printer must be on this same network.")
-                                .font(Brand.body(10)).foregroundStyle(ln.isHotspot ? Brand.warning : Brand.bone400)
+                                .font(Brand.body(10)).foregroundStyle(ln.isHotspot ? Brand.bone200 : Brand.bone400)
                             Spacer(minLength: 0)
                         }
                     }
@@ -763,35 +761,41 @@ private struct AddPrinterSheet: View {
                 }
             }
 
-            if let e = model.fabError { Text(e).font(Brand.body(11)).foregroundStyle(Brand.error) }
+            if let e = model.fabError {
+                HStack(spacing: 8) {
+                    StatusDot(color: Brand.ember500, size: 5)
+                    Text(e).font(Brand.body(11)).foregroundStyle(Brand.bone300)
+                    Spacer(minLength: 0)
+                }
+            }
         }
         .padding(20).frame(width: 580).background(Brand.ink900).preferredColorScheme(.dark)
         .onAppear { model.fabRefreshLocalNet(); model.fabDiag = nil }
     }
 
-    /// A clear, color-coded reachability verdict (rectangular, matches the panel aesthetic).
+    /// A reachability verdict — flat ink panel with a hairline, ember for "attention" and the
+    /// muted connection dot for OK. No fills, no colored borders (the app's established grammar).
     private func diagnosisView(_ d: FabDiagnosis) -> some View {
-        let color: Color = d.severity == "ok" ? Brand.success : (d.severity == "warn" ? Brand.warning : Brand.error)
-        let icon = d.severity == "ok" ? "checkmark.circle.fill" : (d.severity == "warn" ? "exclamationmark.circle.fill" : "xmark.octagon.fill")
-        return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon).font(.system(size: 12)).foregroundStyle(color)
+        let attention = d.severity != "ok"
+        return HStack(alignment: .top, spacing: 9) {
+            StatusDot(color: attention ? Brand.ember500 : Brand.ok, size: 6).padding(.top, 4)
             VStack(alignment: .leading, spacing: 3) {
-                Text(d.summary).font(Brand.body(12, weight: .semibold)).foregroundStyle(color)
-                Text(d.detail).font(Brand.body(11)).foregroundStyle(Brand.bone200)
+                Text(d.summary).font(Brand.body(12, weight: .semibold)).foregroundStyle(Brand.bone50)
+                Text(d.detail).font(Brand.body(11)).foregroundStyle(Brand.bone300)
                 if d.severity == "error" {
                     Button {
                         if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") {
                             NSWorkspace.shared.open(u)
                         }
                     } label: {
-                        Text("Open Local Network settings").font(.system(size: 10, weight: .semibold)).foregroundStyle(Brand.ember500)
+                        Text("Open Local Network settings").font(Brand.body(10, weight: .semibold)).foregroundStyle(Brand.ember500)
                     }.buttonStyle(.plain).padding(.top, 2)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(12).background(color.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.4), lineWidth: 1))
+        .padding(12).background(Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
     }
 
     private func field(_ placeholder: String, text: Binding<String>, mono: Bool) -> some View {

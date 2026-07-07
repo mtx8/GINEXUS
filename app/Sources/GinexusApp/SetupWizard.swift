@@ -101,8 +101,8 @@ struct SetupWizard: View {
 
     private var probeErrorView: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Brand.error)
+            HStack(spacing: 9) {
+                StatusDot(color: Brand.ember500, size: 6)
                 Text(model.setupProbeError ?? "Detection failed.").font(Brand.body(12)).foregroundStyle(Brand.bone100)
                 Spacer(minLength: 0)
             }
@@ -111,7 +111,7 @@ struct SetupWizard: View {
         }
         .padding(14).frame(maxWidth: .infinity, alignment: .leading)
         .background(Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.error.opacity(0.4), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
     }
 
     // ── 2. RUNTIME (Ollama) ──
@@ -296,17 +296,17 @@ struct SetupWizard: View {
     /// Loud warning when the user picked a model that won't fit their memory (e.g. the 30B on a
     /// 16 GB Mac mini) — it would swap heavily or fail to load.
     private func wontFitBanner(_ m: SetupModelInfo?) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Brand.error)
+        HStack(alignment: .top, spacing: 9) {
+            StatusDot(color: Brand.ember500, size: 6).padding(.top, 4)
             VStack(alignment: .leading, spacing: 3) {
-                Text("This model is larger than your memory can run").font(Brand.body(12, weight: .semibold)).foregroundStyle(Brand.error)
+                Text("This model is larger than your memory can run").font(Brand.body(12, weight: .semibold)).foregroundStyle(Brand.bone50)
                 Text("\(m?.label ?? "It") needs ~\(Int(m?.minRamGB ?? 0)) GB usable RAM; your Mac has ~\(Int(probe?.hardware.usableRamGB ?? 0)) GB. It will be extremely slow or fail to load. Go back and pick a smaller model.")
-                    .font(Brand.body(11)).foregroundStyle(Brand.bone200)
+                    .font(Brand.body(11)).foregroundStyle(Brand.bone300)
             }
             Spacer(minLength: 0)
         }
-        .padding(12).background(Brand.error.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.error.opacity(0.5), lineWidth: 1))
+        .padding(12).background(Brand.ink700, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Brand.line1, lineWidth: 1))
     }
 
     // ── 5. READY ──
