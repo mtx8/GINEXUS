@@ -1613,6 +1613,30 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: add-printer connection diagnostics (run in the signed app → triggers the macOS Local
+    // Network prompt, and explains WHY a printer can't be reached instead of failing silently).
+    @Published var fabDiag: FabDiagnosis?
+    @Published var fabDiagTesting = false
+    @Published var fabLocalNet: LocalNet?
+
+    /// The Mac's current network context (for the add-printer sheet's guidance).
+    func fabRefreshLocalNet() { fabLocalNet = FabNetDiag.localNet() }
+
+    /// Test whether a host is reachable as the given printer kind, and produce a clear verdict.
+    func fabTestConnection(host: String, kind: String) {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        guard !h.isEmpty, !fabDiagTesting else { return }
+        fabDiagTesting = true; fabDiag = nil
+        let port = FabNetDiag.controlPort(for: kind)
+        Task {
+            let local = FabNetDiag.localNet()
+            let result = await Task.detached { FabNetDiag.reach(host: h, port: port, timeoutMs: 2500) }.value
+            fabDiagTesting = false
+            fabLocalNet = local
+            fabDiag = FabNetDiag.diagnose(host: h, kind: kind, result: result, local: local)
+        }
+    }
+
     /// SDCP discovery sweep (or a single-IP probe when broadcast can't reach the printer).
     func fabDiscover(host: String = "") {
         guard connected, !fabDiscovering else { return }
@@ -1635,6 +1659,12 @@ final class AppModel: ObservableObject {
                 var out: [String: String] = [:]
                 for (k, v) in row { out[k] = v as? String ?? "" }
                 return out
+            }
+            // A single-IP probe that found nothing: run the app-side reachability diagnosis so the
+            // user learns WHY (unreachable / hotspot / wrong subnet / permission) instead of just
+            // seeing an empty list. (Broadcast scans don't have a target host to diagnose.)
+            if fabDiscovered.isEmpty && !host.isEmpty {
+                fabTestConnection(host: host, kind: "sdcp")
             }
         }
     }

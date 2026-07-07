@@ -690,11 +690,29 @@ private struct AddPrinterSheet: View {
                         FabButton(title: "Probe",
                                   enabled: !probeHost.trimmingCharacters(in: .whitespaces).isEmpty, compact: true) { model.fabDiscover(host: probeHost) }
                     }
-                    if model.fabDiscovered.isEmpty && !model.fabDiscovering {
-                        Text("Nothing yet. Broadcast can be blocked by VLANs or the macOS Local Network permission — "
-                             + "probing the printer's IP always works.")
+                    // Network context — tells the user what network their Mac is on (and flags the
+                    // iPhone-hotspot trap where devices can't see each other).
+                    if let ln = model.fabLocalNet {
+                        HStack(spacing: 6) {
+                            Image(systemName: ln.isHotspot ? "exclamationmark.triangle.fill" : "wifi")
+                                .font(.system(size: 10)).foregroundStyle(ln.isHotspot ? Brand.warning : Brand.bone400)
+                            Text(ln.isHotspot
+                                 ? "Your Mac is on an iPhone Personal Hotspot (\(ln.cidr)) — devices are isolated and can't see each other. Put the Mac and printer on the same Wi‑Fi router."
+                                 : "Your Mac: \(ln.cidr). The printer must be on this same network.")
+                                .font(Brand.body(10)).foregroundStyle(ln.isHotspot ? Brand.warning : Brand.bone400)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    if model.fabDiscovered.isEmpty && !model.fabDiscovering && model.fabDiag == nil {
+                        Text("Nothing yet. Scan finds Elegoo/SDCP printers on your Wi‑Fi; if it comes up empty, "
+                             + "enter the printer's IP (from its Network screen) and Probe.")
                             .font(Brand.body(11)).foregroundStyle(Brand.bone400)
                     }
+                    if model.fabDiagTesting {
+                        HStack(spacing: 6) { ProgressView().controlSize(.small)
+                            Text("Testing reachability…").font(Brand.body(11)).foregroundStyle(Brand.bone300) }
+                    }
+                    if let diag = model.fabDiag { diagnosisView(diag) }
                     ForEach(Array(model.fabDiscovered.enumerated()), id: \.offset) { _, d in
                         HStack(spacing: 8) {
                             StatusDot(color: Brand.ok, size: 6)
@@ -719,12 +737,21 @@ private struct AddPrinterSheet: View {
                             .pickerStyle(.menu).labelsHidden().fixedSize()
                     }
                     if kind != "mock" {
-                        field("Host / IP (e.g. 192.168.1.44 or octopi.local)", text: $host, mono: true)
+                        HStack(spacing: 8) {
+                            field("Host / IP (e.g. 192.168.1.44 or octopi.local)", text: $host, mono: true)
+                            // Test the connection FIRST — reports exactly why it can't reach the
+                            // printer instead of silently saving an offline device.
+                            FabButton(title: model.fabDiagTesting ? "Testing…" : "Test", icon: "bolt.horizontal",
+                                      enabled: !host.trimmingCharacters(in: .whitespaces).isEmpty && !model.fabDiagTesting, compact: true) {
+                                model.fabTestConnection(host: host, kind: kind)
+                            }
+                        }
                         field("Printer model (drives slicing format, e.g. ELEGOO Saturn 4 Ultra)", text: $printerModel, mono: false)
                     }
                     if kind == "octoprint" || kind == "moonraker" {
                         field("API-key env var (must start with GINEXUS_FAB_; key stays in env, never on disk)", text: $apiKeyEnv, mono: true)
                     }
+                    if let diag = model.fabDiag, kind != "mock" { diagnosisView(diag) }
                     HStack {
                         Spacer(minLength: 0)
                         FabButton(title: "Add Printer", icon: "plus", style: .primary,
@@ -739,6 +766,32 @@ private struct AddPrinterSheet: View {
             if let e = model.fabError { Text(e).font(Brand.body(11)).foregroundStyle(Brand.error) }
         }
         .padding(20).frame(width: 580).background(Brand.ink900).preferredColorScheme(.dark)
+        .onAppear { model.fabRefreshLocalNet(); model.fabDiag = nil }
+    }
+
+    /// A clear, color-coded reachability verdict (rectangular, matches the panel aesthetic).
+    private func diagnosisView(_ d: FabDiagnosis) -> some View {
+        let color: Color = d.severity == "ok" ? Brand.success : (d.severity == "warn" ? Brand.warning : Brand.error)
+        let icon = d.severity == "ok" ? "checkmark.circle.fill" : (d.severity == "warn" ? "exclamationmark.circle.fill" : "xmark.octagon.fill")
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon).font(.system(size: 12)).foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(d.summary).font(Brand.body(12, weight: .semibold)).foregroundStyle(color)
+                Text(d.detail).font(Brand.body(11)).foregroundStyle(Brand.bone200)
+                if d.severity == "error" {
+                    Button {
+                        if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") {
+                            NSWorkspace.shared.open(u)
+                        }
+                    } label: {
+                        Text("Open Local Network settings").font(.system(size: 10, weight: .semibold)).foregroundStyle(Brand.ember500)
+                    }.buttonStyle(.plain).padding(.top, 2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12).background(color.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.4), lineWidth: 1))
     }
 
     private func field(_ placeholder: String, text: Binding<String>, mono: Bool) -> some View {
